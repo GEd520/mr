@@ -1,0 +1,38 @@
+class Constants {
+  static const String appName = '蛋的神器';
+  static const String appSubtitle = '蛋蛋忧赏';
+  static const String nojsVersion = '1.0.0';
+  
+  static const String defaultCacheDir = 'dan_shenqi_cache';
+  static const int defaultConcurrentSearch = 5;
+  static const int defaultCacheExpireDays = 7;
+  
+  static const List<String> supportedBookFormats = [
+    '.txt',
+    '.epub',
+    '.pdf',
+  ];
+  
+  static const List<String> supportedComicFormats = [
+    '.zip',
+    '.cbz',
+    '.cbr',
+    '.rar',
+  ];
+  
+  static const List<String> supportedMediaFormats = [
+    '.mp4',
+    '.mkv',
+    '.avi',
+    '.mp3',
+    '.m4a',
+    '.flac',
+  ];
+  
+  static const Map<String, String> mediaTypeNames = {
+    'novel': '小说',
+    'comic': '漫画',
+    'video': '视频',
+    'audio': '音频',
+  };
+}

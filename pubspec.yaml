@@ -1,0 +1,51 @@
+name: dan_shenqi
+description: 蛋的神器 - 一款支持小说、漫画、视频、音频的多媒体阅读器
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  
+  cupertino_icons: ^1.0.6
+  
+  provider: ^6.1.1
+  
+  dio: ^5.4.0
+  connectivity_plus: ^5.0.2
+  
+  shared_preferences: ^2.2.2
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
+  path_provider: ^2.1.1
+  
+  cached_network_image: ^3.3.1
+  photo_view: ^0.14.0
+  
+  flutter_html: ^3.0.0-beta.2
+  
+  video_player: ^2.8.2
+  chewie: ^1.7.4
+  just_audio: ^0.9.36
+  
+  archive: ^3.4.10
+  permission_handler: ^11.1.0
+  file_picker: ^6.1.1
+  
+  flutter_slidable: ^3.0.1
+  shimmer: ^3.0.0
+  
+  url_launcher: ^6.2.2
+  share_plus: ^7.2.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  
+  flutter_lints: ^3.0.1
+
+flutter:
+  uses-material-design: true
