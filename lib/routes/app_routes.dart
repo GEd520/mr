@@ -12,6 +12,7 @@ import '../pages/reader/comic_reader_page.dart';
 import '../pages/player/video_player_page.dart';
 import '../pages/player/audio_player_page.dart';
 import '../pages/explore/explore_show_page.dart';
+import '../pages/debug/debug_page.dart';
 
 class AppRoutes {
   static const String splash = '/';
@@ -27,6 +28,7 @@ class AppRoutes {
   static const String videoPlayer = '/video-player';
   static const String audioPlayer = '/audio-player';
   static const String exploreShow = '/explore-show';
+  static const String debug = '/debug';
 
   static Route<dynamic> generateRoute(RouteSettings settings) {
     switch (settings.name) {
@@ -91,6 +93,8 @@ class AppRoutes {
             exploreUrl: args?['exploreUrl'] ?? '',
           ),
         );
+      case debug:
+        return MaterialPageRoute(builder: (_) => const DebugPage());
       default:
         return MaterialPageRoute(
           builder: (_) => Scaffold(

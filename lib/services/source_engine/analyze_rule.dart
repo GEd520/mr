@@ -22,7 +22,20 @@ class SourceRule {
       return SourceRule(rule: '', type: RuleType.jsoup);
     }
 
-    final steps = ruleStr.split('##').where((s) => s.isNotEmpty).toList();
+    List<String> steps = [];
+    final parts = ruleStr.split('@');
+    
+    for (int i = 0; i < parts.length; i++) {
+      final part = parts[i].trim();
+      if (part.isEmpty) continue;
+      
+      if (i == parts.length - 1 && _isAttributeOrText(part)) {
+        steps.add('@$part');
+      } else {
+        steps.add(part);
+      }
+    }
+
     RuleType type = RuleType.jsoup;
 
     for (final step in steps) {
@@ -42,6 +55,11 @@ class SourceRule {
     }
 
     return SourceRule(rule: ruleStr, type: type, steps: steps);
+  }
+
+  static bool _isAttributeOrText(String part) {
+    return ['text', 'html', 'outerHtml', 'href', 'src', 'title', 'alt', 'onclick']
+        .contains(part);
   }
 }
 
@@ -164,53 +182,126 @@ class AnalyzeRule {
   }
 
   dynamic _applyCssSelector(dynamic content, String selector, {bool isList = false}) {
-    dom.Element? element;
+    String cssSelector = _convertLegadoRule(selector);
 
-    if (content is dom.Document) {
-      element = content.body;
-    } else if (content is dom.Element) {
-      element = content;
-    } else if (content is String) {
-      final doc = html_parser.parse(content);
-      element = doc.body;
-    }
-
-    if (element == null) return null;
-
-    if (selector.startsWith('@')) {
-      final attrName = selector.substring(1);
+    // 处理属性提取
+    if (cssSelector.startsWith('@')) {
+      final attrName = cssSelector.substring(1);
+      if (content is List) {
+        return content.map((e) {
+          if (e is dom.Element) {
+            return e.attributes[attrName] ?? '';
+          }
+          return '';
+        }).toList();
+      }
+      dom.Element? element = _toElement(content);
+      if (element == null) return isList ? [] : '';
       if (isList) {
         return element.querySelectorAll('*').map((e) => e.attributes[attrName] ?? '').toList();
       }
-      return element.attributes[attrName] ?? element.querySelector('*')?.attributes[attrName] ?? '';
+      return element.attributes[attrName] ?? '';
     }
 
-    if (selector == 'text' || selector == 'text()') {
+    // 处理文本提取
+    if (cssSelector == 'text' || cssSelector == 'text()') {
+      if (content is List) {
+        return content.map((e) {
+          if (e is dom.Element) return e.text.trim();
+          return '';
+        }).toList();
+      }
+      dom.Element? element = _toElement(content);
+      if (element == null) return isList ? [] : '';
       if (isList) {
         return element.querySelectorAll('*').map((e) => e.text.trim()).toList();
       }
       return element.text.trim();
     }
 
-    if (selector == 'html' || selector == 'html()') {
+    // 处理 HTML 提取
+    if (cssSelector == 'html' || cssSelector == 'html()') {
+      if (content is List) {
+        return content.map((e) {
+          if (e is dom.Element) return e.innerHtml;
+          return '';
+        }).toList();
+      }
+      dom.Element? element = _toElement(content);
+      if (element == null) return isList ? [] : '';
       if (isList) {
         return element.querySelectorAll('*').map((e) => e.innerHtml).toList();
       }
       return element.innerHtml;
     }
 
-    if (selector == 'outerHtml') {
+    if (cssSelector == 'outerHtml') {
+      if (content is List) {
+        return content.map((e) {
+          if (e is dom.Element) return e.outerHtml;
+          return '';
+        }).toList();
+      }
+      dom.Element? element = _toElement(content);
+      if (element == null) return isList ? [] : '';
       if (isList) {
         return element.querySelectorAll('*').map((e) => e.outerHtml).toList();
       }
       return element.outerHtml;
     }
 
-    if (isList) {
-      return element.querySelectorAll(selector).toList();
+    // 处理选择器
+    if (content is List) {
+      // 如果内容是列表，在每个元素上执行选择器
+      final results = <dynamic>[];
+      for (final item in content) {
+        final element = _toElement(item);
+        if (element != null) {
+          if (isList) {
+            results.addAll(element.querySelectorAll(cssSelector));
+          } else {
+            final found = element.querySelector(cssSelector);
+            if (found != null) results.add(found);
+          }
+        }
+      }
+      return results;
     }
 
-    return element.querySelector(selector);
+    dom.Element? element = _toElement(content);
+    if (element == null) return isList ? [] : null;
+
+    if (isList) {
+      return element.querySelectorAll(cssSelector).toList();
+    }
+
+    return element.querySelector(cssSelector);
+  }
+
+  dom.Element? _toElement(dynamic content) {
+    if (content is dom.Element) return content;
+    if (content is dom.Document) return content.body;
+    if (content is String) {
+      final doc = html_parser.parse(content);
+      return doc.body;
+    }
+    return null;
+  }
+
+  String _convertLegadoRule(String rule) {
+    if (rule.startsWith('class.')) {
+      return '.${rule.substring(6)}';
+    }
+    if (rule.startsWith('tag.')) {
+      return rule.substring(4);
+    }
+    if (rule.startsWith('id.')) {
+      return '#${rule.substring(3)}';
+    }
+    if (rule.startsWith('@')) {
+      return rule;
+    }
+    return rule;
   }
 
   dynamic _applyXPath(dynamic content, String xpath, {bool isList = false}) {

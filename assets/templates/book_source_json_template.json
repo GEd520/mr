@@ -1,0 +1,60 @@
+{
+  "bookSourceUrl": "https://api.example.com",
+  "bookSourceName": "JSON API 书源模板",
+  "bookSourceGroup": "API示例",
+  "bookSourceType": 0,
+  "enabled": true,
+  "enabledExplore": true,
+  "header": "{\"User-Agent\": \"Mozilla/5.0\", \"Content-Type\": \"application/json\"}",
+  "searchUrl": "https://api.example.com/search?keyword={{key}}&page={{page}}",
+  "exploreUrl": "推荐::https://api.example.com/recommend\n热门::https://api.example.com/hot\n更新::https://api.example.com/update",
+  "ruleSearch": {
+    "checkKeyWord": "data",
+    "bookList": "$.data.list",
+    "name": "$.name",
+    "author": "$.author",
+    "intro": "$.description",
+    "kind": "$.category",
+    "lastChapter": "$.lastChapter",
+    "updateTime": "$.updateTime",
+    "bookUrl": "$.bookUrl",
+    "coverUrl": "$.coverUrl",
+    "wordCount": "$.wordCount"
+  },
+  "ruleExplore": {
+    "bookList": "$.data.books",
+    "name": "$.bookName",
+    "author": "$.authorName",
+    "intro": "$.intro",
+    "kind": "$.type",
+    "lastChapter": "$.latestChapter",
+    "updateTime": "$.updateTime",
+    "bookUrl": "$.url",
+    "coverUrl": "$.cover",
+    "wordCount": "$.words"
+  },
+  "ruleBookInfo": {
+    "init": "",
+    "name": "$.data.name",
+    "author": "$.data.author",
+    "intro": "$.data.intro",
+    "kind": "$.data.category",
+    "lastChapter": "$.data.lastChapter",
+    "updateTime": "$.data.updateTime",
+    "coverUrl": "$.data.cover",
+    "tocUrl": "$.data.tocUrl",
+    "wordCount": "$.data.wordCount"
+  },
+  "ruleToc": {
+    "chapterList": "$.data.chapters",
+    "chapterName": "$.name",
+    "chapterUrl": "$.url",
+    "isVolume": "$.isVolume",
+    "nextTocUrl": "$.data.nextPage"
+  },
+  "ruleContent": {
+    "content": "$.data.content",
+    "title": "$.data.title",
+    "nextContentUrl": "$.data.nextUrl"
+  }
+}

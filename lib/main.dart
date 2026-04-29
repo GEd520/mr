@@ -10,6 +10,7 @@ import 'routes/app_routes.dart';
 import 'themes/app_theme.dart';
 import 'services/nojs_engine.dart';
 import 'services/storage_service.dart';
+import 'services/source_engine/proxy_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -25,6 +26,11 @@ void main() async {
     await NojsEngine.instance.init();
   } catch (e) {
     debugPrint('NojsEngine init error: $e');
+  }
+
+  // 启动代理服务（非 Web 平台）
+  if (!kIsWeb) {
+    await ProxyService.instance.start(port: 8888);
   }
 
   runApp(const DanShenqiApp());

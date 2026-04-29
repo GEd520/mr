@@ -1,0 +1,35 @@
+{
+  "bookSourceUrl": "https://regex.example.com",
+  "bookSourceName": "正则表达式 书源模板",
+  "bookSourceGroup": "Regex示例",
+  "bookSourceType": 0,
+  "enabled": true,
+  "searchUrl": "https://regex.example.com/search?q={{key}}",
+  "ruleSearch": {
+    "bookList": "<li[^>]*class=\"book-item\"[^>]*>[\\s\\S]*?<\\/li>",
+    "name": "<h3[^>]*>([^<]*)<\\/h3>",
+    "author": "作者[：:]([^<]*)",
+    "intro": "<p[^>]*class=\"intro\"[^>]*>([^<]*)<\\/p>",
+    "kind": "<span[^>]*class=\"category\"[^>]*>([^<]*)<\\/span>",
+    "lastChapter": "<a[^>]*class=\"chapter\"[^>]*>([^<]*)<\\/a>",
+    "bookUrl": "<h3[^>]*><a[^>]*href=\"([^\"]*)\"",
+    "coverUrl": "<img[^>]*src=\"([^\"]*)\"[^>]*class=\"cover\""
+  },
+  "ruleBookInfo": {
+    "name": "<h1[^>]*class=\"book-name\"[^>]*>([^<]*)<\\/h1>",
+    "author": "作者[：:]([^<]*)",
+    "intro": "<div[^>]*class=\"intro\"[^>]*>([\\s\\S]*?)<\\/div>",
+    "coverUrl": "<img[^>]*class=\"cover\"[^>]*src=\"([^\"]*)\"",
+    "tocUrl": "<a[^>]*class=\"read-btn\"[^>]*href=\"([^\"]*)\""
+  },
+  "ruleToc": {
+    "chapterList": "<li[^>]*>[\\s\\S]*?<\\/li>",
+    "chapterName": "<a[^>]*>([^<]*)<\\/a>",
+    "chapterUrl": "<a[^>]*href=\"([^\"]*)\""
+  },
+  "ruleContent": {
+    "content": "<div[^>]*class=\"content\"[^>]*>([\\s\\S]*?)<\\/div>",
+    "title": "<h1[^>]*class=\"title\"[^>]*>([^<]*)<\\/h1>",
+    "nextContentUrl": "<a[^>]*class=\"next\"[^>]*href=\"([^\"]*)\""
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "bookSourceUrl": "https://www.ppxsw.co",
+  "bookSourceName": "皮皮小说网",
+  "bookSourceGroup": "小说",
+  "bookSourceType": 0,
+  "enabled": true,
+  "enabledExplore": true,
+  "header": "{\"User-Agent\": \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\"}",
+  "bookSourceComment": "皮皮小说网 - 全本完结小说免费阅读",
+  "searchUrl": "https://www.ppxsw.co/search.html, {\"method\": \"POST\", \"body\": \"s={{key}}\"}",
+  "exploreUrl": "玄幻修真::https://www.ppxsw.co/fenlei/1_1/\n重生穿越::https://www.ppxsw.co/fenlei/2_1/\n都市小说::https://www.ppxsw.co/fenlei/3_1/",
+  "ruleSearch": {
+    "bookList": "class.txt-list@tag.li",
+    "name": "class.s2@tag.a@text",
+    "author": "class.s3@tag.a@text",
+    "kind": "class.s1@text",
+    "lastChapter": "class.s4@tag.a@text",
+    "bookUrl": "class.s2@tag.a@href"
+  },
+  "ruleExplore": {
+    "bookList": "class.item_img",
+    "name": "tag.h3@tag.a@text",
+    "author": "tag.h3@tag.a@title",
+    "intro": "tag.p@text",
+    "bookUrl": "class.image@tag.a@href",
+    "coverUrl": "tag.img@src"
+  },
+  "ruleBookInfo": {
+    "name": "tag.h2@text",
+    "author": "class.details@tag.p@tag.i.0@text",
+    "intro": "class.p2@text",
+    "coverUrl": "class.img@tag.img@src",
+    "tocUrl": "class.btn_dv1@tag.i.2@tag.a@href"
+  },
+  "ruleToc": {
+    "chapterList": "class.yanqing_list@tag.li@tag.a",
+    "chapterName": "text",
+    "chapterUrl": "@onclick"
+  },
+  "ruleContent": {
+    "content": "class.chapter-title@text",
+    "title": "class.chapter-title@text",
+    "nextContentUrl": "class.read_btn@tag.a.-1@href"
+  }
+}

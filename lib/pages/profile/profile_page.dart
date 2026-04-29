@@ -1,9 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import '../../models/book_source.dart';
-import '../../models/miniprogram.dart';
-import '../../models/plugin.dart';
 import '../../providers/app_provider.dart';
+import '../../routes/app_routes.dart';
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({super.key});
@@ -190,6 +188,13 @@ class _ProfilePageState extends State<ProfilePage> {
               onChanged: (value) => provider.toggleNoImageMode(),
             );
           },
+        ),
+        ListTile(
+          leading: const Icon(Icons.bug_report),
+          title: const Text('调试工具'),
+          subtitle: const Text('书源调试、规则测试、JS执行'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => Navigator.pushNamed(context, AppRoutes.debug),
         ),
       ],
     );

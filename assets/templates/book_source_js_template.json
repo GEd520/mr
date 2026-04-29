@@ -1,0 +1,31 @@
+{
+  "bookSourceUrl": "https://js.example.com",
+  "bookSourceName": "JavaScript 书源模板",
+  "bookSourceGroup": "JS示例",
+  "bookSourceType": 0,
+  "enabled": true,
+  "jsLib": "function parseList(html) {\n  const results = [];\n  const items = html.match(/<li[^>]*>[\\s\\S]*?<\\/li>/g) || [];\n  for (const item of items) {\n    const name = item.match(/<h3[^>]*>([^<]*)<\\/h3>/)?.[1] || '';\n    const author = item.match(/作者[：:]([^<]*)/)?.[1]?.trim() || '';\n    const url = item.match(/href=\"([^\"]*)\"/)?.[1] || '';\n    results.push({ name, author, url });\n  }\n  return JSON.stringify(results);\n}",
+  "searchUrl": "https://js.example.com/search?key={{key}}",
+  "ruleSearch": {
+    "bookList": ":parseList(result)",
+    "name": "$.name",
+    "author": "$.author",
+    "bookUrl": "$.url"
+  },
+  "ruleBookInfo": {
+    "init": ":const doc = result; const info = {}; info.name = doc.match(/<h1[^>]*>([^<]*)<\\/h1>/)?.[1] || ''; JSON.stringify(info);",
+    "name": "$.name",
+    "author": ":result.match(/作者[：:]([^<]*)/)?.[1]?.trim() || ''",
+    "intro": ":result.match(/<div class=\"intro\"[^>]*>([\\s\\S]*?)<\\/div>/)?.[1]?.replace(/<[^>]*>/g, '')?.trim() || ''",
+    "coverUrl": ":result.match(/<img[^>]*src=\"([^\"]*)\"[^>]*class=\"cover\"/)?.[1] || ''",
+    "tocUrl": ":result.match(/<a[^>]*href=\"([^\"]*)\"[^>]*class=\"read\"/)?.[1] || ''"
+  },
+  "ruleToc": {
+    "chapterList": ":const chapters = []; const items = result.match(/<li[^>]*>[\\s\\S]*?<\\/li>/g) || []; for (const item of items) { chapters.push({ name: item.match(/<a[^>]*>([^<]*)<\\/a>/)?.[1] || '', url: item.match(/href=\"([^\"]*)\"/)?.[1] || '' }); } JSON.stringify(chapters);",
+    "chapterName": "$.name",
+    "chapterUrl": "$.url"
+  },
+  "ruleContent": {
+    "content": ":result.match(/<div class=\"content\"[^>]*>([\\s\\S]*?)<\\/div>/)?.[1]?.replace(/<script[^>]*>[\\s\\S]*?<\\/script>/g, '')?.trim() || ''"
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "bookSourceUrl": "https://xpath.example.com",
+  "bookSourceName": "XPath 书源模板",
+  "bookSourceGroup": "XPath示例",
+  "bookSourceType": 0,
+  "enabled": true,
+  "searchUrl": "https://xpath.example.com/search?q={{key}}",
+  "exploreUrl": "全部::https://xpath.example.com/list/all\n玄幻::https://xpath.example.com/list/xuanhuan",
+  "ruleSearch": {
+    "bookList": "//div[@class='book-list']/ul/li",
+    "name": ".//h3/a/text()",
+    "author": ".//p[@class='author']/text()",
+    "intro": ".//p[@class='intro']/text()",
+    "kind": ".//span[@class='category']/text()",
+    "lastChapter": ".//a[@class='chapter']/text()",
+    "updateTime": ".//span[@class='time']/text()",
+    "bookUrl": ".//h3/a/@href",
+    "coverUrl": ".//img/@src"
+  },
+  "ruleExplore": {
+    "bookList": "//div[@class='book-item']",
+    "name": "./h2/a/text()",
+    "author": "./p[@class='author']/text()",
+    "intro": "./div[@class='intro']/text()",
+    "bookUrl": "./h2/a/@href",
+    "coverUrl": "./img/@src"
+  },
+  "ruleBookInfo": {
+    "name": "//h1[@class='book-name']/text()",
+    "author": "//p[@class='author']/text()",
+    "intro": "//div[@class='intro']/text()",
+    "coverUrl": "//div[@class='cover']/img/@src",
+    "tocUrl": "//a[@class='read-btn']/@href"
+  },
+  "ruleToc": {
+    "chapterList": "//div[@class='chapter-list']//li",
+    "chapterName": "./a/text()",
+    "chapterUrl": "./a/@href",
+    "isVolume": "./span[@class='volume']/text()"
+  },
+  "ruleContent": {
+    "content": "//div[@class='content']/html()",
+    "title": "//h1[@class='title']/text()",
+    "nextContentUrl": "//a[@class='next']/@href"
+  }
+}

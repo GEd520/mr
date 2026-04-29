@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:cached_network_image/cached_network_image.dart';
-import '../../providers/discovery_provider.dart';
+import '../../providers/search_provider.dart';
+import '../../models/book_source.dart';
 import '../../routes/app_routes.dart';
 
 class SearchPage extends StatefulWidget {
@@ -16,27 +16,22 @@ class SearchPage extends StatefulWidget {
 class _SearchPageState extends State<SearchPage> {
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _focusNode = FocusNode();
-  List<String> _searchHistory = [];
-  List<dynamic> _searchResults = [];
-  bool _isSearching = false;
-  String _selectedMediaType = '全部';
   bool _isGridView = false;
 
   @override
   void initState() {
     super.initState();
+    
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final provider = context.read<SearchProvider>();
+      provider.loadBookSources();
+      provider.loadSearchHistory();
+    });
+
     if (widget.initialKeyword != null) {
       _searchController.text = widget.initialKeyword!;
       _performSearch();
     }
-    _loadSearchHistory();
-  }
-
-  Future<void> _loadSearchHistory() async {
-    await Future.delayed(const Duration(milliseconds: 100));
-    setState(() {
-      _searchHistory = ['斗破苍穹', '完美世界', '遮天', '诡秘之主'];
-    });
   }
 
   @override
@@ -60,9 +55,7 @@ class _SearchPageState extends State<SearchPage> {
               icon: const Icon(Icons.clear),
               onPressed: () {
                 _searchController.clear();
-                setState(() {
-                  _searchResults.clear();
-                });
+                context.read<SearchProvider>().clearResults();
               },
             ),
           ),
@@ -75,26 +68,30 @@ class _SearchPageState extends State<SearchPage> {
           ),
         ],
       ),
-      body: Column(
-        children: [
-          _buildFilters(),
-          Expanded(
-            child: _isSearching
-                ? const Center(child: CircularProgressIndicator())
-                : _searchResults.isEmpty
-                    ? _buildEmptyState()
-                    : _isGridView
-                        ? _buildGridView()
-                        : _buildListView(),
-          ),
-        ],
+      body: Consumer<SearchProvider>(
+        builder: (context, provider, child) {
+          return Column(
+            children: [
+              _buildFilters(provider),
+              Expanded(
+                child: provider.isLoading
+                    ? const Center(child: CircularProgressIndicator())
+                    : provider.error != null
+                        ? _buildErrorState(provider)
+                        : provider.searchResults.isEmpty
+                            ? _buildEmptyState(provider)
+                            : _isGridView
+                                ? _buildGridView(provider)
+                                : _buildListView(provider),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
 
-  Widget _buildFilters() {
-    final mediaTypes = ['全部', '小说', '漫画', '视频', '音频'];
-
+  Widget _buildFilters(SearchProvider provider) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       child: Row(
@@ -103,21 +100,25 @@ class _SearchPageState extends State<SearchPage> {
             child: SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               child: Row(
-                children: mediaTypes.map((type) {
-                  final isSelected = _selectedMediaType == type;
-                  return Padding(
-                    padding: const EdgeInsets.only(right: 8),
-                    child: FilterChip(
-                      label: Text(type),
-                      selected: isSelected,
-                      onSelected: (selected) {
-                        setState(() {
-                          _selectedMediaType = type;
-                        });
-                      },
+                children: [
+                  ActionChip(
+                    label: Text('书源 (${provider.selectedSourceUrls.length})'),
+                    avatar: const Icon(Icons.source, size: 18),
+                    onPressed: () => _showSourceFilter(provider),
+                  ),
+                  const SizedBox(width: 8),
+                  if (provider.selectedSourceUrls.isNotEmpty)
+                    ActionChip(
+                      label: const Text('全选'),
+                      onPressed: () => provider.selectAllSources(),
                     ),
-                  );
-                }).toList(),
+                  const SizedBox(width: 8),
+                  if (provider.selectedSourceUrls.isNotEmpty)
+                    ActionChip(
+                      label: const Text('取消全选'),
+                      onPressed: () => provider.deselectAllSources(),
+                    ),
+                ],
               ),
             ),
           ),
@@ -129,21 +130,44 @@ class _SearchPageState extends State<SearchPage> {
               });
             },
           ),
-          IconButton(
-            icon: const Icon(Icons.tune),
-            onPressed: _showSourceFilter,
+        ],
+      ),
+    );
+  }
+
+  Widget _buildErrorState(SearchProvider provider) {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            Icons.error_outline,
+            size: 64,
+            color: Theme.of(context).colorScheme.error,
+          ),
+          const SizedBox(height: 16),
+          Text(
+            provider.error!,
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.error,
+            ),
+          ),
+          const SizedBox(height: 16),
+          ElevatedButton(
+            onPressed: () => _showSourceFilter(provider),
+            child: const Text('选择书源'),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildEmptyState() {
+  Widget _buildEmptyState(SearchProvider provider) {
     return SingleChildScrollView(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (_searchHistory.isNotEmpty) ...[
+          if (provider.searchHistory.isNotEmpty) ...[
             Padding(
               padding: const EdgeInsets.all(16),
               child: Row(
@@ -154,24 +178,28 @@ class _SearchPageState extends State<SearchPage> {
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
                   TextButton(
-                    onPressed: _clearHistory,
+                    onPressed: () => provider.clearHistory(),
                     child: const Text('清空'),
                   ),
                 ],
               ),
             ),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: _searchHistory.map((keyword) {
-                return ActionChip(
-                  label: Text(keyword),
-                  onPressed: () {
-                    _searchController.text = keyword;
-                    _performSearch();
-                  },
-                );
-              }).toList(),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: provider.searchHistory.map((keyword) {
+                  return InputChip(
+                    label: Text(keyword),
+                    onPressed: () {
+                      _searchController.text = keyword;
+                      _performSearch();
+                    },
+                    onDeleted: () => provider.removeFromHistory(keyword),
+                  );
+                }).toList(),
+              ),
             ),
           ],
           const SizedBox(height: 24),
@@ -191,6 +219,16 @@ class _SearchPageState extends State<SearchPage> {
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
                 ),
+                if (provider.bookSources.isEmpty) ...[
+                  const SizedBox(height: 16),
+                  TextButton.icon(
+                    onPressed: () {
+                      Navigator.pushNamed(context, AppRoutes.profile);
+                    },
+                    icon: const Icon(Icons.add),
+                    label: const Text('导入书源'),
+                  ),
+                ],
               ],
             ),
           ),
@@ -199,32 +237,33 @@ class _SearchPageState extends State<SearchPage> {
     );
   }
 
-  Widget _buildListView() {
+  Widget _buildListView(SearchProvider provider) {
     return ListView.builder(
       padding: const EdgeInsets.symmetric(vertical: 8),
-      itemCount: _searchResults.length,
+      itemCount: provider.searchResults.length,
       itemBuilder: (context, index) {
-        return _buildListResultItem(index);
+        final result = provider.searchResults[index];
+        return _buildListResultItem(result);
       },
     );
   }
 
-  Widget _buildListResultItem(int index) {
+  Widget _buildListResultItem(Map<String, dynamic> result) {
     return ListTile(
       leading: ClipRRect(
         borderRadius: BorderRadius.circular(8),
         child: Container(
           width: 48,
           height: 64,
-          color: Theme.of(context).colorScheme.surfaceVariant,
+          color: Theme.of(context).colorScheme.surfaceContainerHighest,
           child: const Icon(Icons.book),
         ),
       ),
-      title: Text('搜索结果 ${index + 1}'),
+      title: Text(result['name'] ?? '未知书名'),
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('作者名'),
+          Text(result['author'] ?? '未知作者'),
           const SizedBox(height: 4),
           Row(
             children: [
@@ -235,25 +274,10 @@ class _SearchPageState extends State<SearchPage> {
                   borderRadius: BorderRadius.circular(4),
                 ),
                 child: Text(
-                  '书源名称',
+                  result['sourceName'] ?? '',
                   style: TextStyle(
                     fontSize: 10,
                     color: Theme.of(context).colorScheme.onPrimaryContainer,
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.secondaryContainer,
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: Text(
-                  '小说',
-                  style: TextStyle(
-                    fontSize: 10,
-                    color: Theme.of(context).colorScheme.onSecondaryContainer,
                   ),
                 ),
               ),
@@ -265,16 +289,16 @@ class _SearchPageState extends State<SearchPage> {
         Navigator.pushNamed(
           context,
           AppRoutes.detail,
-          arguments: {'bookId': 'search_result_$index'},
+          arguments: {
+            'bookUrl': result['bookUrl'],
+            'bookData': result,
+          },
         );
-      },
-      onLongPress: () {
-        _showQuickActions(index);
       },
     );
   }
 
-  Widget _buildGridView() {
+  Widget _buildGridView(SearchProvider provider) {
     return GridView.builder(
       padding: const EdgeInsets.all(12),
       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
@@ -283,24 +307,25 @@ class _SearchPageState extends State<SearchPage> {
         crossAxisSpacing: 12,
         mainAxisSpacing: 12,
       ),
-      itemCount: _searchResults.length,
+      itemCount: provider.searchResults.length,
       itemBuilder: (context, index) {
-        return _buildGridResultItem(index);
+        final result = provider.searchResults[index];
+        return _buildGridResultItem(result);
       },
     );
   }
 
-  Widget _buildGridResultItem(int index) {
+  Widget _buildGridResultItem(Map<String, dynamic> result) {
     return GestureDetector(
       onTap: () {
         Navigator.pushNamed(
           context,
           AppRoutes.detail,
-          arguments: {'bookId': 'search_result_$index'},
+          arguments: {
+            'bookUrl': result['bookUrl'],
+            'bookData': result,
+          },
         );
-      },
-      onLongPress: () {
-        _showQuickActions(index);
       },
       child: Card(
         clipBehavior: Clip.antiAlias,
@@ -309,7 +334,7 @@ class _SearchPageState extends State<SearchPage> {
           children: [
             Expanded(
               child: Container(
-                color: Theme.of(context).colorScheme.surfaceVariant,
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
                 child: const Center(child: Icon(Icons.book, size: 48)),
               ),
             ),
@@ -319,7 +344,7 @@ class _SearchPageState extends State<SearchPage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    '搜索结果 ${index + 1}',
+                    result['name'] ?? '未知书名',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
@@ -329,7 +354,7 @@ class _SearchPageState extends State<SearchPage> {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    '作者',
+                    result['author'] ?? '未知作者',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
@@ -346,150 +371,120 @@ class _SearchPageState extends State<SearchPage> {
     );
   }
 
-  Future<void> _performSearch() async {
+  void _performSearch() {
     final keyword = _searchController.text.trim();
     if (keyword.isEmpty) return;
+    context.read<SearchProvider>().search(keyword);
+  }
 
-    setState(() {
-      _isSearching = true;
-    });
+  void _showSourceFilter(SearchProvider provider) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) {
+        return DraggableScrollableSheet(
+          initialChildSize: 0.6,
+          minChildSize: 0.4,
+          maxChildSize: 0.9,
+          expand: false,
+          builder: (context, scrollController) {
+            return Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        '选择书源 (${provider.bookSources.length})',
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                      Row(
+                        children: [
+                          TextButton(
+                            onPressed: () => provider.selectAllSources(),
+                            child: const Text('全选'),
+                          ),
+                          TextButton(
+                            onPressed: () => Navigator.pop(context),
+                            child: const Text('确定'),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                const Divider(),
+                Expanded(
+                  child: provider.bookSources.isEmpty
+                      ? Center(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const Text('暂无可用书源'),
+                              const SizedBox(height: 16),
+                              ElevatedButton(
+                                onPressed: () {
+                                  Navigator.pop(context);
+                                  Navigator.pushNamed(context, AppRoutes.profile);
+                                },
+                                child: const Text('导入书源'),
+                              ),
+                            ],
+                          ),
+                        )
+                      : ListView.builder(
+                          controller: scrollController,
+                          itemCount: provider.bookSources.length,
+                          itemBuilder: (context, index) {
+                            final source = provider.bookSources[index];
+                            final isSelected = provider.selectedSourceUrls
+                                .contains(source.bookSourceUrl);
+                            return CheckboxListTile(
+                              value: isSelected,
+                              onChanged: (checked) {
+                                provider.toggleSourceSelection(source.bookSourceUrl);
+                              },
+                              title: Text(source.bookSourceName),
+                              subtitle: Text(
+                                source.bookSourceGroup ?? '默认分组',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                ),
+                              ),
+                              secondary: _buildSourceTypeIcon(source),
+                            );
+                          },
+                        ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
 
-    await Future.delayed(const Duration(seconds: 1));
-
-    setState(() {
-      _isSearching = false;
-      _searchResults = List.generate(20, (index) => {'id': index});
-    });
-
-    if (!_searchHistory.contains(keyword)) {
-      setState(() {
-        _searchHistory.insert(0, keyword);
-        if (_searchHistory.length > 10) {
-          _searchHistory.removeLast();
-        }
-      });
+  Widget _buildSourceTypeIcon(BookSource source) {
+    IconData icon;
+    switch (source.bookSourceType) {
+      case BookSourceType.text:
+        icon = Icons.book;
+        break;
+      case BookSourceType.audio:
+        icon = Icons.headphones;
+        break;
+      case BookSourceType.image:
+        icon = Icons.image;
+        break;
+      case BookSourceType.video:
+        icon = Icons.video_library;
+        break;
+      case BookSourceType.file:
+        icon = Icons.folder;
+        break;
     }
-  }
-
-  void _clearHistory() {
-    setState(() {
-      _searchHistory.clear();
-    });
-  }
-
-  void _showSourceFilter() {
-    showModalBottomSheet(
-      context: context,
-      builder: (context) {
-        return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      '选择书源',
-                      style: Theme.of(context).textTheme.titleLarge,
-                    ),
-                    TextButton(
-                      onPressed: () => Navigator.pop(context),
-                      child: const Text('确定'),
-                    ),
-                  ],
-                ),
-              ),
-              const Divider(),
-              Expanded(
-                child: ListView.builder(
-                  shrinkWrap: true,
-                  itemCount: 10,
-                  itemBuilder: (context, index) {
-                    return CheckboxListTile(
-                      value: true,
-                      onChanged: (checked) {},
-                      title: Text('书源 ${index + 1}'),
-                      subtitle: const Text('小说、漫画'),
-                    );
-                  },
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  void _showQuickActions(int index) {
-    showModalBottomSheet(
-      context: context,
-      builder: (context) {
-        return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ListTile(
-                leading: const Icon(Icons.info),
-                title: const Text('查看简介'),
-                onTap: () {
-                  Navigator.pop(context);
-                  _showBookInfo(index);
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.bookmark_add),
-                title: const Text('加入书架'),
-                onTap: () {
-                  Navigator.pop(context);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('已加入书架')),
-                  );
-                },
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  void _showBookInfo(int index) {
-    showDialog(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: Text('搜索结果 ${index + 1}'),
-          content: const Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('作者: 作者名'),
-              SizedBox(height: 8),
-              Text('简介: 这是一本书的简介...'),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('关闭'),
-            ),
-            TextButton(
-              onPressed: () {
-                Navigator.pop(context);
-                Navigator.pushNamed(
-                  context,
-                  AppRoutes.detail,
-                  arguments: {'bookId': 'search_result_$index'},
-                );
-              },
-              child: const Text('查看详情'),
-            ),
-          ],
-        );
-      },
-    );
+    return Icon(icon, size: 20);
   }
 }
