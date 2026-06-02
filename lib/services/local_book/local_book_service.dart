@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:typed_data';
 import '../../models/book.dart';
 import '../../models/chapter.dart';
@@ -33,6 +34,44 @@ class LocalBookService {
   }
 
   static List<String> get supportedExtensions => ['txt', 'epub'];
+
+  Future<List<Book>> scanDirectory(String directoryPath) async {
+    final books = <Book>[];
+    final dir = Directory(directoryPath);
+    
+    if (!await dir.exists()) return books;
+    
+    await for (final entity in dir.list(recursive: true)) {
+      if (entity is File) {
+        final filePath = entity.path;
+        if (isSupported(filePath)) {
+          try {
+            final bytes = await entity.readAsBytes();
+            final book = createBookFromFile(filePath, bytes: bytes);
+            books.add(book);
+          } catch (e) {
+            continue;
+          }
+        }
+      }
+    }
+    
+    return books;
+  }
+
+  Future<Book?> importFile(String filePath) async {
+    if (!isSupported(filePath)) return null;
+    
+    try {
+      final file = File(filePath);
+      if (!await file.exists()) return null;
+      
+      final bytes = await file.readAsBytes();
+      return createBookFromFile(filePath, bytes: bytes);
+    } catch (e) {
+      return null;
+    }
+  }
 
   Book createBookFromFile(String filePath, {Uint8List? bytes}) {
     final bookType = detectBookType(filePath);

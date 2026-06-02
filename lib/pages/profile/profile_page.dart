@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../providers/app_provider.dart';
+import '../../providers/bookshelf_provider.dart';
+import '../../providers/discovery_provider.dart';
 import '../../routes/app_routes.dart';
+import '../../services/storage_service.dart';
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({super.key});
@@ -14,8 +17,26 @@ class _ProfilePageState extends State<ProfilePage> {
   String _nickname = '小蛋子';
   int _readingTime = 0;
   int _bookCount = 0;
+  int _sourceCount = 0;
   int _miniprogramCount = 0;
   int _pluginCount = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadStats();
+  }
+
+  void _loadStats() {
+    final bookshelfProvider = context.read<BookshelfProvider>();
+    final discoveryProvider = context.read<DiscoveryProvider>();
+    
+    setState(() {
+      _bookCount = bookshelfProvider.books.length;
+      _sourceCount = discoveryProvider.bookSources.length;
+      _nickname = context.read<AppProvider>().nickname ?? '小蛋子';
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -122,7 +143,7 @@ class _ProfilePageState extends State<ProfilePage> {
         ListTile(
           leading: const Icon(Icons.book),
           title: const Text('书源管理'),
-          subtitle: Text('已导入 $_bookCount 个书源'),
+          subtitle: Text('已导入 $_sourceCount 个书源'),
           trailing: const Icon(Icons.chevron_right),
           onTap: () => _showBookSourceManagement(),
         ),

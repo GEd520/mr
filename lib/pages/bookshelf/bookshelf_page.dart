@@ -2,9 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter_slidable/flutter_slidable.dart';
+import 'package:file_picker/file_picker.dart';
 import '../../models/book.dart';
 import '../../providers/bookshelf_provider.dart';
 import '../../routes/app_routes.dart';
+import '../../services/local_book/local_book_service.dart';
 
 class BookshelfPage extends StatefulWidget {
   const BookshelfPage({super.key});
@@ -487,10 +489,58 @@ class _BookshelfPageState extends State<BookshelfPage> {
     );
   }
 
-  void _scanDirectory() {
+  void _scanDirectory() async {
+    try {
+      String? directoryPath = await FilePicker.platform.getDirectoryPath();
+      if (directoryPath != null) {
+        final books = await LocalBookService.instance.scanDirectory(directoryPath);
+        for (final book in books) {
+          await context.read<BookshelfProvider>().addToBookshelf(book);
+        }
+        if (books.isNotEmpty) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('已导入 ${books.length} 本书籍')),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('未找到支持的书籍文件')),
+          );
+        }
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('扫描失败: $e')),
+      );
+    }
   }
 
-  void _selectFiles() {
+  void _selectFiles() async {
+    try {
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        allowMultiple: true,
+        type: FileType.custom,
+        allowedExtensions: ['txt', 'epub', 'pdf'],
+      );
+      if (result != null) {
+        int successCount = 0;
+        for (final file in result.files) {
+          if (file.path != null) {
+            final book = await LocalBookService.instance.importFile(file.path!);
+            if (book != null) {
+              await context.read<BookshelfProvider>().addToBookshelf(book);
+              successCount++;
+            }
+          }
+        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('已导入 $successCount 本书籍')),
+        );
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('导入失败: $e')),
+      );
+    }
   }
 
   void _showCreateGroupDialog() {

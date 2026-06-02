@@ -19,9 +19,6 @@ class _DiscoveryPageState extends State<DiscoveryPage> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<DiscoveryProvider>().loadBookSources();
-    });
   }
 
   @override
