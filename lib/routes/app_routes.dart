@@ -4,6 +4,7 @@ import '../pages/bookshelf/bookshelf_page.dart';
 import '../pages/discovery/discovery_page.dart';
 import '../pages/miniprogram/miniprogram_page.dart';
 import '../pages/profile/profile_page.dart';
+import '../pages/profile/book_source_manage_page.dart';
 import '../pages/search/search_page.dart';
 import '../pages/detail/detail_page.dart';
 import '../pages/reader/novel_reader_page.dart';
@@ -19,6 +20,7 @@ class AppRoutes {
   static const String discovery = '/discovery';
   static const String miniprogram = '/miniprogram';
   static const String profile = '/profile';
+  static const String bookSourceManage = '/book-source-manage';
   static const String search = '/search';
   static const String detail = '/detail';
   static const String novelReader = '/novel-reader';
@@ -40,6 +42,8 @@ class AppRoutes {
         return MaterialPageRoute(builder: (_) => const MiniprogramPage());
       case profile:
         return MaterialPageRoute(builder: (_) => const ProfilePage());
+      case bookSourceManage:
+        return MaterialPageRoute(builder: (_) => const BookSourceManagePage());
       case search:
         return MaterialPageRoute(builder: (_) => const SearchPage());
       case detail:
