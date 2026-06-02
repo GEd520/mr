@@ -42,6 +42,19 @@ android {
     }
 }
 
+dependencies {
+    // OkHttp - 高性能HTTP客户端，支持拦截器/缓存/WebSocket
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // OkHttp 拦截器（日志/缓存）
+    implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
+    // Jsoup - HTML解析器，用于书源内容提取
+    implementation("org.jsoup:jsoup:1.18.1")
+    // Kotlin 协程（OkHttp异步支持）
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    // Rhino - JavaScript 引擎（Android 无 javax.script）
+    implementation("org.mozilla:rhino:1.9.1")
+}
+
 flutter {
     source = "../.."
 }

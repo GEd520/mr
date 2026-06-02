@@ -653,7 +653,9 @@ class _NovelReaderPageState extends State<NovelReaderPage>
   List<Highlight> _getActiveHighlights() {
     if (_book == null) return [];
     return StorageService.instance
-        .getChapterHighlights(widget.bookUrl, _currentChapterIndex);
+        .getChapterHighlights(widget.bookUrl, _currentChapterIndex)
+        .map((e) => Highlight.fromJson(e))
+        .toList();
   }
 
   // ==================== Slide Mode (PageView) ====================
@@ -1052,7 +1054,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
       createdAt: DateTime.now(),
     );
 
-    StorageService.instance.saveHighlight(highlight);
+    StorageService.instance.saveHighlight(highlight.toJson());
     context.read<ReaderProvider>().addHighlight(highlight);
 
     setState(() {
@@ -1109,7 +1111,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
       createdAt: DateTime.now(),
     );
 
-    StorageService.instance.saveHighlight(highlight);
+    StorageService.instance.saveHighlight(highlight.toJson());
     context.read<ReaderProvider>().addHighlight(highlight);
 
     setState(() {
@@ -2158,7 +2160,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
                                         serialNumber: rule.serialNumber,
                                       );
                                       StorageService.instance
-                                          .saveHighlightRule(updated);
+                                          .saveHighlightRule(updated.toJson());
                                       provider.toggleHighlightRule(rule.id);
                                       setSheetState(() {});
                                     }
@@ -2271,7 +2273,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
                       isBuiltIn: false,
                       serialNumber: provider.highlightRules.length,
                     );
-                    StorageService.instance.saveHighlightRule(rule);
+                    StorageService.instance.saveHighlightRule(rule.toJson());
                     provider.addHighlightRule(rule);
                     Navigator.pop(context);
                   },

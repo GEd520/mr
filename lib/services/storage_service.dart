@@ -56,6 +56,17 @@ class StorageService {
     }
   }
 
+  Future<void> saveBook(dynamic book) async {
+    Map<String, dynamic> data;
+    if (book is Map<String, dynamic>) {
+      data = book;
+    } else {
+      data = (book as dynamic).toJson() as Map<String, dynamic>;
+    }
+    final bookUrl = data['bookUrl'] as String? ?? '';
+    await _bookshelfBox.put(bookUrl, data);
+  }
+
   Future<void> saveBookSource(Map<String, dynamic> sourceData) async {
     final sourceUrl = sourceData['bookSourceUrl'] as String? ?? '';
     if (sourceUrl.isNotEmpty) {
@@ -117,5 +128,57 @@ class StorageService {
 
   String? getLegadoUrl() {
     return _settingsBox.get('legadoUrl');
+  }
+
+  // 高亮相关方法
+  Future<void> saveHighlight(Map<String, dynamic> highlightData) async {
+    final id = highlightData['id'] as String? ?? '';
+    await _cacheBox.put('highlight_$id', highlightData);
+  }
+
+  Future<void> deleteHighlight(String id) async {
+    await _cacheBox.delete('highlight_$id');
+  }
+
+  List<Map<String, dynamic>> getChapterHighlights(String bookUrl, int chapterIndex) {
+    return _cacheBox.values
+        .where((e) {
+          final map = e as Map?;
+          if (map == null) return false;
+          return map['bookUrl'] == bookUrl && map['chapterIndex'] == chapterIndex;
+        })
+        .map((e) => Map<String, dynamic>.from(e as Map))
+        .toList();
+  }
+
+  List<Map<String, dynamic>> getAllHighlights(String bookUrl) {
+    return _cacheBox.values
+        .where((e) {
+          final map = e as Map?;
+          if (map == null) return false;
+          return map['bookUrl'] == bookUrl;
+        })
+        .map((e) => Map<String, dynamic>.from(e as Map))
+        .toList();
+  }
+
+  // 高亮规则相关方法
+  Future<void> saveHighlightRule(Map<String, dynamic> ruleData) async {
+    final id = ruleData['id'] as String? ?? '';
+    await _settingsBox.put('highlightRule_$id', ruleData);
+  }
+
+  Future<void> deleteHighlightRule(String id) async {
+    await _settingsBox.delete('highlightRule_$id');
+  }
+
+  List<Map<String, dynamic>> getAllHighlightRules() {
+    return _settingsBox.values
+        .where((e) {
+          final key = e as Map?;
+          return key != null && key.containsKey('pattern');
+        })
+        .map((e) => Map<String, dynamic>.from(e as Map))
+        .toList();
   }
 }

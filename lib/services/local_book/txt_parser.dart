@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import '../storage_service.dart';
+
 class TxtTocRule {
   final String name;
   final String rule;
@@ -40,15 +42,20 @@ class TxtParser {
     TxtTocRule(name: 'Part', rule: r'^[Pp]art\s+\d+'),
   ];
 
-  static List<TxtChapter> parse(String content, {String fileName = '', bool splitLongChapter = true}) {
-    final rule = _findBestRule(content);
+  static List<TxtChapter> parse(String content, {String fileName = '', bool splitLongChapter = true, List<TxtTocRule>? customRules}) {
+    // 合并自定义规则和默认规则
+    final allRules = [...defaultTocRules];
+    if (customRules != null) {
+      allRules.addAll(customRules.where((r) => r.enabled));
+    }
+    final rule = _findBestRule(content, allRules);
     if (rule != null) {
       return _parseWithRule(content, rule, fileName, splitLongChapter);
     }
     return _parseWithoutRule(content, fileName);
   }
 
-  static TxtTocRule? _findBestRule(String content) {
+  static TxtTocRule? _findBestRule(String content, [List<TxtTocRule>? rules]) {
     final previewContent = content.length > 512000 ? content.substring(0, 512000) : content;
     final lines = previewContent.split(RegExp(r'\n'));
 
@@ -56,7 +63,7 @@ class TxtParser {
     int maxMatchCount = -1;
     const int overRuleCount = 2;
 
-    for (final rule in defaultTocRules) {
+    for (final rule in (rules ?? defaultTocRules)) {
       if (!rule.enabled) continue;
       final pattern = RegExp(rule.rule, caseSensitive: false, multiLine: true);
       int matchCount = 0;
@@ -188,7 +195,7 @@ class TxtParser {
         final chapterContent = buffer.toString().trim();
         chapters.add(TxtChapter(
           index: chapterIndex++,
-          title: '第${chapterIndex}部分',
+          title: '第$chapterIndex部分',
           content: chapterContent,
         ));
         buffer.clear();
@@ -281,6 +288,93 @@ class TxtParser {
         .trim();
   }
 
+  /// 从 TXT 内容中提取简介
+  static String extractIntro(String content) {
+    final lines = content.split(RegExp(r'\n'));
+    final buffer = StringBuffer();
+    int charCount = 0;
+    const int maxIntroLength = 500;
+
+    for (int i = 0; i < lines.length && charCount < maxIntroLength; i++) {
+      final line = lines[i].trim();
+      if (line.isEmpty) continue;
+
+      // 如果遇到第一章标题，停止提取
+      if (_isChapterTitle(line)) break;
+
+      if (buffer.isNotEmpty) buffer.write('\n');
+      buffer.write(line);
+      charCount += line.length;
+    }
+
+    return _cleanIntroText(buffer.toString());
+  }
+
+  /// 清理简介文本
+  static String _cleanIntroText(String text) {
+    return text
+        .replaceAll(RegExp(r'^[\s　]+', multiLine: true), '')
+        .replaceAll(RegExp(r'[\s　]+$', multiLine: true), '')
+        .replaceAll(RegExp(r'\n{3,}'), '\n\n')
+        .trim();
+  }
+
+  /// 加载自定义正则规则
+  static List<TxtTocRule> loadCustomRules() {
+    final storage = StorageService.instance;
+    final rulesData = storage.getCachedData('customTocRules');
+    if (rulesData == null) return [];
+
+    try {
+      final list = rulesData as List;
+      return list.map((e) {
+        final map = e as Map<String, dynamic>;
+        return TxtTocRule(
+          name: map['name'] as String,
+          rule: map['rule'] as String,
+          replacement: map['replacement'] as String?,
+          enabled: map['enabled'] as bool? ?? true,
+          serialNumber: map['serialNumber'] as int? ?? 0,
+        );
+      }).toList();
+    } catch (e) {
+      return [];
+    }
+  }
+
+  /// 保存自定义正则规则
+  static Future<void> saveCustomRules(List<TxtTocRule> rules) async {
+    final data = rules.map((r) => {
+      'name': r.name,
+      'rule': r.rule,
+      'replacement': r.replacement,
+      'enabled': r.enabled,
+      'serialNumber': r.serialNumber,
+    }).toList();
+    await StorageService.instance.cacheData('customTocRules', data);
+  }
+
+  /// 验证正则规则是否有效
+  static bool validateRule(String pattern) {
+    try {
+      RegExp(pattern, multiLine: true);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /// 测试正则规则，返回匹配结果
+  static List<String> testRule(String content, String pattern) {
+    try {
+      final regex = RegExp(pattern, multiLine: true);
+      final matches = regex.allMatches(content);
+      return matches.map((m) => m.group(0) ?? '').take(20).toList();
+    } catch (e) {
+      return [];
+    }
+  }
+
   static String detectEncoding(Uint8List bytes) {
     if (bytes.length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF) {
       return 'utf-8';
@@ -369,10 +463,12 @@ class TxtChapter {
   final int index;
   final String title;
   final String content;
+  final int wordCount;
 
   const TxtChapter({
     required this.index,
     required this.title,
     required this.content,
-  });
+    int? wordCount,
+  }) : wordCount = wordCount ?? content.length;
 }

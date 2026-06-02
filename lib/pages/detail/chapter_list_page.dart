@@ -524,8 +524,8 @@ class _RegexConfigSheetState extends State<_RegexConfigSheet> {
             ),
             onChanged: (v) {
               _newRulePattern = v;
-              final err = TxtParser.validateRule(v);
-              if (err == null) {
+              final isValid = TxtParser.validateRule(v);
+              if (isValid) {
                 setState(() {
                   _editError = null;
                 });
@@ -543,11 +543,11 @@ class _RegexConfigSheetState extends State<_RegexConfigSheet> {
               if (_newRulePattern.isNotEmpty)
                 TextButton(
                   onPressed: () {
-                    final count =
+                    final matches =
                         TxtParser.testRule('sample text', _newRulePattern);
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(
-                          content: Text('测试匹配: $count 行'),
+                          content: Text('测试匹配: ${matches.length} 行'),
                           duration: const Duration(seconds: 1)),
                     );
                   },
@@ -562,10 +562,10 @@ class _RegexConfigSheetState extends State<_RegexConfigSheet> {
 
   void _addCustomRule() {
     if (_newRuleName.isEmpty || _newRulePattern.isEmpty) return;
-    final err = TxtParser.validateRule(_newRulePattern);
-    if (err != null) {
+    final isValid = TxtParser.validateRule(_newRulePattern);
+    if (!isValid) {
       setState(() {
-        _editError = err;
+        _editError = '无效的正则表达式';
       });
       return;
     }
