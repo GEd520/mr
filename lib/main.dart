@@ -56,7 +56,7 @@ class DanShenqiApp extends StatelessWidget {
             theme: AppTheme.lightTheme,
             darkTheme: AppTheme.darkTheme,
             themeMode: appProvider.themeMode,
-            initialRoute: AppRoutes.splash,
+            initialRoute: AppRoutes.main,
             onGenerateRoute: AppRoutes.generateRoute,
           );
         },
