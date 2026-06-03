@@ -1,16 +1,15 @@
 import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
-import 'package:html/parser.dart' as html_parser;
-import 'package:html/dom.dart' as dom;
 import '../../models/book_source.dart';
 import '../../models/book.dart';
 import '../../models/chapter.dart';
 import 'analyze_rule.dart';
 import 'web_proxy.dart';
 import 'proxy_service.dart';
+import 'js_engine.dart';
 
-/// URL 璇锋眰閫夐」锛堢被浼?OkHttp 鐨?Request.Builder锛?
+/// URL请求选项
 class UrlOption {
   final String? method;
   final Map<String, String>? headers;
@@ -20,8 +19,9 @@ class UrlOption {
   final bool useWebView;
   final int? connectTimeout;
   final int? readTimeout;
+  final String? webJs;
 
-  UrlOption({
+  const UrlOption({
     this.method,
     this.headers,
     this.body,
@@ -30,6 +30,7 @@ class UrlOption {
     this.useWebView = false,
     this.connectTimeout,
     this.readTimeout,
+    this.webJs,
   });
 
   factory UrlOption.fromJson(Map<String, dynamic> json) {
@@ -44,6 +45,7 @@ class UrlOption {
       useWebView: json['webView'] == true || json['webView'] == 'true',
       connectTimeout: json['connectTimeout'] as int?,
       readTimeout: json['readTimeout'] as int?,
+      webJs: json['webJs']?.toString(),
     );
   }
 
@@ -57,19 +59,27 @@ class UrlOption {
       if (useWebView) 'webView': useWebView,
       if (connectTimeout != null) 'connectTimeout': connectTimeout,
       if (readTimeout != null) 'readTimeout': readTimeout,
+      if (webJs != null) 'webJs': webJs,
     };
+  }
+
+  static String? _bodyString(dynamic value) {
+    if (value == null) return null;
+    if (value is String) return value;
+    if (value is Map || value is List) return jsonEncode(value);
+    return value.toString();
   }
 }
 
-/// 瑙ｆ瀽鍚庣殑 URL锛堢被浼?OkHttp 鐨?Request锛?
+/// 解析后的URL
 class ParsedUrl {
   final String url;
   final UrlOption? option;
 
-  ParsedUrl({required this.url, this.option});
+  const ParsedUrl({required this.url, this.option});
 }
 
-/// 鍝嶅簲鍖呰绫伙紙绫讳技 OkHttp 鐨?Response锛?
+/// 响应包装类
 class StrResponse {
   final String url;
   final String body;
@@ -77,7 +87,7 @@ class StrResponse {
   final Map<String, String> headers;
   final Response? raw;
 
-  StrResponse({
+  const StrResponse({
     required this.url,
     required this.body,
     this.statusCode = 200,
@@ -89,7 +99,7 @@ class StrResponse {
   String? header(String name) => headers[name];
 }
 
-/// 缃戠粶璇锋眰瀹㈡埛绔紙绫讳技 OkHttp 鐨?OkHttpClient锛?
+/// 网络请求客户端
 class HttpClient {
   static final HttpClient _instance = HttpClient._internal();
   static HttpClient get instance => _instance;
@@ -101,7 +111,7 @@ class HttpClient {
     sendTimeout: const Duration(seconds: 30),
   ));
 
-  /// 鎵ц璇锋眰锛堢被浼?OkHttp 鐨?Call.execute锛?
+  /// 执行请求
   Future<StrResponse> execute(
     String url, {
     String method = 'GET',
@@ -120,7 +130,7 @@ class HttpClient {
     );
 
     try {
-      // Web 绔娇鐢ㄤ唬鐞?
+      // Web端使用代理
       String requestUrl = url;
       if (kIsWeb) {
         requestUrl = 'http://localhost:8888/$url';
@@ -138,7 +148,7 @@ class HttpClient {
         );
       }
 
-      // 闈?Web 绔娇鐢ㄤ唬鐞嗘湇鍔?
+      // 非Web端使用代理服务
       if (ProxyService.instance.isRunning) {
         requestUrl = 'http://localhost:${ProxyService.instance.port}/$url';
       }
@@ -159,7 +169,7 @@ class HttpClient {
         raw: response,
       );
     } on DioException catch (e) {
-      debugPrint('鉂?HTTP Error: ${e.type} - ${e.message}');
+      debugPrint('❌ HTTP Error: ${e.type} - ${e.message}');
       if (e.response != null) {
         return StrResponse(
           url: url,
@@ -173,12 +183,13 @@ class HttpClient {
   }
 }
 
-/// 涔︽簮缃戠粶璇锋眰绫伙紙鍙傝€?legados 鐨?WebBook锛?
+/// 书源网络请求类
+/// 参考 legados 的 WebBook.kt
 class WebBook {
   final BookSource source;
   final HttpClient _client;
 
-  // 缂撳瓨鏈€杩戠殑鍝嶅簲婧愮爜
+  // 缓存最近的响应源码
   String? lastSearchHtml;
   String? lastExploreHtml;
   String? lastBookInfoHtml;
@@ -187,7 +198,7 @@ class WebBook {
 
   WebBook(this.source) : _client = HttpClient.instance;
 
-  /// 瑙ｆ瀽 URL 鍜岄€夐」
+  /// 解析URL和选项
   ParsedUrl _parseUrlWithOption(
     String urlWithOption, {
     String? keyword,
@@ -196,7 +207,7 @@ class WebBook {
     String url = urlWithOption;
     UrlOption? option;
 
-    // 瑙ｆ瀽 URL 鏈熬鐨?JSON 閫夐」
+    // 解析URL末尾的JSON选项
     final optionMatch =
         RegExp(r',\s*(\{[\s\S]*\})\s*$').firstMatch(urlWithOption);
     if (optionMatch != null) {
@@ -205,80 +216,52 @@ class WebBook {
         final optionJson =
             json.decode(optionMatch.group(1)!) as Map<String, dynamic>;
         option = UrlOption.fromJson(optionJson);
-        debugPrint('馃敡 URL閫夐」: method=${option.method}, body=${option.body}');
+        debugPrint('🔧 URL选项: method=${option.method}, body=${option.body}');
       } catch (e) {
-        debugPrint('鉂?瑙ｆ瀽URL閫夐」澶辫触: $e');
+        debugPrint('❌ 解析URL选项失败: $e');
       }
     }
 
-    // 鏇挎崲鍗犱綅绗?
-    if (keyword != null) {
-      url = url
-          .replaceAll('{{key}}', Uri.encodeComponent(keyword))
-          .replaceAll('{{searchKey}}', Uri.encodeComponent(keyword));
-
-      // 鍚屾椂鏇挎崲閫夐」涓殑鍗犱綅绗?
-      final currentOption = option;
-      if (currentOption != null && currentOption.body != null) {
-        option = UrlOption(
-          method: currentOption.method,
-          headers: currentOption.headers,
-          body: currentOption.body!
-              .replaceAll('{{key}}', Uri.encodeComponent(keyword))
-              .replaceAll('{{searchKey}}', Uri.encodeComponent(keyword)),
-          charset: currentOption.charset,
-          retry: currentOption.retry,
-          useWebView: currentOption.useWebView,
-          connectTimeout: currentOption.connectTimeout,
-          readTimeout: currentOption.readTimeout,
-        );
-      }
-    }
-    if (page != null) {
-      url = url.replaceAll('{{page}}', page.toString());
-    }
+    // 替换占位符
     url = _replaceUrlVariables(url, keyword: keyword, page: page);
+    
     final parsedOption = option;
-    if (parsedOption?.body != null) {
+    if (parsedOption != null) {
       option = UrlOption(
-        method: parsedOption!.method,
+        method: parsedOption.method,
         headers: parsedOption.headers,
-        body: _replaceUrlVariables(
-          parsedOption.body!,
-          keyword: keyword,
-          page: page,
-        ),
+        body: parsedOption.body != null
+            ? _replaceUrlVariables(parsedOption.body!, keyword: keyword, page: page)
+            : null,
         charset: parsedOption.charset,
         retry: parsedOption.retry,
         useWebView: parsedOption.useWebView,
         connectTimeout: parsedOption.connectTimeout,
         readTimeout: parsedOption.readTimeout,
+        webJs: parsedOption.webJs,
       );
     }
 
-    // 澶勭悊鐩稿 URL - 鎷兼帴涔︽簮鍩虹 URL
+    // 处理相对URL
     if (!url.startsWith('http://') && !url.startsWith('https://')) {
       String baseUrl = source.bookSourceUrl;
-      // 纭繚鍩虹 URL 浠?/ 缁撳熬
       if (!baseUrl.endsWith('/')) {
         baseUrl += '/';
       }
-      // 绉婚櫎鐩稿 URL 寮€澶寸殑 /
       if (url.startsWith('/')) {
         url = url.substring(1);
       }
       url = baseUrl + url;
-      debugPrint('馃敆 鎷兼帴鐩稿URL: $url');
     }
 
     return ParsedUrl(url: url, option: option);
   }
 
-  /// 鏋勫缓璇锋眰澶?
+  /// 构建请求头
   Map<String, String> _buildHeaders({Map<String, String>? extraHeaders}) {
     final headers = <String, String>{};
 
-    // 瑙ｆ瀽涔︽簮鑷畾涔夎姹傚ご
+    // 解析书源自定义请求头
     if (source.header != null && source.header!.isNotEmpty) {
       try {
         final decoded = json.decode(source.header!);
@@ -288,7 +271,6 @@ class WebBook {
           });
         }
       } catch (_) {
-        // 灏濊瘯鎸夎瑙ｆ瀽
         for (final line in source.header!.split('\n')) {
           final parts = line.split(':');
           if (parts.length >= 2) {
@@ -298,13 +280,13 @@ class WebBook {
       }
     }
 
-    // 娣诲姞榛樿 User-Agent
+    // 添加默认 User-Agent
     if (!headers.containsKey('User-Agent')) {
       headers['User-Agent'] =
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
     }
 
-    // 鍚堝苟棰濆璇锋眰澶?
+    // 合并额外请求头
     if (extraHeaders != null) {
       headers.addAll(extraHeaders);
     }
@@ -312,7 +294,7 @@ class WebBook {
     return headers;
   }
 
-  /// 鎵ц缃戠粶璇锋眰
+  /// 执行网络请求
   Future<StrResponse> _executeRequest(
     ParsedUrl parsed, {
     String? keyword,
@@ -324,19 +306,14 @@ class WebBook {
     final method = parsed.option?.method?.toUpperCase() ?? 'GET';
     String? body = parsed.option?.body;
 
-    // 鏇挎崲 body 涓殑鍗犱綅绗?
-    if (body != null && keyword != null) {
-      body = body.replaceAll('{{key}}', Uri.encodeComponent(keyword));
-    }
-
-    // POST 璇锋眰璁剧疆榛樿 Content-Type
+    // POST请求设置默认Content-Type
     if (method == 'POST' && !headers.containsKey('Content-Type')) {
       headers['Content-Type'] = 'application/x-www-form-urlencoded';
     }
 
-    debugPrint('馃寪 璇锋眰: $method ${parsed.url}');
+    debugPrint('🌐 请求: $method ${parsed.url}');
     if (body != null) {
-      debugPrint('馃摝 Body: $body');
+      debugPrint('📋 Body: $body');
     }
 
     return _client.execute(
@@ -348,46 +325,84 @@ class WebBook {
     );
   }
 
-  /// 鎼滅储涔︾睄
+  /// 检查是否需要登录
+  Future<bool> checkLogin() async {
+    if (source.loginCheckJs == null || source.loginCheckJs!.isEmpty) {
+      return true; // 无需登录
+    }
+
+    try {
+      final result = await JsEngine.instance.executeAsync(
+        source.loginCheckJs!,
+        null,
+        baseUrl: source.bookSourceUrl,
+      );
+      return result == true || result == 'true';
+    } catch (e) {
+      debugPrint('❌ 登录检查失败: $e');
+      return false;
+    }
+  }
+
+  /// 检查URL是否匹配bookUrlPattern
+  bool _matchBookUrlPattern(String url) {
+    if (source.bookUrlPattern == null || source.bookUrlPattern!.isEmpty) {
+      return false;
+    }
+
+    try {
+      final pattern = source.bookUrlPattern!;
+      if (pattern.startsWith('/')) {
+        // 正则匹配
+        final regex = RegExp(pattern.substring(1));
+        return regex.hasMatch(url);
+      }
+      // 字符串包含匹配
+      return url.contains(pattern);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /// 搜索书籍
   Future<List<Map<String, dynamic>>> searchBook(String keyword,
       {int page = 1}) async {
     if (source.searchUrl == null || source.searchUrl!.isEmpty) {
-      debugPrint('鉂?鎼滅储鍦板潃涓虹┖');
+      debugPrint('❌ 搜索地址为空');
       return [];
     }
 
-    final searchRule = source.ruleSearch;
-    if (searchRule == null) {
-      debugPrint('鉂?鎼滅储瑙勫垯涓虹┖');
-      return [];
-    }
-
+    final searchRule = source.getSearchRule();
     final parsed =
         _parseUrlWithOption(source.searchUrl!, keyword: keyword, page: page);
-    debugPrint('馃攳 鎼滅储URL: ${parsed.url}');
+    debugPrint('🔍 搜索URL: ${parsed.url}');
 
     try {
       final response = await _executeRequest(parsed, keyword: keyword);
       final html = response.body;
 
-      // 淇濆瓨鍘熷 HTML
       lastSearchHtml = html;
 
-      debugPrint('馃摉 鍝嶅簲闀垮害: ${html.length}');
+      debugPrint('📄 响应长度: ${html.length}');
       if (html.isEmpty) {
-        debugPrint('鉂?鍝嶅簲涓虹┖');
+        debugPrint('❌ 响应为空');
         return [];
       }
 
-      // 浣跨敤 Jsoup 椋庢牸鐨勮В鏋愬櫒
-      // 鑾峰彇涔︾睄鍒楄〃鍏冪礌
+      // 检查是否直接跳转到详情页
+      if (_matchBookUrlPattern(response.url)) {
+        debugPrint('📖 搜索直接跳转到详情页');
+        return _parseBookInfoFromSearch(html, response.url);
+      }
+
+      // 获取书籍列表元素
       final bookListRule = searchRule.bookList ?? '';
-      debugPrint('馃摎 涔︾睄鍒楄〃瑙勫垯: $bookListRule');
+      debugPrint('📚 书籍列表规则: $bookListRule');
 
       final bookElements = AnalyzeRule()
           .setContent(html, baseUrl: parsed.url)
           .getElements(bookListRule);
-      debugPrint('馃摎 涔︾睄鍏冪礌鏁伴噺: ${bookElements.length}');
+      debugPrint('📚 书籍元素数量: ${bookElements.length}');
 
       if (bookElements.isEmpty) {
         debugPrint('未找到书籍元素');
@@ -400,17 +415,17 @@ class WebBook {
         final analyzer =
             AnalyzeRule().setContent(bookElements[i], baseUrl: parsed.url);
 
-        // 鍦ㄦ瘡涓厓绱犱笂鎵ц瑙勫垯
         final name = analyzer.getString(searchRule.name ?? '')?.trim();
         final author = analyzer.getString(searchRule.author ?? '')?.trim();
-        final coverUrl = analyzer.getString(searchRule.coverUrl ?? '')?.trim();
+        final coverUrl = analyzer.getString(searchRule.coverUrl ?? '', isUrl: true)?.trim();
         final intro = analyzer.getString(searchRule.intro ?? '')?.trim();
-        final bookUrl = analyzer.getString(searchRule.bookUrl ?? '')?.trim();
+        final bookUrl = analyzer.getString(searchRule.bookUrl ?? '', isUrl: true)?.trim();
         final kind = analyzer.getString(searchRule.kind ?? '')?.trim();
         final lastChapter =
             analyzer.getString(searchRule.lastChapter ?? '')?.trim();
+        final wordCount = analyzer.getString(searchRule.wordCount ?? '')?.trim();
 
-        debugPrint('馃摉 [$i] 涔﹀悕: $name, 浣滆€? $author');
+        debugPrint('📖 [$i] 书名: $name, 作者: $author');
 
         if (name != null && name.isNotEmpty) {
           results.add({
@@ -421,59 +436,78 @@ class WebBook {
             'bookUrl': bookUrl ?? '',
             'kind': kind ?? '',
             'lastChapter': lastChapter ?? '',
+            'wordCount': wordCount ?? '',
             'sourceUrl': source.bookSourceUrl,
             'sourceName': source.bookSourceName,
           });
         }
       }
 
-      debugPrint('馃摉 鏈€缁堢粨鏋滄暟閲? ${results.length}');
+      debugPrint('📚 最终结果数量: ${results.length}');
       return results;
     } catch (e, stackTrace) {
-      debugPrint('鉂?鎼滅储澶辫触: $e');
-      debugPrint('鉂?鍫嗘爤: $stackTrace');
+      debugPrint('❌ 搜索失败: $e');
+      debugPrint('❌ 堆栈: $stackTrace');
       return [];
     }
   }
 
-  /// 鍙戠幇涔︾睄
-  Future<List<Map<String, dynamic>>> exploreBook(String exploreUrl) async {
-    final exploreRule = source.ruleExplore;
-    if (exploreRule == null) return [];
+  /// 从搜索结果解析书籍详情（当搜索直接跳转到详情页时）
+  List<Map<String, dynamic>> _parseBookInfoFromSearch(String html, String url) {
+    final bookInfoRule = source.getBookInfoRule();
+    final analyzer = AnalyzeRule().setContent(html, baseUrl: url);
 
+    final name = analyzer.getString(bookInfoRule.name ?? '')?.trim();
+    if (name == null || name.isEmpty) {
+      return [];
+    }
+
+    return [{
+      'name': name,
+      'author': analyzer.getString(bookInfoRule.author ?? '')?.trim() ?? '',
+      'coverUrl': analyzer.getString(bookInfoRule.coverUrl ?? '', isUrl: true)?.trim() ?? '',
+      'intro': analyzer.getString(bookInfoRule.intro ?? '')?.trim() ?? '',
+      'bookUrl': url,
+      'kind': analyzer.getString(bookInfoRule.kind ?? '')?.trim() ?? '',
+      'lastChapter': analyzer.getString(bookInfoRule.lastChapter ?? '')?.trim() ?? '',
+      'wordCount': analyzer.getString(bookInfoRule.wordCount ?? '')?.trim() ?? '',
+      'sourceUrl': source.bookSourceUrl,
+      'sourceName': source.bookSourceName,
+    }];
+  }
+
+  /// 发现书籍
+  Future<List<Map<String, dynamic>>> exploreBook(String exploreUrl) async {
+    final exploreRule = source.getExploreRule();
     final parsed = _parseUrlWithOption(exploreUrl);
 
     try {
       final response = await _executeRequest(parsed);
       final html = response.body;
 
-      // 淇濆瓨鍘熷 HTML
       lastExploreHtml = html;
 
-      final doc = Jsoup.parse(html, baseUrl: source.bookSourceUrl);
-
-      final nameList =
-          doc.select(exploreRule.name ?? '').map((e) => e.text()).toList();
-      final authorList =
-          doc.select(exploreRule.author ?? '').map((e) => e.text()).toList();
-      final coverList = doc
-          .select(exploreRule.coverUrl ?? '')
-          .map((e) => e.absUrl())
-          .toList();
-      final introList =
-          doc.select(exploreRule.intro ?? '').map((e) => e.text()).toList();
-      final bookUrlList =
-          doc.select(exploreRule.bookUrl ?? '').map((e) => e.absUrl()).toList();
+      final bookElements = AnalyzeRule()
+          .setContent(html, baseUrl: parsed.url)
+          .getElements(exploreRule.bookList ?? '');
 
       final results = <Map<String, dynamic>>[];
 
-      for (int i = 0; i < nameList.length; i++) {
+      for (final element in bookElements) {
+        final analyzer = AnalyzeRule().setContent(element, baseUrl: parsed.url);
+
+        final name = analyzer.getString(exploreRule.name ?? '')?.trim();
+        if (name == null || name.isEmpty) continue;
+
         results.add({
-          'name': nameList[i],
-          'author': i < authorList.length ? authorList[i] : '',
-          'coverUrl': i < coverList.length ? coverList[i] : '',
-          'intro': i < introList.length ? introList[i] : '',
-          'bookUrl': i < bookUrlList.length ? bookUrlList[i] : '',
+          'name': name,
+          'author': analyzer.getString(exploreRule.author ?? '')?.trim() ?? '',
+          'coverUrl': analyzer.getString(exploreRule.coverUrl ?? '', isUrl: true)?.trim() ?? '',
+          'intro': analyzer.getString(exploreRule.intro ?? '')?.trim() ?? '',
+          'bookUrl': analyzer.getString(exploreRule.bookUrl ?? '', isUrl: true)?.trim() ?? '',
+          'kind': analyzer.getString(exploreRule.kind ?? '')?.trim() ?? '',
+          'lastChapter': analyzer.getString(exploreRule.lastChapter ?? '')?.trim() ?? '',
+          'wordCount': analyzer.getString(exploreRule.wordCount ?? '')?.trim() ?? '',
           'sourceUrl': source.bookSourceUrl,
           'sourceName': source.bookSourceName,
         });
@@ -481,39 +515,46 @@ class WebBook {
 
       return results;
     } catch (e) {
-      debugPrint('鉂?鍙戠幇澶辫触: $e');
+      debugPrint('❌ 发现失败: $e');
       return [];
     }
   }
 
-  /// 鑾峰彇涔︾睄璇︽儏
+  /// 获取书籍详情
   Future<Book?> getBookInfo(String bookUrl) async {
-    final bookInfoRule = source.ruleBookInfo;
-    if (bookInfoRule == null) return null;
+    final bookInfoRule = source.getBookInfoRule();
 
     try {
       final headers = _buildHeaders();
       final response = await _client.execute(bookUrl, headers: headers);
       final html = response.body;
 
-      // 淇濆瓨鍘熷 HTML
       lastBookInfoHtml = html;
 
       final analyzer = AnalyzeRule().setContent(html, baseUrl: bookUrl);
-      final name = analyzer.getString(bookInfoRule.name ?? '')?.trim();
-      final tocUrl = analyzer.getString(bookInfoRule.tocUrl ?? '')?.trim();
 
-      // 鎵ц棰勫鐞嗚鍒?
+      // 执行预处理规则
       if (bookInfoRule.init != null && bookInfoRule.init!.isNotEmpty) {
-        // TODO: 鎵ц JS 棰勫鐞?
+        try {
+          await JsEngine.instance.executeAsync(
+            bookInfoRule.init!,
+            html,
+            baseUrl: bookUrl,
+          );
+        } catch (e) {
+          debugPrint('❌ 预处理规则执行失败: $e');
+        }
       }
 
-      final safeName = name == null || name.isEmpty ? '鏈煡涔﹀悕' : name;
+      final name = analyzer.getString(bookInfoRule.name ?? '')?.trim();
+      final tocUrl = analyzer.getString(bookInfoRule.tocUrl ?? '', isUrl: true)?.trim();
+
+      final safeName = name == null || name.isEmpty ? '未知书名' : name;
       return Book(
         bookUrl: bookUrl,
         name: safeName,
         author: analyzer.getString(bookInfoRule.author ?? '')?.trim() ?? '',
-        coverUrl: analyzer.getString(bookInfoRule.coverUrl ?? '')?.trim() ?? '',
+        coverUrl: analyzer.getString(bookInfoRule.coverUrl ?? '', isUrl: true)?.trim() ?? '',
         intro: analyzer.getString(bookInfoRule.intro ?? '')?.trim() ?? '',
         mediaType: MediaType.novel,
         originType: BookOriginType.online,
@@ -527,99 +568,211 @@ class WebBook {
         addedTime: DateTime.now(),
       );
     } catch (e) {
-      debugPrint('鉂?鑾峰彇璇︽儏澶辫触: $e');
+      debugPrint('❌ 获取详情失败: $e');
       return null;
     }
   }
 
-  /// 鑾峰彇绔犺妭鐩綍
+  /// 获取章节目录（支持多页）
   Future<List<Chapter>> getChapterList(String tocUrl) async {
-    final tocRule = source.ruleToc;
-    if (tocRule == null) return [];
+    final tocRule = source.getTocRule();
+    final chapters = <Chapter>[];
+    final visitedUrls = <String>{};
+    var currentUrl = tocUrl;
 
     try {
-      final headers = _buildHeaders();
-      final response = await _client.execute(tocUrl, headers: headers);
-      final html = response.body;
+      while (currentUrl.isNotEmpty && !visitedUrls.contains(currentUrl)) {
+        visitedUrls.add(currentUrl);
 
-      // 淇濆瓨鍘熷 HTML
-      lastTocHtml = html;
+        final headers = _buildHeaders();
+        final response = await _client.execute(currentUrl, headers: headers);
+        final html = response.body;
 
-      final chapters = <Chapter>[];
-      final chapterElements = AnalyzeRule()
-          .setContent(html, baseUrl: tocUrl)
-          .getElements(tocRule.chapterList ?? '');
-      if (chapterElements.isNotEmpty) {
+        lastTocHtml = html;
+
+        final analyzer = AnalyzeRule().setContent(html, baseUrl: currentUrl);
+
+        // 执行预处理JS
+        if (tocRule.preUpdateJs != null && tocRule.preUpdateJs!.isNotEmpty) {
+          try {
+            await JsEngine.instance.executeAsync(
+              tocRule.preUpdateJs!,
+              html,
+              baseUrl: currentUrl,
+            );
+          } catch (e) {
+            debugPrint('❌ 目录预处理JS执行失败: $e');
+          }
+        }
+
+        // 获取章节列表
+        final chapterElements = analyzer.getElements(tocRule.chapterList ?? '');
+        
         for (int i = 0; i < chapterElements.length; i++) {
-          final analyzer =
-              AnalyzeRule().setContent(chapterElements[i], baseUrl: tocUrl);
-          final name = analyzer.getString(tocRule.chapterName ?? '')?.trim();
-          final url = analyzer.getString(tocRule.chapterUrl ?? '')?.trim();
+          final chapterAnalyzer =
+              AnalyzeRule().setContent(chapterElements[i], baseUrl: currentUrl);
+          final name = chapterAnalyzer.getString(tocRule.chapterName ?? '')?.trim();
+          // 章节URL：如果规则为空，尝试获取a标签的href
+          String? url;
+          final chapterUrlRule = tocRule.chapterUrl ?? '';
+          if (chapterUrlRule.isNotEmpty) {
+            url = chapterAnalyzer.getString(chapterUrlRule, isUrl: true)?.trim();
+          } else {
+            // 默认获取第一个a标签的href
+            url = chapterAnalyzer.getString('tag.a.0@href', isUrl: true)?.trim();
+          }
+          
           if (name == null || name.isEmpty) continue;
+          
           chapters.add(Chapter(
-            id: '${tocUrl}_$i',
+            id: '${tocUrl}_${chapters.length}',
             bookId: tocUrl,
             title: name,
             index: chapters.length,
             url: url,
           ));
         }
-        return chapters;
+
+        // 检查是否有下一页目录
+        final nextTocUrl = analyzer.getString(tocRule.nextTocUrl ?? '', isUrl: true)?.trim();
+        if (nextTocUrl == null || nextTocUrl.isEmpty || nextTocUrl == currentUrl) {
+          break;
+        }
+        currentUrl = nextTocUrl;
+        
+        // 限制最多10页目录
+        if (visitedUrls.length >= 10) {
+          debugPrint('⚠️ 目录页数超过限制');
+          break;
+        }
       }
 
-      final analyzer = AnalyzeRule().setContent(html, baseUrl: tocUrl);
-      final names = analyzer.getStringList(tocRule.chapterName ?? '');
-      final urls = analyzer.getStringList(tocRule.chapterUrl ?? '');
-      for (int i = 0; i < names.length; i++) {
-        chapters.add(Chapter(
-          id: '${tocUrl}_$i',
-          bookId: tocUrl,
-          title: names[i],
-          index: i,
-          url: i < urls.length ? urls[i] : null,
-        ));
+      // 如果规则以-开头，反转章节列表
+      if (tocRule.chapterList != null && tocRule.chapterList!.startsWith('-')) {
+        return chapters.reversed.toList();
       }
 
       return chapters;
     } catch (e) {
-      debugPrint('鉂?鑾峰彇鐩綍澶辫触: $e');
-      return [];
+      debugPrint('❌ 获取目录失败: $e');
+      return chapters;
     }
   }
 
-  /// 鑾峰彇绔犺妭姝ｆ枃
+  /// 获取章节正文（支持多页）
   Future<String?> getContent(String chapterUrl) async {
-    final contentRule = source.ruleContent;
-    if (contentRule == null) return null;
+    final contentRule = source.getContentRule();
+    final contentParts = <String>[];
+    final contentHtmlParts = <String>[];
+    final visitedUrls = <String>{};
+    var currentUrl = chapterUrl;
+
+    debugPrint('📖 开始获取正文: $chapterUrl');
+    debugPrint('📖 正文规则: ${contentRule.content}');
+    debugPrint('📖 下一页规则: ${contentRule.nextContentUrl}');
 
     try {
-      final headers = _buildHeaders();
-      final response = await _client.execute(chapterUrl, headers: headers);
-      final html = response.body;
+      while (currentUrl.isNotEmpty && !visitedUrls.contains(currentUrl)) {
+        visitedUrls.add(currentUrl);
 
-      // 淇濆瓨鍘熷 HTML
-      lastContentHtml = html;
+        final headers = _buildHeaders();
+        final response = await _client.execute(currentUrl, headers: headers);
+        final html = response.body;
 
-      final analyzer = AnalyzeRule().setContent(html, baseUrl: chapterUrl);
-      final parts = [
-        analyzer.getString(contentRule.content ?? '')?.trim(),
-        analyzer.getString(contentRule.subContent ?? '')?.trim(),
-      ].where((e) => e != null && e.isNotEmpty).cast<String>().toList();
-      if (parts.isEmpty) return null;
-      var content = parts.join('\n');
-      final replaceRegex = contentRule.replaceRegex;
-      if (replaceRegex != null && replaceRegex.isNotEmpty) {
-        content = _replaceByRule(content, replaceRegex);
+        contentHtmlParts.add(html);
+        debugPrint('📖 响应长度: ${html.length}');
+
+        final analyzer = AnalyzeRule().setContent(html, baseUrl: currentUrl);
+
+        // 获取正文内容
+        final contentRuleStr = contentRule.content ?? '';
+        debugPrint('📖 执行正文规则: $contentRuleStr');
+        final content = analyzer.getString(contentRuleStr)?.trim();
+        debugPrint('📖 正文结果: ${content != null ? "${content.length}字符" : "null"}');
+        if (content != null && content.isNotEmpty) {
+          contentParts.add(content);
+        }
+
+        // 获取补充正文
+        final subContentRuleStr = contentRule.subContent ?? '';
+        if (subContentRuleStr.isNotEmpty) {
+          final subContent = analyzer.getString(subContentRuleStr)?.trim();
+          if (subContent != null && subContent.isNotEmpty) {
+            contentParts.add(subContent);
+          }
+        }
+
+        // 检查是否有下一页正文
+        final nextUrlRuleStr = contentRule.nextContentUrl ?? '';
+        if (nextUrlRuleStr.isNotEmpty) {
+          final nextContentUrl = analyzer.getString(nextUrlRuleStr, isUrl: true)?.trim();
+          debugPrint('📖 下一页URL: $nextContentUrl');
+          if (nextContentUrl == null || nextContentUrl.isEmpty || nextContentUrl == currentUrl) {
+            break;
+          }
+          currentUrl = nextContentUrl;
+        } else {
+          break;
+        }
+
+        // 限制最多10页正文
+        if (visitedUrls.length >= 10) {
+          debugPrint('正文页数超过限制');
+          break;
+        }
       }
+
+      // 保存所有页的源码
+      lastContentHtml = contentHtmlParts.join('\n<!-- ========= 下一页 ======== -->\n');
+      debugPrint('📖 源码页数: ${contentHtmlParts.length}');
+
+      debugPrint('📖 正文总段数: ${contentParts.length}');
+      if (contentParts.isEmpty) return null;
+
+      var content = contentParts.join('\n');
+
+      debugPrint('📖 合并后正文长度: ${content.length}');
+
+      // 应用正则替换（使用AnalyzeRule处理）
+      final replaceRegex = contentRule.replaceRegex;
+      debugPrint('📖 replaceRegex规则: "$replaceRegex"');
+      if (replaceRegex != null && replaceRegex.isNotEmpty) {
+        debugPrint('📖 执行正则替换前长度: ${content.length}');
+        final analyzer = AnalyzeRule().setContent(content, baseUrl: chapterUrl);
+        final replaced = analyzer.getString(replaceRegex, content: content);
+        if (replaced != null) {
+          content = replaced;
+        }
+        debugPrint('📖 执行正则替换后长度: ${content.length}');
+      }
+
+      // 应用JS处理
+      if (contentRule.js != null && contentRule.js!.isNotEmpty) {
+        try {
+          final result = await JsEngine.instance.executeAsync(
+            contentRule.js!,
+            content,
+            baseUrl: chapterUrl,
+          );
+          if (result is String) {
+            content = result;
+            debugPrint('📖 JS处理后正文长度: ${content.length}');
+          }
+        } catch (e) {
+          debugPrint('正文JS处理失败: $e');
+        }
+      }
+
+      debugPrint('📖 最终正文长度: ${content.length}');
       return content;
     } catch (e) {
-      debugPrint('鉂?鑾峰彇姝ｆ枃澶辫触: $e');
+      debugPrint('获取正文失败: $e');
       return null;
     }
   }
 }
 
-/// Jsoup 椋庢牸鐨?HTML 瑙ｆ瀽鍣?
+/// 替换URL变量
 String _replaceUrlVariables(String value, {String? keyword, int? page}) {
   var result = value;
   if (keyword != null) {
@@ -642,13 +795,7 @@ String _replaceUrlVariables(String value, {String? keyword, int? page}) {
   return result;
 }
 
-String? _bodyString(dynamic value) {
-  if (value == null) return null;
-  if (value is String) return value;
-  if (value is Map || value is List) return jsonEncode(value);
-  return value.toString();
-}
-
+/// 按规则替换文本
 String _replaceByRule(String value, String rule) {
   final normalized = rule.startsWith('##') ? rule.substring(2) : rule;
   final parts = normalized.split('##');
@@ -659,375 +806,11 @@ String _replaceByRule(String value, String rule) {
     if (parts.length > 2) {
       final match = regex.firstMatch(value);
       return match == null
-          ? ''
+          ? value
           : match.group(0)!.replaceFirst(regex, replacement);
     }
     return value.replaceAll(regex, replacement);
   } catch (_) {
     return value;
-  }
-}
-
-class Jsoup {
-  /// 瑙ｆ瀽 HTML 鏂囨。
-  static JsoupDocument parse(String html, {String? baseUrl}) {
-    final doc = html_parser.parse(html);
-    return JsoupDocument(doc, baseUrl: baseUrl);
-  }
-}
-
-/// Jsoup 椋庢牸鐨勬枃妗ｅ璞?
-class JsoupDocument {
-  final dom.Document _doc;
-  final String? baseUrl;
-
-  JsoupDocument(this._doc, {this.baseUrl});
-
-  /// 閫夋嫨鍏冪礌锛堢被浼?Jsoup 鐨?select锛?
-  List<JsoupElement> select(String cssSelector) {
-    if (cssSelector.isEmpty) return [];
-
-    final converted = _convertLegadoRule(cssSelector);
-    final elements = _doc.querySelectorAll(converted);
-    return elements.map((e) => JsoupElement(e, baseUrl: baseUrl)).toList();
-  }
-
-  /// 閫夋嫨绗竴涓厓绱狅紙绫讳技 Jsoup 鐨?selectFirst锛?
-  JsoupElement? selectFirst(String cssSelector) {
-    if (cssSelector.isEmpty) return null;
-
-    final converted = _convertLegadoRule(cssSelector);
-    final element = _doc.querySelector(converted);
-    if (element == null) return null;
-    return JsoupElement(element, baseUrl: baseUrl);
-  }
-
-  /// 杞崲 legados 瑙勫垯璇硶
-  String _convertLegadoRule(String rule) {
-    if (rule.startsWith('class.')) {
-      return '.${rule.substring(6)}';
-    }
-    if (rule.startsWith('tag.')) {
-      return rule.substring(4);
-    }
-    if (rule.startsWith('id.')) {
-      return '#${rule.substring(3)}';
-    }
-    if (rule.startsWith('@')) {
-      // 澶勭悊灞炴€ч€夋嫨鍣?
-      final attr = rule.substring(1);
-      if (attr == 'text' || attr == 'text()') {
-        return ':root';
-      }
-      if (attr == 'html' || attr == 'html()') {
-        return ':root';
-      }
-    }
-    return rule;
-  }
-}
-
-/// Jsoup 椋庢牸鐨勫厓绱犲璞?
-class JsoupElement {
-  final dom.Element _element;
-  final String? baseUrl;
-
-  JsoupElement(this._element, {this.baseUrl});
-
-  /// 鑾峰彇鏂囨湰鍐呭锛堢被浼?Jsoup 鐨?text()锛?
-  String text() => _element.text.trim();
-
-  /// 鑾峰彇 HTML 鍐呭锛堢被浼?Jsoup 鐨?html()锛?
-  String html() => _element.innerHtml;
-
-  /// 鑾峰彇澶栭儴 HTML锛堢被浼?Jsoup 鐨?outerHtml()锛?
-  String outerHtml() => _element.outerHtml;
-
-  /// 鑾峰彇灞炴€у€硷紙绫讳技 Jsoup 鐨?attr()锛?
-  String? attr(String name) => _element.attributes[name];
-
-  /// 鑾峰彇缁濆 URL锛堢被浼?Jsoup 鐨?absUrl()锛?
-  String? absUrl([String attrName = 'href']) {
-    final value = _element.attributes[attrName];
-    if (value == null) return null;
-
-    // 澶勭悊鐩稿 URL
-    if (value.startsWith('http://') || value.startsWith('https://')) {
-      return value;
-    }
-
-    if (baseUrl != null) {
-      final base = Uri.parse(baseUrl!);
-      return base.resolve(value).toString();
-    }
-
-    return value;
-  }
-
-  /// 閫夋嫨瀛愬厓绱狅紙鏀寔澶氭楠よ鍒欙級
-  List<JsoupElement> select(String rule) {
-    if (rule.isEmpty) return [this];
-
-    // 鎸?@ 鍒嗗壊瑙勫垯姝ラ
-    final steps = _splitSteps(rule);
-    List<dynamic> current = [_element];
-
-    for (final step in steps) {
-      final nextResults = <dynamic>[];
-      for (final item in current) {
-        final result = _applyStep(item, step, isList: true);
-        if (result is List) {
-          nextResults.addAll(result);
-        } else if (result != null) {
-          nextResults.add(result);
-        }
-      }
-      current = nextResults;
-      if (current.isEmpty) return [];
-    }
-
-    return current.map((e) {
-      if (e is dom.Element) return JsoupElement(e, baseUrl: baseUrl);
-      if (e is String) {
-        // 杩斿洖涓€涓寘鍚枃鏈殑铏氭嫙鍏冪礌
-        final doc = html_parser.parse('<root>$e</root>');
-        return JsoupElement(doc.body!.firstChild as dom.Element,
-            baseUrl: baseUrl);
-      }
-      return JsoupElement(_element, baseUrl: baseUrl);
-    }).toList();
-  }
-
-  /// 閫夋嫨绗竴涓瓙鍏冪礌锛堟敮鎸佸姝ラ瑙勫垯锛?
-  JsoupElement? selectFirst(String rule) {
-    if (rule.isEmpty) return this;
-
-    // 鎸?@ 鍒嗗壊瑙勫垯姝ラ
-    final steps = _splitSteps(rule);
-    dynamic current = _element;
-
-    for (final step in steps) {
-      current = _applyStep(current, step, isList: false);
-      if (current == null) return null;
-    }
-
-    if (current is dom.Element) {
-      return JsoupElement(current, baseUrl: baseUrl);
-    }
-    if (current is String) {
-      final doc = html_parser.parse('<root>$current</root>');
-      return JsoupElement(doc.body!.firstChild as dom.Element,
-          baseUrl: baseUrl);
-    }
-    return null;
-  }
-
-  /// 鍒嗗壊瑙勫垯姝ラ
-  List<String> _splitSteps(String rule) {
-    final steps = <String>[];
-    int start = 0;
-    int i = 0;
-
-    while (i < rule.length) {
-      if (rule[i] == '@') {
-        // 妫€鏌ユ槸鍚︽槸灞炴€ч€夋嫨鍣?(@text, @href 绛?
-        if (i + 1 < rule.length && RegExp(r'[a-zA-Z]').hasMatch(rule[i + 1])) {
-          // 鏌ユ壘灞炴€у悕缁撴潫浣嶇疆
-          int j = i + 1;
-          while (
-              j < rule.length && RegExp(r'[a-zA-Z0-9()]').hasMatch(rule[j])) {
-            j++;
-          }
-          // 濡傛灉鍚庨潰杩樻湁 @锛屽垯鍒嗗壊
-          if (j < rule.length && rule[j] == '@') {
-            steps.add(rule.substring(start, j));
-            start = j;
-            i = j;
-            continue;
-          }
-          // 鍚﹀垯浣滀负鏈€鍚庝竴涓楠?
-          if (j == rule.length) {
-            steps.add(rule.substring(start));
-            return steps;
-          }
-          // 灞炴€у悗闈㈣窡鐫€鍏朵粬瀛楃锛岀户缁?
-          i++;
-          continue;
-        }
-        // 鍒嗗壊
-        if (i > start) {
-          steps.add(rule.substring(start, i));
-        }
-        start = i + 1;
-      }
-      i++;
-    }
-
-    if (start < rule.length) {
-      steps.add(rule.substring(start));
-    }
-
-    return steps.where((s) => s.isNotEmpty).toList();
-  }
-
-  /// 搴旂敤鍗曚釜瑙勫垯姝ラ
-  dynamic _applyStep(dynamic content, String step, {bool isList = false}) {
-    if (step.isEmpty) return content;
-
-    // 澶勭悊灞炴€ф彁鍙?
-    if (step.startsWith('@')) {
-      final attrName = step.substring(1);
-      if (content is List) {
-        return content.map((e) => _extractAttr(e, attrName)).toList();
-      }
-      return _extractAttr(content, attrName);
-    }
-
-    // 澶勭悊 text() 鍜?html()
-    if (step == 'text' || step == 'text()') {
-      if (content is List) {
-        return content.map((e) => _extractText(e)).toList();
-      }
-      return _extractText(content);
-    }
-    if (step == 'html' || step == 'html()') {
-      if (content is List) {
-        return content.map((e) => _extractHtml(e)).toList();
-      }
-      return _extractHtml(content);
-    }
-
-    // 杞崲 legados 璇硶
-    String cssSelector = _convertLegadoRule(step);
-
-    // 澶勭悊绱㈠紩璇硶锛堝湪 CSS 閫夋嫨鍚庯級
-    int? index;
-    final indexMatch = RegExp(r'\.(\d+)$').firstMatch(cssSelector);
-    if (indexMatch != null) {
-      index = int.parse(indexMatch.group(1)!);
-      cssSelector = cssSelector.substring(0, indexMatch.start);
-    }
-
-    // 鎵ц閫夋嫨
-    if (content is List) {
-      final results = <dom.Element>[];
-      for (final item in content) {
-        if (item is dom.Element) {
-          results.addAll(item.querySelectorAll(cssSelector));
-        }
-      }
-      if (index != null) {
-        if (index < results.length) {
-          return results[index];
-        }
-        return null;
-      }
-      return results;
-    }
-
-    dom.Element? element = _toElement(content);
-    if (element == null) return null;
-
-    final results = element.querySelectorAll(cssSelector).toList();
-
-    if (index != null) {
-      if (index < results.length) {
-        return results[index];
-      }
-      return null;
-    }
-
-    if (isList) {
-      return results;
-    }
-    return results.isNotEmpty ? results.first : null;
-  }
-
-  /// 杞崲 legados 瑙勫垯璇硶
-  String _convertLegadoRule(String rule) {
-    if (rule.isEmpty) return rule;
-
-    // 澶勭悊 class. 鈫?.
-    if (rule.startsWith('class.')) {
-      rule = '.${rule.substring(6)}';
-    }
-    // 澶勭悊 tag. 鈫?鐩存帴鏍囩鍚?
-    else if (rule.startsWith('tag.')) {
-      rule = rule.substring(4);
-    }
-    // 澶勭悊 id. 鈫?#
-    else if (rule.startsWith('id.')) {
-      rule = '#${rule.substring(3)}';
-    }
-
-    // 澶勭悊绱㈠紩璇硶: .0, .1 绛夛紙浣嗕繚鐣欏湪杩斿洖鍓嶅鐞嗭級
-    // 杩欓噷鍙浆鎹㈤€夋嫨鍣ㄩ儴鍒?
-
-    return rule;
-  }
-
-  /// 鎻愬彇灞炴€?
-  String _extractAttr(dynamic content, String attrName) {
-    dom.Element? element = _toElement(content);
-    if (element == null) return '';
-
-    switch (attrName.toLowerCase()) {
-      case 'text':
-      case 'text()':
-        return element.text.trim();
-      case 'html':
-      case 'html()':
-        return element.innerHtml;
-      case 'outerhtml':
-        return element.outerHtml;
-      case 'hrefurl':
-        return _getAbsUrl(element, 'href');
-      case 'srcurl':
-        return _getAbsUrl(element, 'src');
-      default:
-        return element.attributes[attrName] ?? '';
-    }
-  }
-
-  /// 鎻愬彇鏂囨湰
-  String _extractText(dynamic content) {
-    dom.Element? element = _toElement(content);
-    return element?.text.trim() ?? '';
-  }
-
-  /// 鎻愬彇 HTML
-  String _extractHtml(dynamic content) {
-    dom.Element? element = _toElement(content);
-    return element?.innerHtml ?? '';
-  }
-
-  /// 鑾峰彇缁濆 URL
-  String _getAbsUrl(dom.Element element, String attrName) {
-    final value = element.attributes[attrName];
-    if (value == null) return '';
-
-    if (value.startsWith('http://') || value.startsWith('https://')) {
-      return value;
-    }
-
-    if (baseUrl != null) {
-      try {
-        final base = Uri.parse(baseUrl!);
-        return base.resolve(value).toString();
-      } catch (_) {}
-    }
-
-    return value;
-  }
-
-  /// 杞崲涓?Element
-  dom.Element? _toElement(dynamic content) {
-    if (content is dom.Element) return content;
-    if (content is dom.Document) return content.body;
-    if (content is String) {
-      final doc = html_parser.parse(content);
-      return doc.body;
-    }
-    return null;
   }
 }

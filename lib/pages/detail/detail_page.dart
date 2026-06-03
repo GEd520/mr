@@ -604,10 +604,6 @@ class _DetailPageState extends State<DetailPage> {
     );
   }
 
-  Future<void> _refreshData() async {
-    await _loadData();
-  }
-
   void _openFullChapterList() {
     Navigator.pushNamed(
       context,
