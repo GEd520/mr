@@ -260,4 +260,23 @@ class NodeRuntime(private val context: Context) {
             }
         }
     }
+
+    /**
+     * 初始化 Node.js 运行环境（获取二进制路径 + 确保脚本就绪）
+     * @return Node.js 可执行文件路径，失败返回 null
+     */
+    fun setup(): String? {
+        val nodePath = getNodePath()
+        if (nodePath == null) {
+            Log.w(TAG, "Node.js 二进制未找到，setup 失败")
+            return null
+        }
+        val scriptsPath = ensureScriptsReady()
+        if (scriptsPath == null) {
+            Log.w(TAG, "JS 脚本未就绪，setup 失败")
+            return null
+        }
+        Log.i(TAG, "Node.js 环境就绪: node=$nodePath, scripts=$scriptsPath")
+        return nodePath
+    }
 }
