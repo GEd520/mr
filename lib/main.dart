@@ -30,12 +30,12 @@ void main() async {
     debugPrint('JsEngine init error: $e');
   }
 
-  // 启动代理服务（非 Web 平台）
-  if (!kIsWeb) {
+  // 启动 CORS 代理服务（仅 Web 端需要，原生端 Dio 不受 CORS 限制）
+  if (kIsWeb) {
     await ProxyService.instance.start();
   }
 
-  // 启动四引擎调度器（含 Node.js 进程）
+  // 启动四引擎调度器（含 Node.js 进程，仅原生端）
   if (!kIsWeb) {
     try {
       await EngineDispatcher.instance.startNodeProxy();

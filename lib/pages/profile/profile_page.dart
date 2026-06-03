@@ -212,10 +212,10 @@ class _ProfilePageState extends State<ProfilePage> {
         ),
         ListTile(
           leading: const Icon(Icons.bug_report),
-          title: const Text('调试工具'),
-          subtitle: const Text('书源调试、规则测试、JS执行'),
+          title: const Text('书源调试'),
+          subtitle: const Text('调试搜索、发现、详情、目录、正文'),
           trailing: const Icon(Icons.chevron_right),
-          onTap: () => Navigator.pushNamed(context, AppRoutes.debug),
+          onTap: () => Navigator.pushNamed(context, AppRoutes.bookSourceDebug),
         ),
       ],
     );
