@@ -10,6 +10,7 @@ import 'providers/search_provider.dart';
 import 'routes/app_routes.dart';
 import 'themes/app_theme.dart';
 import 'services/native/js_engine.dart';
+import 'services/native/engine_dispatcher.dart';
 import 'services/storage_service.dart';
 import 'services/source_engine/proxy_service.dart';
 
@@ -31,7 +32,17 @@ void main() async {
 
   // 启动代理服务（非 Web 平台）
   if (!kIsWeb) {
-    await ProxyService.instance.start(port: 8888);
+    await ProxyService.instance.start();
+  }
+
+  // 启动四引擎调度器（含 Node.js 进程）
+  if (!kIsWeb) {
+    try {
+      await EngineDispatcher.instance.startNodeProxy();
+      debugPrint('[四引擎] 状态:\n${EngineDispatcher.instance.statusSummary}');
+    } catch (e) {
+      debugPrint('[四引擎] Node.js 启动失败: $e');
+    }
   }
 
   runApp(const DanShenqiApp());

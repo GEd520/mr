@@ -228,6 +228,19 @@ class NativeChannel {
     }
   }
 
+  /// 执行通用脚本（通过 Rhino 引擎）
+  Future<String?> executeScript(String script, {Map<String, dynamic>? bindings}) async {
+    try {
+      final res = await _channel.invokeMethod<String>('executeScript', {
+        'script': script,
+        'bindings': bindings,
+      });
+      return res;
+    } on PlatformException {
+      return null;
+    }
+  }
+
   /// 存储键值对
   Future<bool> putData(String key, String value) async {
     try {
@@ -263,6 +276,51 @@ class NativeChannel {
       return true;
     } on PlatformException {
       return false;
+    }
+  }
+
+  // ===== 内置 Node.js 运行时 =====
+
+  /// 初始化内置 Node.js（解压二进制 + 脚本）
+  /// 返回 Node.js 可执行文件路径
+  Future<String?> nodeSetup() async {
+    try {
+      return await _channel.invokeMethod<String>('nodeSetup');
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  /// 启动内置 Node.js 代理服务（直接启动，无需解压）
+  /// 返回 { proxyPort, apiPort, running }
+  Future<Map<String, dynamic>?> nodeStartProxy() async {
+    try {
+      final result = await _channel.invokeMethod<Map>('nodeStartProxy');
+      if (result == null) return null;
+      return Map<String, dynamic>.from(result);
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  /// 停止内置 Node.js 进程
+  Future<bool> nodeStop() async {
+    try {
+      await _channel.invokeMethod<void>('nodeStop');
+      return true;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  /// 获取内置 Node.js 运行状态
+  Future<Map<String, dynamic>?> nodeStatus() async {
+    try {
+      final result = await _channel.invokeMethod<Map>('nodeStatus');
+      if (result == null) return null;
+      return Map<String, dynamic>.from(result);
+    } on PlatformException {
+      return null;
     }
   }
 }

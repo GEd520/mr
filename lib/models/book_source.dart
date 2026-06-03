@@ -1,4 +1,5 @@
 import 'dart:convert';
+import '../services/native/js_engine.dart' show JsEngineType;
 import 'rules/search_rule.dart';
 import 'rules/explore_rule.dart';
 import 'rules/book_info_rule.dart';
@@ -18,6 +19,7 @@ class BookSource {
   final bool enabled;
   final bool enabledExplore;
   final String? jsLib;
+  final String? engine; // 书源级引擎声明: "rhino" | "quickjs" | null(自动识别)
   final bool enabledCookieJar;
   final String? concurrentRate;
   final String? header;
@@ -53,6 +55,7 @@ class BookSource {
     this.enabled = true,
     this.enabledExplore = true,
     this.jsLib,
+    this.engine,
     this.enabledCookieJar = true,
     this.concurrentRate,
     this.header,
@@ -89,6 +92,7 @@ class BookSource {
     bool? enabled,
     bool? enabledExplore,
     String? jsLib,
+    String? engine,
     bool? enabledCookieJar,
     String? concurrentRate,
     String? header,
@@ -124,6 +128,7 @@ class BookSource {
       enabled: enabled ?? this.enabled,
       enabledExplore: enabledExplore ?? this.enabledExplore,
       jsLib: jsLib ?? this.jsLib,
+      engine: engine ?? this.engine,
       enabledCookieJar: enabledCookieJar ?? this.enabledCookieJar,
       concurrentRate: concurrentRate ?? this.concurrentRate,
       header: header ?? this.header,
@@ -162,6 +167,7 @@ class BookSource {
       enabled: json['enabled'] as bool? ?? true,
       enabledExplore: json['enabledExplore'] as bool? ?? true,
       jsLib: json['jsLib'] as String?,
+      engine: json['engine'] as String?,
       enabledCookieJar: json['enabledCookieJar'] as bool? ?? true,
       concurrentRate: json['concurrentRate'] as String?,
       header: json['header'] as String?,
@@ -212,6 +218,7 @@ class BookSource {
       'enabled': enabled,
       'enabledExplore': enabledExplore,
       if (jsLib != null) 'jsLib': jsLib,
+      if (engine != null) 'engine': engine,
       'enabledCookieJar': enabledCookieJar,
       if (concurrentRate != null) 'concurrentRate': concurrentRate,
       if (header != null) 'header': header,
@@ -267,6 +274,19 @@ class BookSource {
   /// 获取段评规则（确保非空）
   ReviewRule getReviewRule() {
     return ruleReview ?? const ReviewRule();
+  }
+
+  /// 解析书源级引擎声明
+  JsEngineType? get engineType {
+    if (engine == null) return null;
+    switch (engine!.toLowerCase()) {
+      case 'rhino':
+        return JsEngineType.rhino;
+      case 'quickjs':
+        return JsEngineType.quickjs;
+      default:
+        return null;
+    }
   }
 
   String get typeName {

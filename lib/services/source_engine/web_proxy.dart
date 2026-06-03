@@ -2,18 +2,20 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'web_proxy_stub.dart'
     if (dart.library.html) 'web_proxy_web.dart' as platform;
+import 'proxy_service.dart';
 
 class WebProxy {
   static final WebProxy _instance = WebProxy._internal();
   static WebProxy get instance => _instance;
   WebProxy._internal();
 
-  static const String _proxyUrl = 'http://localhost:8888/';
   static bool _proxyAvailable = false;
   static bool _proxyChecked = false;
 
   bool get isProxyAvailable => _proxyAvailable;
-  String get proxyUrl => _proxyUrl;
+
+  /// 获取代理 URL（动态端口）
+  String get proxyUrl => 'http://localhost:${ProxyService.instance.port}/';
 
   Future<String> fetch(String url, {
     String method = 'GET',
@@ -24,8 +26,8 @@ class WebProxy {
       throw UnsupportedError('WebProxy only works on web platform');
     }
 
-    final proxyUrl = '$_proxyUrl$url';
-    
+    final proxyUrl = '${this.proxyUrl}$url';
+
     try {
       final response = await platform.fetch(
         proxyUrl,
@@ -33,12 +35,12 @@ class WebProxy {
         headers: headers,
         body: body,
       );
-      
+
       if (!_proxyAvailable) {
         _proxyAvailable = true;
-        debugPrint('✅ CORS Proxy connected: $_proxyUrl');
+        debugPrint('✅ CORS Proxy connected: ${this.proxyUrl}');
       }
-      
+
       return response;
     } catch (e) {
       if (!_proxyChecked) {

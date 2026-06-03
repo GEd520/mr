@@ -3,9 +3,34 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_js/flutter_js.dart';
 import 'package:path_provider/path_provider.dart';
+import 'platform_channel.dart';
 
-/// JS/TS 运行时引擎 - 完整的 Node.js 兼容环境
-/// 支持：书源规则执行、自定义库安装、TypeScript 编译
+// ===== 分流引擎架构 =====
+
+/// JS 引擎类型枚举
+enum JsEngineType {
+  /// QuickJS 引擎（flutter_js），原生支持 ES6+
+  quickjs,
+
+  /// Rhino 引擎（Android 原生），支持 Java 互操作
+  rhino,
+}
+
+/// 引擎分流解析结果
+class _EngineResolveResult {
+  final JsEngineType engine;
+  final String code;
+
+  const _EngineResolveResult(this.engine, this.code);
+}
+
+/// JS/TS 运行时引擎 - 分流双引擎架构
+///
+/// 架构设计：
+/// - QuickJS 引擎：处理 ES6+ 语法，作为默认引擎
+/// - Rhino 引擎：处理 Java 互操作（通过 NativeChannel）
+/// - 分流策略：显式声明 > 关键词自动识别 > 默认 QuickJS
+/// - 桥接层：两个引擎共享缓存和变量
 class JsEngine {
   static JsEngine? _instance;
   static JsEngine get instance => _instance ??= JsEngine._();
@@ -14,22 +39,38 @@ class JsEngine {
 
   bool _initialized = false;
   JavascriptRuntime? _jsRuntime;
-  final Map<String, String> _installedPackages = {}; // 已安装的包
-  final Map<String, String> _moduleCache = {}; // 模块缓存
+  final Map<String, String> _installedPackages = {};
+  final Map<String, String> _moduleCache = {};
+
+  // ===== 引擎桥接层：跨引擎共享缓存 =====
+
+  /// 跨引擎共享缓存（QuickJS 和 Rhino 均可读写）
+  final Map<String, String> _bridgeCache = {};
+
+  /// 获取桥接缓存
+  String bridgeGet(String key) => _bridgeCache[key] ?? '';
+
+  /// 写入桥接缓存
+  void bridgePut(String key, String value) {
+    _bridgeCache[key] = value;
+  }
+
+  /// 删除桥接缓存
+  void bridgeDelete(String key) {
+    _bridgeCache.remove(key);
+  }
+
+  // ===== 初始化 =====
 
   /// 初始化 JS 引擎
   Future<bool> init() async {
     if (_initialized) return true;
     try {
-      // 创建 flutter_js 运行时
       _jsRuntime = getJavascriptRuntime();
       _initialized = true;
 
-      // 注入 Node.js 兼容层
       await _injectNodePolyfills();
-      // 注入 Java 桥接对象
       _injectJavaBridge();
-      // 加载已安装的自定义库
       await _loadInstalledPackages();
 
       return true;
@@ -41,14 +82,97 @@ class JsEngine {
 
   bool get isAvailable => _initialized && _jsRuntime != null;
 
+  // ===== 分流策略 =====
+
+  /// 解析规则代码，确定使用哪个引擎（公开，供 EngineDispatcher 调用）
+  ///
+  /// 优先级：
+  /// 1. 显式前缀声明：@rhino: / @quickjs: / @java: / @ts: / @js:
+  /// 2. 关键词自动识别（无显式声明时）
+  /// 3. 书源级全局声明（sourceEngine 参数）
+  /// 4. 默认 QuickJS
+  _EngineResolveResult resolveEngine(String ruleCode, {JsEngineType? sourceEngine}) {
+    // 1. 显式前缀声明
+    if (ruleCode.startsWith('@rhino:') || ruleCode.startsWith('<rhino>')) {
+      final code = ruleCode.startsWith('@rhino:')
+          ? ruleCode.substring(7)
+          : ruleCode.replaceAll(RegExp(r'^<rhino>|</rhino>$'), '');
+      return _EngineResolveResult(JsEngineType.rhino, code);
+    }
+
+    if (ruleCode.startsWith('@quickjs:') || ruleCode.startsWith('<quickjs>')) {
+      final code = ruleCode.startsWith('@quickjs:')
+          ? ruleCode.substring(9)
+          : ruleCode.replaceAll(RegExp(r'^<quickjs>|</quickjs>$'), '');
+      return _EngineResolveResult(JsEngineType.quickjs, code);
+    }
+
+    if (ruleCode.startsWith('@java:') || ruleCode.startsWith('<java>')) {
+      final code = ruleCode.startsWith('@java:')
+          ? ruleCode.substring(6)
+          : ruleCode.replaceAll(RegExp(r'^<java>|</java>$'), '');
+      return _EngineResolveResult(JsEngineType.rhino, code);
+    }
+
+    if (ruleCode.startsWith('@ts:') || ruleCode.startsWith('<ts>')) {
+      final code = ruleCode.startsWith('@ts:')
+          ? ruleCode.substring(4)
+          : ruleCode.replaceAll(RegExp(r'^<ts>|</ts>$'), '');
+      // TS 编译后由 QuickJS 执行
+      return _EngineResolveResult(JsEngineType.quickjs, code);
+    }
+
+    // 2. @js: 或 <js> 前缀 → 自动识别
+    String code = ruleCode;
+    if (ruleCode.startsWith('@js:')) {
+      code = ruleCode.substring(4);
+    } else if (ruleCode.startsWith('<js>')) {
+      code = ruleCode.replaceAll(RegExp(r'^<js>|</js>$'), '');
+    }
+
+    // 自动识别引擎
+    final autoDetected = _autoDetectEngine(code);
+
+    // 3. 如果自动识别不出明确倾向，使用书源级声明
+    if (autoDetected == null && sourceEngine != null) {
+      return _EngineResolveResult(sourceEngine, code);
+    }
+
+    // 4. 默认 QuickJS
+    return _EngineResolveResult(autoDetected ?? JsEngineType.quickjs, code);
+  }
+
+  /// 关键词自动识别引擎
+  ///
+  /// - 含 java. 前缀调用且无 ES6 特征 → Rhino
+  /// - 含 ES6 特征（不管有无 java.*）→ QuickJS
+  /// - 无法确定 → null（使用书源级声明或默认值）
+  JsEngineType? _autoDetectEngine(String code) {
+    final hasJavaCall = RegExp(r'\bjava\.').hasMatch(code);
+    final hasES6 = RegExp(
+      r'\bconst\b|\blet\b|=>|\basync\b|\bawait\b|\.\.\.|\bclass\b|\bimport\b|`[^`]*\$\{',
+    ).hasMatch(code);
+
+    if (hasES6) {
+      // ES6 特征 → QuickJS（java.* 通过桥接调用）
+      return JsEngineType.quickjs;
+    }
+
+    if (hasJavaCall && !hasES6) {
+      // 纯 Java 互操作，无 ES6 → Rhino
+      return JsEngineType.rhino;
+    }
+
+    // 无法确定，返回 null 让上层决定
+    return null;
+  }
+
   // ===== Node.js API 兼容层 =====
 
-  /// 注入 Node.js 核心 API 模拟
   Future<void> _injectNodePolyfills() async {
     const nodePolyfills = '''
       // ===== Node.js 核心模块模拟 =====
 
-      // process 对象
       var process = {
         env: {},
         argv: [],
@@ -65,7 +189,6 @@ class JsEngine {
         stderr: { write: function(data) {} },
       };
 
-      // Buffer 模拟
       var Buffer = {
         from: function(data, encoding) {
           if (typeof data === 'string') {
@@ -77,7 +200,6 @@ class JsEngine {
         concat: function(list) { return Buffer.from(list.join('')); },
       };
 
-      // URL 和 URLSearchParams
       function URL(url, base) {
         this.href = url;
         this.origin = '';
@@ -98,7 +220,6 @@ class JsEngine {
         this.toString = function() { return ''; };
       }
 
-      // EventEmitter 模拟
       function EventEmitter() {
         this._events = {};
       }
@@ -127,7 +248,6 @@ class JsEngine {
         return this.on(event, wrapper);
       };
 
-      // module.exports 和 require 模拟
       var _modules = {};
       var _moduleCache = {};
       function require(name) {
@@ -138,7 +258,6 @@ class JsEngine {
           _moduleCache[name] = module.exports;
           return _moduleCache[name];
         }
-        // 内置模块模拟
         switch(name) {
           case 'http': return { get: function(url, cb) {}, request: function() {} };
           case 'https': return { get: function(url, cb) {}, request: function() {} };
@@ -159,37 +278,40 @@ class JsEngine {
     evaluate(nodePolyfills);
   }
 
-  // ===== Java 桥接对象 =====
+  // ===== Java 桥接对象（QuickJS 侧）=====
 
-  /// 注入 Legado 兼容的 Java 桥接对象
   void _injectJavaBridge() {
     const javaBridge = '''
-      // ===== Legado Java 桥接对象 =====
+      // ===== Legado Java 桥接对象（QuickJS 侧）=====
+      // HTTP/加密/Jsoup 等操作通过 Dart 侧 NativeChannel 桥接实现
+      // 第一阶段：java.* 调用返回空值，第二阶段打通真正的桥接
       var java = {
-        // HTTP 请求方法（通过 Dart 桥接）
+        // HTTP 请求方法
+        // 第二阶段将实现真正的 Dart → NativeChannel 桥接
         get: function(url, headers) {
-          return JSON.stringify({ url: url, method: 'GET', headers: headers || {} });
+          console.warn('[Bridge] java.get() is stub, awaiting bridge implementation');
+          return '';
         },
         post: function(url, body, headers) {
-          return JSON.stringify({ url: url, method: 'POST', body: body || '', headers: headers || {} });
+          console.warn('[Bridge] java.post() is stub, awaiting bridge implementation');
+          return '';
         },
         ajax: function(url, headers) {
           return java.get(url, headers);
         },
         ajaxAll: function(urls) {
-          return JSON.stringify(urls.map(function(url) { return java.get(url, {}); }));
+          return '';
         },
         put: function(key, value) {
-          _javaCache[key] = value;
+          _javaCache[key] = typeof value === 'object' ? JSON.stringify(value) : String(value);
         },
         getStr: function(key, defaultValue) {
           return _javaCache[key] || (defaultValue || '');
         },
         log: function(msg) {
-          // console.log 已由 flutter_js 内置
+          console.log('[JavaBridge] ' + msg);
         },
 
-        // 字符串操作
         getString: function(str, ruleStr) {
           if (!str || !ruleStr) return '';
           return str;
@@ -198,7 +320,6 @@ class JsEngine {
           return '';
         },
 
-        // JSON 操作
         getJson: function(str) {
           try { return JSON.parse(str); } catch(e) { return {}; }
         },
@@ -206,14 +327,14 @@ class JsEngine {
           _javaCache[key] = JSON.stringify(value);
         },
 
-        // 加密/解密（占位，实际由 Dart 侧桥接实现）
+        // 加密/解密（占位，第二阶段通过 NativeChannel 实现）
         aesEncode: function(data, key, iv) { return ''; },
         aesDecode: function(data, key, iv) { return ''; },
         md5Encode: function(str) { return ''; },
         base64Encode: function(str) { return ''; },
         base64Decode: function(str) { return ''; },
 
-        // HTML 解析（占位）
+        // HTML 解析（占位，第二阶段通过 NativeChannel Jsoup 实现）
         jsoup: {
           parse: function(html) {
             return { select: function(sel) { return ''; } };
@@ -224,7 +345,7 @@ class JsEngine {
           clean: function(html) { return html; },
         },
 
-        // 正则操作
+        // 正则操作（QuickJS 原生支持，无需桥接）
         regex: {
           match: function(str, pattern) {
             try { var m = str.match(new RegExp(pattern)); return m ? m[0] : ''; } catch(e) { return ''; }
@@ -240,7 +361,6 @@ class JsEngine {
           },
         },
 
-        // 时间操作
         timeFormat: function(timestamp, format) {
           return new Date(timestamp).toLocaleString();
         },
@@ -248,12 +368,10 @@ class JsEngine {
           return Date.now();
         },
 
-        // WebView 池（占位）
         webview: {
           eval: function(url, js) { return ''; },
         },
 
-        // 缓存操作
         cache: {
           get: function(key) { return _javaCache[key] || ''; },
           put: function(key, value) { _javaCache[key] = value; },
@@ -261,19 +379,18 @@ class JsEngine {
         },
       };
 
-      // Java 缓存
       var _javaCache = {};
 
       // 兼容 Legado 的 CryptoJS
       var CryptoJS = {
         AES: {
-          encrypt: function(data, key, cfg) { return { toString: function() { return java.aesEncode(data, key, cfg && cfg.iv ? cfg.iv.toString() : ''); } }; },
-          decrypt: function(data, key, cfg) { return { toString: function(enc) { return java.aesDecode(data, key, cfg && cfg.iv ? cfg.iv.toString() : ''); } }; },
+          encrypt: function(data, key, cfg) { return { toString: function() { return ''; } }; },
+          decrypt: function(data, key, cfg) { return { toString: function(enc) { return ''; } }; },
         },
-        MD5: function(str) { return { toString: function() { return java.md5Encode(str); } }; },
+        MD5: function(str) { return { toString: function() { return ''; } }; },
         enc: {
           Utf8: { parse: function(s) { return s; }, stringify: function(w) { return w; } },
-          Base64: { parse: function(s) { return java.base64Decode(s); }, stringify: function(w) { return java.base64Encode(w); } },
+          Base64: { parse: function(s) { return ''; }, stringify: function(w) { return ''; } },
           Hex: { parse: function(s) { return s; }, stringify: function(w) { return w; } },
         },
         mode: { ECB: {}, CBC: {} },
@@ -286,12 +403,9 @@ class JsEngine {
 
   // ===== TypeScript 编译支持 =====
 
-  /// 编译 TypeScript 为 JavaScript
-  /// 内置轻量级 TS→JS 转译器，支持常见 TS 语法
   Future<String> compileTypeScript(String tsCode) async {
     String js = tsCode;
 
-    // 移除类型注解
     js = js.replaceAllMapped(
       RegExp(r'(\w+)\s*:\s*[\w\[\]<>\|&\s]+([,\)])'),
       (m) => '${m[1]}${m[2]}',
@@ -343,7 +457,6 @@ class JsEngine {
 
   // ===== 自定义库管理 =====
 
-  /// 安装 JS/TS 库
   Future<bool> installPackage(String name, String code, {String? version}) async {
     try {
       final dir = await getApplicationDocumentsDirectory();
@@ -372,7 +485,6 @@ class JsEngine {
     }
   }
 
-  /// 从 URL 安装 JS/TS 库
   Future<bool> installPackageFromUrl(String name, String url) async {
     try {
       return false;
@@ -381,7 +493,6 @@ class JsEngine {
     }
   }
 
-  /// 卸载库
   Future<bool> uninstallPackage(String name) async {
     try {
       final dir = await getApplicationDocumentsDirectory();
@@ -397,7 +508,6 @@ class JsEngine {
     }
   }
 
-  /// 获取已安装的库列表
   Future<List<Map<String, dynamic>>> getInstalledPackages() async {
     try {
       final dir = await getApplicationDocumentsDirectory();
@@ -420,7 +530,6 @@ class JsEngine {
     }
   }
 
-  /// 加载已安装的库
   Future<void> _loadInstalledPackages() async {
     final packages = await getInstalledPackages();
     for (final pkg in packages) {
@@ -436,7 +545,6 @@ class JsEngine {
     }
   }
 
-  /// 注册包到 JS 运行时
   void _registerPackage(String name, String code) {
     final wrappedCode = '''
       _modules['$name'] = function(module, exports, require) {
@@ -446,9 +554,8 @@ class JsEngine {
     evaluate(wrappedCode);
   }
 
-  // ===== 脚本执行 =====
+  // ===== QuickJS 引擎执行 =====
 
-  /// 执行 JS 脚本（同步，直接返回字符串结果）
   dynamic evaluate(String script) {
     if (!_initialized || _jsRuntime == null) return null;
     try {
@@ -464,7 +571,6 @@ class JsEngine {
     }
   }
 
-  /// 执行 JS 脚本（异步版本，支持 Promise）
   Future<dynamic> evaluateAsync(String script) async {
     if (!_initialized || _jsRuntime == null) return null;
     try {
@@ -480,19 +586,27 @@ class JsEngine {
     }
   }
 
-  /// 执行 TypeScript 脚本（自动编译为 JS）
   Future<dynamic> evaluateTypeScript(String tsCode) async {
     final jsCode = await compileTypeScript(tsCode);
     return evaluate(jsCode);
   }
 
-  /// 同步执行 JS 代码（用于规则解析）
-  /// [jsCode] - JS 代码
-  /// [content] - 上下文内容（注入为 result 变量）
-  /// [baseUrl] - 基础 URL（注入为 baseUrl 变量）
-  dynamic executeSync(String jsCode, dynamic content, {String? baseUrl}) {
+  /// 同步执行 JS 代码（用于 AnalyzeRule 规则解析）
+  /// 默认走 QuickJS，如果代码含 java. 且无 ES6 特征，自动走 Rhino
+  dynamic executeSync(String jsCode, dynamic content, {String? baseUrl, JsEngineType? sourceEngine}) {
+    final resolved = resolveEngine(jsCode, sourceEngine: sourceEngine);
+
+    if (resolved.engine == JsEngineType.rhino) {
+      // Rhino 不支持同步调用（MethodChannel 是异步的），降级到 QuickJS
+      debugPrint('JsEngine: Rhino 不支持同步执行，降级到 QuickJS: ${jsCode.substring(0, jsCode.length > 50 ? 50 : jsCode.length)}...');
+    }
+
+    return _executeQuickJSSync(resolved.code, content, baseUrl: baseUrl);
+  }
+
+  /// QuickJS 同步执行
+  dynamic _executeQuickJSSync(String jsCode, dynamic content, {String? baseUrl}) {
     if (!_initialized || _jsRuntime == null) {
-      // 尝试懒初始化（同步方式，仅标记需要初始化）
       debugPrint('JsEngine not initialized, cannot executeSync');
       return null;
     }
@@ -520,34 +634,22 @@ class JsEngine {
     }
   }
 
+  // ===== 书源规则执行（分流核心）=====
+
   /// 处理 JS 书源规则（异步）
-  /// [content] - 输入内容
-  /// [jsCode] - JS 规则代码
-  /// [baseUrl] - 基础 URL
-  Future<String?> processJsRule(String content, String jsCode, {String? baseUrl}) async {
+  Future<String?> processJsRule(String content, String jsCode, {String? baseUrl, JsEngineType? sourceEngine}) async {
     if (!_initialized || _jsRuntime == null) {
       await init();
       if (!_initialized || _jsRuntime == null) return null;
     }
-    try {
-      final wrappedScript = '''
-        (function() {
-          var result = ${jsonEncode(content)};
-          var baseUrl = ${jsonEncode(baseUrl ?? '')};
-          var content = result;
-          $jsCode
-        })();
-      ''';
-      final evalResult = _jsRuntime!.evaluate(wrappedScript);
-      if (evalResult.isError) {
-        debugPrint('JsEngine processJsRule error: ${evalResult.stringResult}');
-        return null;
-      }
-      return evalResult.stringResult;
-    } catch (e) {
-      debugPrint('JsEngine processJsRule exception: $e');
-      return null;
+
+    final resolved = resolveEngine(jsCode, sourceEngine: sourceEngine);
+
+    if (resolved.engine == JsEngineType.rhino) {
+      return _executeRhinoRule(resolved.code, result: content, env: {'baseUrl': baseUrl ?? ''});
     }
+
+    return _executeQuickJSRule(resolved.code, result: content, env: {'baseUrl': baseUrl ?? ''});
   }
 
   /// 处理带书籍上下文的 JS 规则
@@ -557,11 +659,27 @@ class JsEngine {
     Map<String, dynamic>? chapter,
     String? content,
     int? index,
+    JsEngineType? sourceEngine,
   }) async {
     if (!_initialized || _jsRuntime == null) {
       await init();
       if (!_initialized || _jsRuntime == null) return null;
     }
+
+    final resolved = resolveEngine(jsCode, sourceEngine: sourceEngine);
+
+    if (resolved.engine == JsEngineType.rhino) {
+      return _executeRhinoRule(
+        resolved.code,
+        result: content,
+        env: {
+          'book': book ?? {},
+          'chapter': chapter ?? {},
+          'baseUrl': book?['bookUrl'] ?? '',
+        },
+      );
+    }
+
     try {
       final wrappedScript = '''
         (function() {
@@ -571,7 +689,7 @@ class JsEngine {
           var book = ${jsonEncode(book ?? {})};
           var chapter = ${jsonEncode(chapter ?? {})};
           var index = ${jsonEncode(index ?? 0)};
-          $jsCode
+          ${resolved.code}
         })();
       ''';
       final evalResult = _jsRuntime!.evaluate(wrappedScript);
@@ -586,30 +704,46 @@ class JsEngine {
     }
   }
 
-  /// 执行书源规则（支持 JS/Java/TS 三种格式）
+  /// 执行书源规则（统一入口，支持分流）
+  ///
+  /// 规则前缀路由：
+  /// - @rhino: / <rhino> → Rhino 引擎
+  /// - @quickjs: / <quickjs> → QuickJS 引擎
+  /// - @java: / <java> → Rhino 引擎（Java 互操作）
+  /// - @ts: / <ts> → TS 编译后 QuickJS 执行
+  /// - @js: / <js> → 自动识别引擎
+  /// - 无前缀 → 自动识别引擎
   Future<String?> evaluateBookRule(String ruleCode, {
     String? result,
     Map<String, dynamic>? env,
+    JsEngineType? sourceEngine,
   }) async {
-    if (!_initialized || _jsRuntime == null) return null;
-    try {
-      String jsCode;
-      if (ruleCode.startsWith('@ts:') || ruleCode.startsWith('<ts>')) {
-        final tsCode = ruleCode.startsWith('@ts:')
-            ? ruleCode.substring(4)
-            : ruleCode.replaceAll(RegExp(r'^<ts>|</ts>$'), '');
-        jsCode = await compileTypeScript(tsCode);
-      } else if (ruleCode.startsWith('@java:') || ruleCode.startsWith('<java>')) {
-        final javaCode = ruleCode.startsWith('@java:')
-            ? ruleCode.substring(6)
-            : ruleCode.replaceAll(RegExp(r'^<java>|</java>$'), '');
-        return await _evaluateJavaRule(javaCode, result: result, env: env);
-      } else {
-        jsCode = ruleCode.startsWith('@js:')
-            ? ruleCode.substring(4)
-            : ruleCode.replaceAll(RegExp(r'^<js>|</js>$'), '');
-      }
+    final resolved = resolveEngine(ruleCode, sourceEngine: sourceEngine);
+    var code = resolved.code;
 
+    // TS 需要先编译
+    if (ruleCode.startsWith('@ts:') || ruleCode.startsWith('<ts>')) {
+      code = await compileTypeScript(code);
+    }
+
+    if (resolved.engine == JsEngineType.rhino) {
+      return _executeRhinoRule(code, result: result, env: env);
+    }
+
+    return _executeQuickJSRule(code, result: result, env: env);
+  }
+
+  // ===== QuickJS 规则执行 =====
+
+  Future<String?> _executeQuickJSRule(String jsCode, {
+    String? result,
+    Map<String, dynamic>? env,
+  }) async {
+    if (!_initialized || _jsRuntime == null) {
+      await init();
+      if (!_initialized || _jsRuntime == null) return null;
+    }
+    try {
       final wrappedScript = '''
         (function() {
           var result = ${jsonEncode(result ?? '')};
@@ -624,30 +758,125 @@ class JsEngine {
 
       final evalResult = _jsRuntime!.evaluate(wrappedScript);
       if (evalResult.isError) {
-        debugPrint('JsEngine evaluateBookRule error: ${evalResult.stringResult}');
-        return null;
+        debugPrint('JsEngine QuickJS error: ${evalResult.stringResult}');
+        // QuickJS 失败 → 降级到 Rust 引擎
+        return fallbackToRustEngine(jsCode, result: result, env: env);
       }
       return evalResult.stringResult;
     } catch (e) {
-      debugPrint('JsEngine evaluateBookRule exception: $e');
-      return null;
+      debugPrint('JsEngine QuickJS exception: $e');
+      // QuickJS 异常 → 降级到 Rust 引擎
+      return fallbackToRustEngine(jsCode, result: result, env: env);
     }
   }
 
-  /// 通过原生通道执行 Java 规则
-  Future<String?> _evaluateJavaRule(String javaCode, {
+  // ===== Rust 引擎降级（通过 native-proxy API）=====
+
+  /// QuickJS 执行失败时，降级到 Rust boa 引擎
+  /// 通过 HTTP 调用 native-proxy 的 /api/js/* 接口
+  Future<String?> fallbackToRustEngine(String jsCode, {
     String? result,
     Map<String, dynamic>? env,
   }) async {
-    // Java 规则通过 Android 原生层执行，预留接口
-    try {
+    if (kIsWeb) return null;
+
+    final apiPort = _rustApiPort;
+    if (apiPort == 0) {
+      debugPrint('JsEngine: Rust API 不可用，降级失败');
       return null;
+    }
+
+    try {
+      debugPrint('JsEngine: QuickJS 失败，降级到 Rust 引擎 (port: $apiPort)');
+      final client = HttpClient();
+      final code = Uri.encodeComponent(jsCode);
+      final resultStr = Uri.encodeComponent(result ?? '');
+      final baseUrl = Uri.encodeComponent(env?['baseUrl'] ?? '');
+      final bookJson = env?['book'] != null ? Uri.encodeComponent(jsonEncode(env!['book'])) : '';
+      final chapterJson = env?['chapter'] != null ? Uri.encodeComponent(jsonEncode(env!['chapter'])) : '';
+
+      final url = 'http://localhost:$apiPort/api/js/evaluateWithContext'
+          '?code=$code'
+          '&result=$resultStr'
+          '&baseUrl=$baseUrl'
+          '&content=$resultStr'
+          '${bookJson.isNotEmpty ? '&book=$bookJson' : ''}'
+          '${chapterJson.isNotEmpty ? '&chapter=$chapterJson' : ''}';
+
+      final request = await client.getUrl(Uri.parse(url));
+      final response = await request.close();
+      final body = await response.transform(utf8.decoder).join();
+      client.close();
+
+      if (body.isEmpty) return null;
+
+      final json = jsonDecode(body) as Map<String, dynamic>;
+      final apiResult = json['result'] as Map<String, dynamic>?;
+
+      if (apiResult == null || apiResult['success'] != true) {
+        debugPrint('JsEngine: Rust 引擎也失败了: ${apiResult?['result']}');
+        return null;
+      }
+
+      return apiResult['result']?.toString();
     } catch (e) {
+      debugPrint('JsEngine: Rust API 调用失败: $e');
       return null;
     }
   }
 
-  /// 执行正则替换
+  /// Rust API 端口（由 cors-proxy.js 启动时通过 stderr 输出）
+  int _rustApiPort = 0;
+
+  /// 设置 Rust API 端口（供外部调用）
+  void setRustApiPort(int port) {
+    _rustApiPort = port;
+  }
+
+  // ===== Rhino 规则执行（通过 NativeChannel）=====
+
+  Future<String?> _executeRhinoRule(String code, {
+    String? result,
+    Map<String, dynamic>? env,
+  }) async {
+    if (kIsWeb) return null;
+    try {
+      // 同步桥接缓存到 Rhino 环境
+      final bindings = <String, dynamic>{
+        'result': result ?? '',
+        'baseUrl': env?['baseUrl'] ?? '',
+        ...?env,
+        '_bridgeCache': Map<String, String>.from(_bridgeCache),
+      };
+
+      // 判断走 evaluateJavaRule 还是 executeScript
+      // 含 Legado 规则前缀 → evaluateJavaRule（支持 @css:/@text:/@attr: 等）
+      // 纯 JS 代码 → executeScript（通用 Rhino 执行）
+      final isLegadoRule = code.startsWith('@css:') ||
+          code.startsWith('@text:') ||
+          code.startsWith('@attr:') ||
+          code.startsWith('java:');
+
+      if (isLegadoRule) {
+        return await NativeChannel.instance.evaluateJavaRule(
+          code,
+          result: result,
+          env: bindings,
+        );
+      }
+
+      return await NativeChannel.instance.executeScript(
+        code,
+        bindings: bindings,
+      );
+    } catch (e) {
+      debugPrint('JsEngine Rhino error: $e');
+      return null;
+    }
+  }
+
+  // ===== 工具方法 =====
+
   Future<String?> regexReplace(String text, String pattern, String replacement) async {
     if (!_initialized || _jsRuntime == null) return null;
     try {
@@ -667,7 +896,6 @@ class JsEngine {
     }
   }
 
-  /// 执行 CSS 选择器（通过 Jsoup 桥接）
   Future<String?> cssSelect(String html, String selector) async {
     if (!_initialized || _jsRuntime == null) return null;
     try {
@@ -684,12 +912,10 @@ class JsEngine {
     }
   }
 
-  /// 执行 XPath（预留）
   Future<String?> xpathSelect(String html, String xpath) async {
     return null;
   }
 
-  /// 执行 JSONPath
   Future<dynamic> jsonPath(String jsonStr, String path) async {
     if (!_initialized || _jsRuntime == null) return null;
     try {
@@ -714,19 +940,15 @@ class JsEngine {
     }
   }
 
-  /// 解析 JS 返回值，尝试还原为原始 Dart 类型
   dynamic _parseJsResult(String result) {
     if (result == 'undefined' || result == 'null') return null;
     if (result == 'true') return true;
     if (result == 'false') return false;
-    // 尝试解析为数字
     final numVal = num.tryParse(result);
     if (numVal != null) return numVal;
-    // 尝试解析为 JSON
     try {
       return jsonDecode(result);
     } catch (_) {}
-    // 返回原始字符串
     return result;
   }
 
@@ -737,5 +959,6 @@ class JsEngine {
     _initialized = false;
     _installedPackages.clear();
     _moduleCache.clear();
+    _bridgeCache.clear();
   }
 }

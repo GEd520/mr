@@ -37,6 +37,9 @@ class NativePlugin(private val context: Context) {
         }
     }
 
+    // 内置 Node.js 运行时
+    private val nodeRuntime by lazy { NodeRuntime(context) }
+
     // SharedPreferences 用于键值对存储
     private val sharedPreferences by lazy {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -88,6 +91,11 @@ class NativePlugin(private val context: Context) {
             "putData" -> putData(call, result)
             "getData" -> getData(call, result)
             "deleteData" -> deleteData(call, result)
+            // 内置 Node.js 运行时
+            "nodeSetup" -> nodeSetup(call, result)
+            "nodeStartProxy" -> nodeStartProxy(call, result)
+            "nodeStop" -> nodeStop(call, result)
+            "nodeStatus" -> nodeStatus(call, result)
             else -> result.notImplemented()
         }
     }
@@ -610,6 +618,71 @@ class NativePlugin(private val context: Context) {
             result.success(null)
         } catch (e: Exception) {
             result.error("ERROR", e.message, null)
+        }
+    }
+
+    // ===== 内置 Node.js 运行时 =====
+
+    /**
+     * 初始化 Node.js 运行环境（解压二进制 + 脚本）
+     */
+    private fun nodeSetup(call: io.flutter.plugin.common.MethodCall, result: io.flutter.plugin.common.MethodChannel.Result) {
+        try {
+            val nodePath = nodeRuntime.setup()
+            if (nodePath != null) {
+                result.success(nodePath)
+            } else {
+                result.error("NODE_ERROR", "Node.js 初始化失败", null)
+            }
+        } catch (e: Exception) {
+            result.error("NODE_ERROR", e.message, null)
+        }
+    }
+
+    /**
+     * 启动内置 Node.js 代理服务（直接启动，无需解压二进制）
+     */
+    private fun nodeStartProxy(call: io.flutter.plugin.common.MethodCall, result: io.flutter.plugin.common.MethodChannel.Result) {
+        try {
+            val success = nodeRuntime.startProxy()
+            if (success) {
+                result.success(mapOf(
+                    "proxyPort" to nodeRuntime.currentProxyPort,
+                    "apiPort" to nodeRuntime.currentApiPort,
+                    "running" to true
+                ))
+            } else {
+                result.error("NODE_ERROR", "Node.js 代理启动失败", null)
+            }
+        } catch (e: Exception) {
+            result.error("NODE_ERROR", e.message, null)
+        }
+    }
+
+    /**
+     * 停止内置 Node.js 进程
+     */
+    private fun nodeStop(call: io.flutter.plugin.common.MethodCall, result: io.flutter.plugin.common.MethodChannel.Result) {
+        try {
+            nodeRuntime.stop()
+            result.success(true)
+        } catch (e: Exception) {
+            result.error("NODE_ERROR", e.message, null)
+        }
+    }
+
+    /**
+     * 获取内置 Node.js 运行状态
+     */
+    private fun nodeStatus(call: io.flutter.plugin.common.MethodCall, result: io.flutter.plugin.common.MethodChannel.Result) {
+        try {
+            result.success(mapOf(
+                "running" to nodeRuntime.isRunning,
+                "proxyPort" to nodeRuntime.currentProxyPort,
+                "apiPort" to nodeRuntime.currentApiPort
+            ))
+        } catch (e: Exception) {
+            result.error("NODE_ERROR", e.message, null)
         }
     }
 }
