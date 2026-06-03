@@ -6,9 +6,11 @@ import 'providers/app_provider.dart';
 import 'providers/bookshelf_provider.dart';
 import 'providers/discovery_provider.dart';
 import 'providers/reader_provider.dart';
+import 'providers/search_provider.dart';
 import 'routes/app_routes.dart';
 import 'themes/app_theme.dart';
-import 'services/nojs_engine.dart';
+import 'services/native/js_engine.dart';
+import 'services/native/engine_dispatcher.dart';
 import 'services/storage_service.dart';
 import 'services/source_engine/proxy_service.dart';
 
@@ -23,14 +25,24 @@ void main() async {
   }
 
   try {
-    await NojsEngine.instance.init();
+    await JsEngine.instance.init();
   } catch (e) {
-    debugPrint('NojsEngine init error: $e');
+    debugPrint('JsEngine init error: $e');
   }
 
-  // 启动代理服务（非 Web 平台）
+  // 启动 CORS 代理服务（仅 Web 端需要，原生端 Dio 不受 CORS 限制）
+  if (kIsWeb) {
+    await ProxyService.instance.start();
+  }
+
+  // 启动四引擎调度器（含 Node.js 进程，仅原生端）
   if (!kIsWeb) {
-    await ProxyService.instance.start(port: 8888);
+    try {
+      await EngineDispatcher.instance.startNodeProxy();
+      debugPrint('[四引擎] 状态:\n${EngineDispatcher.instance.statusSummary}');
+    } catch (e) {
+      debugPrint('[四引擎] Node.js 启动失败: $e');
+    }
   }
 
   runApp(const DanShenqiApp());
@@ -47,6 +59,7 @@ class DanShenqiApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => BookshelfProvider()),
         ChangeNotifierProvider(create: (_) => DiscoveryProvider()),
         ChangeNotifierProvider(create: (_) => ReaderProvider()),
+        ChangeNotifierProvider(create: (_) => SearchProvider()),
       ],
       child: Consumer<AppProvider>(
         builder: (context, appProvider, child) {

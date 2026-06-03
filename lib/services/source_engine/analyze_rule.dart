@@ -19,6 +19,7 @@ class AnalyzeRule {
   bool _isRegex = false;
   final Map<String, dynamic> _variables = {};
   final Map<String, String> _variableMap = {}; // 持久化变量存储
+  JsEngineType? _sourceEngine; // 书源级引擎声明
   
   // 规则缓存
   static final Map<String, List<_SourceRule>> _stringRuleCache = {};
@@ -39,6 +40,12 @@ class AnalyzeRule {
 
   AnalyzeRule setRedirectUrl(String? url) {
     _redirectUrl = url;
+    return this;
+  }
+
+  /// 设置书源级引擎声明
+  AnalyzeRule setSourceEngine(JsEngineType? engine) {
+    _sourceEngine = engine;
     return this;
   }
 
@@ -148,39 +155,38 @@ class AnalyzeRule {
       mode = RuleMode.regex;
     }
     
-    // 解析 @js: 和 <js></js> 规则
-    final jsPattern = RegExp(r'@js:([\s\S]*?)(?=@js:|$)', caseSensitive: false);
+    // 解析 @js: / @rhino: / @quickjs: / @java: / @ts: 和 <js></js> 规则
+    final jsPattern = RegExp(r'@(?:js|rhino|quickjs|java|ts):([\s\S]*?)(?=@(?:js|rhino|quickjs|java|ts):|$)', caseSensitive: false);
     final jsTagPattern = RegExp(r'<js>([\s\S]*?)</js>', caseSensitive: false);
-    
-    // 先处理 <js></js> 标签
+
+    // 先处理 <js></js> 标签 → 替换为 @js:
     String processedRule = ruleStr;
     final jsTagMatches = jsTagPattern.allMatches(processedRule).toList();
-    
+
     if (jsTagMatches.isNotEmpty) {
-      // 替换 <js></js> 为 @js:
       for (final match in jsTagMatches.reversed) {
         processedRule = processedRule.replaceRange(
           match.start, match.end, '@js:${match.group(1)}');
       }
     }
-    
-    // 处理 @js: 规则
+
+    // 处理带前缀的 JS 规则
     final jsMatches = jsPattern.allMatches(processedRule).toList();
-    
+
     if (jsMatches.isNotEmpty) {
       var lastEnd = start;
       for (final match in jsMatches) {
-        // 添加 @js: 之前的部分
+        // 添加匹配之前的部分
         if (match.start > lastEnd) {
           final before = processedRule.substring(lastEnd, match.start).trim();
           if (before.isNotEmpty) {
             ruleList.add(_SourceRule.parse(before, isJson: _isJson, mode: mode));
           }
         }
-        // 添加 JS 规则
-        final jsCode = match.group(1)?.trim() ?? '';
-        if (jsCode.isNotEmpty) {
-          ruleList.add(_SourceRule(jsCode, RuleMode.js));
+        // 添加 JS 规则（保留完整前缀，让 JsEngine._resolveEngine 处理分流）
+        final matchedText = match.group(0)?.trim() ?? '';
+        if (matchedText.isNotEmpty) {
+          ruleList.add(_SourceRule(matchedText, RuleMode.js));
         }
         lastEnd = match.end;
       }
@@ -739,7 +745,7 @@ class AnalyzeRule {
 
   dynamic _applyJs(dynamic content, String jsCode) {
     try {
-      return JsEngine.instance.executeSync(jsCode, content, baseUrl: _baseUrl);
+      return JsEngine.instance.executeSync(jsCode, content, baseUrl: _baseUrl, sourceEngine: _sourceEngine);
     } catch (e) {
       debugPrint('JS execution failed: $e');
       return null;
@@ -812,7 +818,7 @@ class AnalyzeRule {
         if (value != null) return value.toString();
         // 否则尝试作为JS执行
         try {
-          return JsEngine.instance.executeSync(expr, _content, baseUrl: _baseUrl)?.toString() ?? '';
+          return JsEngine.instance.executeSync(expr, _content, baseUrl: _baseUrl, sourceEngine: _sourceEngine)?.toString() ?? '';
         } catch (_) {
           return '';
         }
