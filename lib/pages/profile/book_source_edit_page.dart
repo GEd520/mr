@@ -430,13 +430,14 @@ class _BookSourceEditPageState extends State<BookSourceEditPage>
     }
   }
 
-  void _debugSource() {
+  void _debugSource() async {
     final source = _buildSourceFromEntities();
-    StorageService.instance.saveBookSource(source.toJson()).then((_) {
+    await StorageService.instance.saveBookSource(source.toJson());
+    if (mounted) {
       Navigator.pushNamed(context, AppRoutes.bookSourceDebug, arguments: {
         'sourceUrl': source.bookSourceUrl,
       });
-    });
+    }
   }
 
   void _searchWithSource() {

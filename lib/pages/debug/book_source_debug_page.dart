@@ -131,9 +131,11 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     final sourceUrl = widget.sourceUrl;
     debugPrint('=== 调试页面加载书源 ===');
     debugPrint('sourceUrl: $sourceUrl');
+    AppLogger.instance.info(LogCategory.parse, '调试页面加载书源', detail: 'sourceUrl: $sourceUrl');
 
     if (sourceUrl == null || sourceUrl.isEmpty) {
       debugPrint('sourceUrl 为空，无法加载书源');
+      AppLogger.instance.warn(LogCategory.parse, 'sourceUrl 为空，无法加载书源');
       if (mounted) {
         setState(() {
           _showHelp = true;
@@ -142,13 +144,24 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
       return;
     }
 
+    // 确保 StorageService 已初始化
+    if (!StorageService.instance.isInitialized) {
+      AppLogger.instance.warn(LogCategory.storage, 'StorageService 未初始化，尝试初始化...');
+      try {
+        await StorageService.instance.init();
+      } catch (e) {
+        AppLogger.instance.error(LogCategory.storage, 'StorageService 初始化失败', detail: e.toString());
+      }
+    }
+
     final data = StorageService.instance.getBookSource(sourceUrl);
     debugPrint('书源数据: ${data != null ? "找到" : "未找到"}');
+    AppLogger.instance.info(LogCategory.storage, '书源查询结果', detail: data != null ? '找到' : '未找到 (sourceUrl: $sourceUrl)');
 
     if (data == null) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('未找到书源: $sourceUrl')),
+          SnackBar(content: Text('未找到书源: $sourceUrl\n请先保存书源后再调试')),
         );
       }
       return;

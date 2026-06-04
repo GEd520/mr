@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
 class StorageService {
@@ -78,6 +79,10 @@ class StorageService {
   Future<void> saveBookSource(Map<String, dynamic> sourceData) async {
     final sourceUrl = sourceData['bookSourceUrl'] as String? ?? '';
     if (sourceUrl.isNotEmpty) {
+      if (_bookSourceBox == null) {
+        debugPrint('⚠️ StorageService: _bookSourceBox 未初始化，尝试初始化...');
+        await init();
+      }
       await _bookSourceBox?.put(sourceUrl, sourceData);
       await _bookSourceBox?.flush();
     }
@@ -97,7 +102,11 @@ class StorageService {
   }
 
   Map<String, dynamic>? getBookSource(String sourceUrl) {
-    final data = _bookSourceBox?.get(sourceUrl);
+    if (_bookSourceBox == null) {
+      debugPrint('⚠️ StorageService: _bookSourceBox 未初始化，无法获取书源');
+      return null;
+    }
+    final data = _bookSourceBox!.get(sourceUrl);
     if (data == null) return null;
     return Map<String, dynamic>.from(data);
   }
