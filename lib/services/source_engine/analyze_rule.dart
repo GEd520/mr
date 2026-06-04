@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:html/dom.dart' as dom;
 import 'package:html/parser.dart' as html_parser;
 
+import '../app_logger.dart';
 import 'js_engine.dart';
 
 /// 规则模式枚举
@@ -745,9 +746,19 @@ class AnalyzeRule {
 
   dynamic _applyJs(dynamic content, String jsCode) {
     try {
-      return JsEngine.instance.executeSync(jsCode, content, baseUrl: _baseUrl, sourceEngine: _sourceEngine);
+      // 提取 JS 代码：去掉 @js: / @rhino: / @quickjs: / @java: / @ts: 前缀
+      String code = jsCode;
+      final prefixPattern = RegExp(r'^@(?:js|rhino|quickjs|java|ts):', caseSensitive: false);
+      if (prefixPattern.hasMatch(code)) {
+        code = code.replaceFirst(prefixPattern, '');
+      }
+
+      AppLogger.instance.logJsExecute('AnalyzeRule', code);
+      final result = JsEngine.instance.executeSync(code, content, baseUrl: _baseUrl, sourceEngine: _sourceEngine);
+      AppLogger.instance.logJsResult('AnalyzeRule', result?.toString());
+      return result;
     } catch (e) {
-      debugPrint('JS execution failed: $e');
+      AppLogger.instance.logJsError('AnalyzeRule', e.toString());
       return null;
     }
   }

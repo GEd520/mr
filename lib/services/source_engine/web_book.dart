@@ -606,12 +606,23 @@ class WebBook {
   }
 
   /// 发现书籍
+  /// 当发现规则为空或 bookList 为空时，退回使用搜索规则
   Future<List<Map<String, dynamic>>> exploreBook(String exploreUrl) async {
-    final exploreRule = source.ruleExplore;
-    if (exploreRule == null) return [];
-
     // 加载书源 JS 库
     await _loadJsLib();
+
+    // 发现规则回退逻辑：ruleExplore 为空或 bookList 为空时，使用 ruleSearch
+    var exploreRule = source.ruleExplore;
+    final searchRule = source.ruleSearch;
+    final useSearchFallback = exploreRule == null ||
+        (exploreRule.bookList == null || exploreRule.bookList!.trim().isEmpty);
+
+    if (useSearchFallback && searchRule != null) {
+      AppLogger.instance.info(LogCategory.parse, '发现规则为空，退回搜索规则');
+      exploreRule = searchRule;
+    }
+
+    if (exploreRule == null) return [];
 
     // 支持 JS 动态生成发现 URL
     final resolvedExploreUrl = await _resolveUrl(exploreUrl);
@@ -623,17 +634,54 @@ class WebBook {
 
       lastExploreHtml = html;
 
+      AppLogger.instance.info(LogCategory.network, '发现响应: ${html.length} chars');
+
       // 使用 AnalyzeRule 引擎解析
       final analyzer = AnalyzeRule()..setContent(html, baseUrl: source.bookSourceUrl)..setSourceEngine(source.engineType);
 
-      final nameList = analyzer.getStringList(exploreRule.name ?? '');
-      final authorList = analyzer.getStringList(exploreRule.author ?? '');
-      final coverList = analyzer.getStringList(exploreRule.coverUrl ?? '');
-      final introList = analyzer.getStringList(exploreRule.intro ?? '');
-      final bookUrlList = analyzer.getStringList(exploreRule.bookUrl ?? '');
-      final kindList = analyzer.getStringList(exploreRule.kind ?? '');
-      final lastChapterList = analyzer.getStringList(exploreRule.lastChapter ?? '');
-      final wordCountList = analyzer.getStringList(exploreRule.wordCount ?? '');
+      // 发现规则可能只有 bookList，没有 name/author 等字段
+      // 此时使用搜索规则的字段
+      final effectiveRule = useSearchFallback ? searchRule! : exploreRule;
+
+      // 如果 bookList 存在，先获取元素列表再逐个解析
+      final bookListRule = effectiveRule.bookList ?? '';
+      if (bookListRule.isNotEmpty) {
+        final bookElements = analyzer.getElements(bookListRule);
+        AppLogger.instance.logParseResult('发现列表', bookElements.length);
+
+        final results = <Map<String, dynamic>>[];
+        for (int i = 0; i < bookElements.length; i++) {
+          final element = bookElements[i];
+          final itemAnalyzer = AnalyzeRule()..setContent(element, baseUrl: source.bookSourceUrl)..setSourceEngine(source.engineType);
+
+          final name = itemAnalyzer.getString(effectiveRule.name ?? '');
+          if (name != null && name.isNotEmpty) {
+            results.add({
+              'name': name,
+              'author': itemAnalyzer.getString(effectiveRule.author ?? '') ?? '',
+              'coverUrl': itemAnalyzer.getString(effectiveRule.coverUrl ?? '') ?? '',
+              'intro': itemAnalyzer.getString(effectiveRule.intro ?? '') ?? '',
+              'bookUrl': itemAnalyzer.getString(effectiveRule.bookUrl ?? '') ?? '',
+              'kind': itemAnalyzer.getString(effectiveRule.kind ?? '') ?? '',
+              'lastChapter': itemAnalyzer.getString(effectiveRule.lastChapter ?? '') ?? '',
+              'wordCount': itemAnalyzer.getString(effectiveRule.wordCount ?? '') ?? '',
+              'sourceUrl': source.bookSourceUrl,
+              'sourceName': source.bookSourceName,
+            });
+          }
+        }
+        return results;
+      }
+
+      // 没有 bookList，直接用字段解析
+      final nameList = analyzer.getStringList(effectiveRule.name ?? '');
+      final authorList = analyzer.getStringList(effectiveRule.author ?? '');
+      final coverList = analyzer.getStringList(effectiveRule.coverUrl ?? '');
+      final introList = analyzer.getStringList(effectiveRule.intro ?? '');
+      final bookUrlList = analyzer.getStringList(effectiveRule.bookUrl ?? '');
+      final kindList = analyzer.getStringList(effectiveRule.kind ?? '');
+      final lastChapterList = analyzer.getStringList(effectiveRule.lastChapter ?? '');
+      final wordCountList = analyzer.getStringList(effectiveRule.wordCount ?? '');
 
       final results = <Map<String, dynamic>>[];
 
@@ -654,7 +702,7 @@ class WebBook {
 
       return results;
     } catch (e) {
-      debugPrint('❌ 发现失败: $e');
+      AppLogger.instance.error(LogCategory.parse, '发现失败', detail: e.toString());
       return [];
     }
   }
@@ -672,38 +720,54 @@ class WebBook {
       final response = await _client.execute(bookUrl, headers: headers);
       var html = response.body;
 
-      lastBookInfoHtml = html;
+      AppLogger.instance.info(LogCategory.network, '详情响应: ${html.length} chars');
 
       // 执行 init JS 预处理脚本
       if (bookInfoRule.init != null && bookInfoRule.init!.isNotEmpty) {
+        AppLogger.instance.logJsExecute('init', bookInfoRule.init!);
         final initResult = await _executeJs(bookInfoRule.init!, result: html, baseUrl: bookUrl);
         if (initResult != null && initResult.isNotEmpty) {
           html = initResult;
+          AppLogger.instance.logJsResult('init', '${initResult.length} chars');
         }
       }
+
+      // 保存源码（init 处理后的）
+      lastBookInfoHtml = html;
 
       // 使用 AnalyzeRule 引擎解析
       final analyzer = AnalyzeRule()..setContent(html, baseUrl: bookUrl)..setSourceEngine(source.engineType);
 
+      final name = analyzer.getString(bookInfoRule.name ?? '');
+      final author = analyzer.getString(bookInfoRule.author ?? '');
+      final coverUrl = analyzer.getString(bookInfoRule.coverUrl ?? '');
+      final intro = analyzer.getString(bookInfoRule.intro ?? '');
+      final kind = analyzer.getString(bookInfoRule.kind ?? '');
+      final lastChapter = analyzer.getString(bookInfoRule.lastChapter ?? '');
+      final wordCount = analyzer.getString(bookInfoRule.wordCount ?? '');
+      final tocUrl = analyzer.getString(bookInfoRule.tocUrl ?? '');
+
+      AppLogger.instance.info(LogCategory.parse, '详情: 书名=$name, 作者=$author, 目录=$tocUrl');
+
       return Book(
         bookUrl: bookUrl,
-        name: analyzer.getString(bookInfoRule.name ?? '') ?? '未知书名',
-        author: analyzer.getString(bookInfoRule.author ?? '') ?? '',
-        coverUrl: analyzer.getString(bookInfoRule.coverUrl ?? '') ?? '',
-        intro: analyzer.getString(bookInfoRule.intro ?? '') ?? '',
+        name: name ?? '未知书名',
+        author: author ?? '',
+        coverUrl: coverUrl ?? '',
+        intro: intro ?? '',
         mediaType: MediaType.novel,
         originType: BookOriginType.online,
         sourceUrl: source.bookSourceUrl,
         sourceName: source.bookSourceName,
-        kind: analyzer.getString(bookInfoRule.kind ?? ''),
-        lastChapter: analyzer.getString(bookInfoRule.lastChapter ?? ''),
-        wordCount: analyzer.getString(bookInfoRule.wordCount ?? ''),
-        tocUrl: analyzer.getString(bookInfoRule.tocUrl ?? ''),
+        kind: kind,
+        lastChapter: lastChapter,
+        wordCount: wordCount,
+        tocUrl: tocUrl,
         canUpdate: true,
         addedTime: DateTime.now(),
       );
     } catch (e) {
-      debugPrint('❌ 获取详情失败: $e');
+      AppLogger.instance.error(LogCategory.parse, '获取详情失败', detail: e.toString());
       return null;
     }
   }
@@ -721,15 +785,20 @@ class WebBook {
       final response = await _client.execute(tocUrl, headers: headers);
       var html = response.body;
 
-      lastTocHtml = html;
+      AppLogger.instance.info(LogCategory.network, '目录响应: ${html.length} chars');
 
       // 执行 preUpdateJs（目录更新前 JS 脚本）
       if (tocRule.preUpdateJs != null && tocRule.preUpdateJs!.isNotEmpty) {
+        AppLogger.instance.logJsExecute('preUpdateJs', tocRule.preUpdateJs!);
         final preResult = await _executeJs(tocRule.preUpdateJs!, result: html, baseUrl: tocUrl);
         if (preResult != null && preResult.isNotEmpty) {
           html = preResult;
+          AppLogger.instance.logJsResult('preUpdateJs', '${preResult.length} chars');
         }
       }
+
+      // 保存源码（preUpdateJs 处理后的）
+      lastTocHtml = html;
 
       // 使用 AnalyzeRule 引擎解析
       final analyzer = AnalyzeRule()..setContent(html, baseUrl: tocUrl)..setSourceEngine(source.engineType);
@@ -737,8 +806,11 @@ class WebBook {
       var chapterNames = analyzer.getStringList(tocRule.chapterName ?? '');
       var chapterUrls = analyzer.getStringList(tocRule.chapterUrl ?? '');
 
+      AppLogger.instance.logParseResult('目录', chapterNames.length);
+
       // 执行 formatJs（格式化章节列表的 JS 脚本）
       if (tocRule.formatJs != null && tocRule.formatJs!.isNotEmpty) {
+        AppLogger.instance.logJsExecute('formatJs', tocRule.formatJs!);
         final formatResult = await _executeJs(tocRule.formatJs!, result: jsonEncode({
           'names': chapterNames,
           'urls': chapterUrls,
@@ -779,7 +851,7 @@ class WebBook {
       if (tocRule.nextTocUrl != null && tocRule.nextTocUrl!.isNotEmpty) {
         final nextUrl = analyzer.getString(tocRule.nextTocUrl!, isUrl: true);
         if (nextUrl != null && nextUrl.isNotEmpty && nextUrl != tocUrl) {
-          debugPrint('📖 发现目录下一页: $nextUrl');
+          AppLogger.instance.info(LogCategory.parse, '目录下一页: $nextUrl');
           final nextChapters = await getChapterList(nextUrl);
           chapters.addAll(nextChapters);
         }
@@ -787,7 +859,7 @@ class WebBook {
 
       return chapters;
     } catch (e) {
-      debugPrint('❌ 获取目录失败: $e');
+      AppLogger.instance.error(LogCategory.parse, '获取目录失败', detail: e.toString());
       return [];
     }
   }
@@ -805,17 +877,24 @@ class WebBook {
       final response = await _client.execute(chapterUrl, headers: headers);
       var html = response.body;
 
+      AppLogger.instance.info(LogCategory.network, '正文响应: ${html.length} chars');
+
+      // 保存原始源码
       lastContentHtml = html;
 
       // 使用 AnalyzeRule 引擎解析正文
       final analyzer = AnalyzeRule()..setContent(html, baseUrl: chapterUrl)..setSourceEngine(source.engineType);
       var content = analyzer.getString(contentRule.content ?? '');
 
+      AppLogger.instance.logParseResult('正文', content != null ? 1 : 0);
+
       // 执行 js 脚本（正文加载后执行的 JS）
       if (contentRule.js != null && contentRule.js!.isNotEmpty) {
+        AppLogger.instance.logJsExecute('content.js', contentRule.js!);
         final jsResult = await _executeJs(contentRule.js!, result: content ?? '', baseUrl: chapterUrl);
         if (jsResult != null && jsResult.isNotEmpty) {
           content = jsResult;
+          AppLogger.instance.logJsResult('content.js', '${jsResult.length} chars');
         }
       }
 
@@ -826,9 +905,11 @@ class WebBook {
 
       // 执行 callBackJs（内容加载完成后的回调 JS）
       if (contentRule.callBackJs != null && contentRule.callBackJs!.isNotEmpty) {
+        AppLogger.instance.logJsExecute('callBackJs', contentRule.callBackJs!);
         final callBackResult = await _executeJs(contentRule.callBackJs!, result: content ?? '', baseUrl: chapterUrl);
         if (callBackResult != null && callBackResult.isNotEmpty) {
           content = callBackResult;
+          AppLogger.instance.logJsResult('callBackJs', '${callBackResult.length} chars');
         }
       }
 
@@ -836,7 +917,7 @@ class WebBook {
       if (contentRule.nextContentUrl != null && contentRule.nextContentUrl!.isNotEmpty) {
         final nextUrl = analyzer.getString(contentRule.nextContentUrl!, isUrl: true);
         if (nextUrl != null && nextUrl.isNotEmpty && nextUrl != chapterUrl) {
-          debugPrint('📖 发现正文下一页: $nextUrl');
+          AppLogger.instance.info(LogCategory.parse, '正文下一页: $nextUrl');
           final nextContent = await getContent(nextUrl);
           if (nextContent != null && nextContent.isNotEmpty) {
             content = (content ?? '') + '\n' + nextContent;
@@ -846,7 +927,7 @@ class WebBook {
 
       return content;
     } catch (e) {
-      debugPrint('❌ 获取正文失败: $e');
+      AppLogger.instance.error(LogCategory.parse, '获取正文失败', detail: e.toString());
       return null;
     }
   }
