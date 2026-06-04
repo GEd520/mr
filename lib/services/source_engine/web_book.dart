@@ -285,27 +285,6 @@ class WebBook {
     }
   }
 
-  /// 执行 JS 规则（带书籍上下文）
-  Future<String?> _executeJsWithBook(String jsCode, {
-    String? result,
-    String? baseUrl,
-    Map<String, dynamic>? book,
-    Map<String, dynamic>? chapter,
-  }) async {
-    try {
-      return await JsEngine.instance.processJsWithBook(
-        jsCode,
-        book: book,
-        chapter: chapter,
-        content: result,
-        sourceEngine: source.engineType,
-      );
-    } catch (e) {
-      debugPrint('❌ JS执行失败(带上下文): $e');
-      return null;
-    }
-  }
-
   /// 解析可能包含 JS 的 URL
   /// 支持 @js: 前缀的动态 URL 生成
   Future<String> _resolveUrl(String url, {String? keyword, int? page}) async {
@@ -612,17 +591,45 @@ class WebBook {
     await _loadJsLib();
 
     // 发现规则回退逻辑：ruleExplore 为空或 bookList 为空时，使用 ruleSearch
-    var exploreRule = source.ruleExplore;
+    final exploreRule = source.ruleExplore;
     final searchRule = source.ruleSearch;
     final useSearchFallback = exploreRule == null ||
         (exploreRule.bookList == null || exploreRule.bookList!.trim().isEmpty);
 
+    // 确定要使用的规则字段
+    final bookListRule = useSearchFallback
+        ? (searchRule?.bookList ?? '')
+        : (exploreRule.bookList ?? '');
+    final nameRule = useSearchFallback
+        ? (searchRule?.name ?? '')
+        : (exploreRule.name ?? '');
+    final authorRule = useSearchFallback
+        ? (searchRule?.author ?? '')
+        : (exploreRule.author ?? '');
+    final coverUrlRule = useSearchFallback
+        ? (searchRule?.coverUrl ?? '')
+        : (exploreRule.coverUrl ?? '');
+    final introRule = useSearchFallback
+        ? (searchRule?.intro ?? '')
+        : (exploreRule.intro ?? '');
+    final bookUrlRule = useSearchFallback
+        ? (searchRule?.bookUrl ?? '')
+        : (exploreRule.bookUrl ?? '');
+    final kindRule = useSearchFallback
+        ? (searchRule?.kind ?? '')
+        : (exploreRule.kind ?? '');
+    final lastChapterRule = useSearchFallback
+        ? (searchRule?.lastChapter ?? '')
+        : (exploreRule.lastChapter ?? '');
+    final wordCountRule = useSearchFallback
+        ? (searchRule?.wordCount ?? '')
+        : (exploreRule.wordCount ?? '');
+
     if (useSearchFallback && searchRule != null) {
       AppLogger.instance.info(LogCategory.parse, '发现规则为空，退回搜索规则');
-      exploreRule = searchRule;
     }
 
-    if (exploreRule == null) return [];
+    if (bookListRule.isEmpty && nameRule.isEmpty) return [];
 
     // 支持 JS 动态生成发现 URL
     final resolvedExploreUrl = await _resolveUrl(exploreUrl);
@@ -639,12 +646,7 @@ class WebBook {
       // 使用 AnalyzeRule 引擎解析
       final analyzer = AnalyzeRule()..setContent(html, baseUrl: source.bookSourceUrl)..setSourceEngine(source.engineType);
 
-      // 发现规则可能只有 bookList，没有 name/author 等字段
-      // 此时使用搜索规则的字段
-      final effectiveRule = useSearchFallback ? searchRule! : exploreRule;
-
       // 如果 bookList 存在，先获取元素列表再逐个解析
-      final bookListRule = effectiveRule.bookList ?? '';
       if (bookListRule.isNotEmpty) {
         final bookElements = analyzer.getElements(bookListRule);
         AppLogger.instance.logParseResult('发现列表', bookElements.length);
@@ -654,17 +656,17 @@ class WebBook {
           final element = bookElements[i];
           final itemAnalyzer = AnalyzeRule()..setContent(element, baseUrl: source.bookSourceUrl)..setSourceEngine(source.engineType);
 
-          final name = itemAnalyzer.getString(effectiveRule.name ?? '');
+          final name = itemAnalyzer.getString(nameRule);
           if (name != null && name.isNotEmpty) {
             results.add({
               'name': name,
-              'author': itemAnalyzer.getString(effectiveRule.author ?? '') ?? '',
-              'coverUrl': itemAnalyzer.getString(effectiveRule.coverUrl ?? '') ?? '',
-              'intro': itemAnalyzer.getString(effectiveRule.intro ?? '') ?? '',
-              'bookUrl': itemAnalyzer.getString(effectiveRule.bookUrl ?? '') ?? '',
-              'kind': itemAnalyzer.getString(effectiveRule.kind ?? '') ?? '',
-              'lastChapter': itemAnalyzer.getString(effectiveRule.lastChapter ?? '') ?? '',
-              'wordCount': itemAnalyzer.getString(effectiveRule.wordCount ?? '') ?? '',
+              'author': itemAnalyzer.getString(authorRule) ?? '',
+              'coverUrl': itemAnalyzer.getString(coverUrlRule) ?? '',
+              'intro': itemAnalyzer.getString(introRule) ?? '',
+              'bookUrl': itemAnalyzer.getString(bookUrlRule) ?? '',
+              'kind': itemAnalyzer.getString(kindRule) ?? '',
+              'lastChapter': itemAnalyzer.getString(lastChapterRule) ?? '',
+              'wordCount': itemAnalyzer.getString(wordCountRule) ?? '',
               'sourceUrl': source.bookSourceUrl,
               'sourceName': source.bookSourceName,
             });
@@ -674,14 +676,14 @@ class WebBook {
       }
 
       // 没有 bookList，直接用字段解析
-      final nameList = analyzer.getStringList(effectiveRule.name ?? '');
-      final authorList = analyzer.getStringList(effectiveRule.author ?? '');
-      final coverList = analyzer.getStringList(effectiveRule.coverUrl ?? '');
-      final introList = analyzer.getStringList(effectiveRule.intro ?? '');
-      final bookUrlList = analyzer.getStringList(effectiveRule.bookUrl ?? '');
-      final kindList = analyzer.getStringList(effectiveRule.kind ?? '');
-      final lastChapterList = analyzer.getStringList(effectiveRule.lastChapter ?? '');
-      final wordCountList = analyzer.getStringList(effectiveRule.wordCount ?? '');
+      final nameList = analyzer.getStringList(nameRule);
+      final authorList = analyzer.getStringList(authorRule);
+      final coverList = analyzer.getStringList(coverUrlRule);
+      final introList = analyzer.getStringList(introRule);
+      final bookUrlList = analyzer.getStringList(bookUrlRule);
+      final kindList = analyzer.getStringList(kindRule);
+      final lastChapterList = analyzer.getStringList(lastChapterRule);
+      final wordCountList = analyzer.getStringList(wordCountRule);
 
       final results = <Map<String, dynamic>>[];
 

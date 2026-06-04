@@ -74,14 +74,12 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
 
   // 源码存储
   String _searchSrc = '';
-  String _exploreSrc = '';
   String _bookSrc = '';
   String _tocSrc = '';
   String _contentSrc = '';
 
   // 发现分类缓存
   List<_ExploreKindItem> _exploreKinds = [];
-  int _currentExploreIndex = 0;
 
   // 示例文本
   String _textMy = '我的';
@@ -194,7 +192,6 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
   /// 刷新发现分类
   void _refreshExploreKinds() {
     _exploreKinds = _parseExploreKinds(_source);
-    _currentExploreIndex = 0;
     if (_exploreKinds.isNotEmpty) {
       _textFx = '${_exploreKinds.first.title}::${_exploreKinds.first.url}';
     }
@@ -279,9 +276,6 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
       switch (state) {
         case 10:
           _searchSrc = sourceHtml;
-          break;
-        case 15:
-          _exploreSrc = sourceHtml;
           break;
         case 20:
           _bookSrc = sourceHtml;
@@ -371,9 +365,6 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
   }
 
   Future<void> _startDebug(String key) async {
-    final webBook = _webBook!;
-    final source = _source!;
-
     // 重置状态
     _debugCancelled = false;
     _debugWatch
