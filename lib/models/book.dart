@@ -45,6 +45,13 @@ class Book {
   String get displayAuthor => customAuthor ?? author;
   String get displayCoverUrl => customCoverUrl ?? coverUrl;
   String get displayIntro => customIntro ?? intro;
+  String get latestChapterTitle => lastChapter ?? '';
+  int get unreadCount {
+    final total = totalChapterNum ?? 0;
+    if (total <= 0) return 0;
+    final readCount = durChapterIndex + 1;
+    return total > readCount ? total - readCount : 0;
+  }
 
   Book({
     required this.bookUrl,
@@ -176,12 +183,14 @@ class Book {
       coverUrl: json['coverUrl'] as String? ?? json['cover'] as String? ?? '',
       intro: json['intro'] as String? ?? json['description'] as String? ?? '',
       mediaType: MediaType.values[json['mediaType'] as int? ?? 0],
-      originType: BookOriginType.values[json['originType'] as int? ?? json['source'] as int? ?? 0],
+      originType: BookOriginType
+          .values[json['originType'] as int? ?? json['source'] as int? ?? 0],
       sourceUrl: json['sourceUrl'] as String? ?? json['sourceId'] as String?,
       sourceName: json['sourceName'] as String?,
       kind: json['kind'] as String?,
       lastChapter: json['lastChapter'] as String?,
-      totalChapterNum: json['totalChapterNum'] as int? ?? json['chapterCount'] as int?,
+      totalChapterNum:
+          json['totalChapterNum'] as int? ?? json['chapterCount'] as int?,
       status: json['status'] as String?,
       lastCheckTime: json['lastCheckTime'] != null
           ? DateTime.tryParse(json['lastCheckTime'] as String)
@@ -192,8 +201,7 @@ class Book {
       durChapterIndex: json['durChapterIndex'] as int? ?? 0,
       durChapterTitle: json['durChapterTitle'] as String? ?? '',
       durChapterPos: json['durChapterPos'] as int? ?? 0,
-      durChapterTimeMillisecond:
-          json['durChapterTimeMillisecond'] as int? ?? 0,
+      durChapterTimeMillisecond: json['durChapterTimeMillisecond'] as int? ?? 0,
       isTop: json['isTop'] as bool? ?? false,
       groupId: json['groupId'] as String?,
       tags: (json['tags'] as List<dynamic>?)?.cast<String>(),

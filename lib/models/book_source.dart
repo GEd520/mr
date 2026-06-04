@@ -157,18 +157,29 @@ class BookSource {
   }
 
   factory BookSource.fromJson(Map<String, dynamic> json) {
+    final typeValue = json['bookSourceType'];
+    final typeIndex =
+        typeValue is int ? typeValue : int.tryParse('$typeValue') ?? 0;
+    final ruleSearch = _asMap(json['ruleSearch']);
+    final ruleExplore = _asMap(json['ruleExplore']);
+    final ruleBookInfo = _asMap(json['ruleBookInfo']);
+    final ruleToc = _asMap(json['ruleToc']);
+    final ruleContent = _asMap(json['ruleContent']);
+    final ruleReview = _asMap(json['ruleReview']);
     return BookSource(
       bookSourceUrl: json['bookSourceUrl'] as String? ?? '',
       bookSourceName: json['bookSourceName'] as String? ?? '',
       bookSourceGroup: json['bookSourceGroup'] as String?,
-      bookSourceType: BookSourceType.values[json['bookSourceType'] as int? ?? 0],
+      bookSourceType: typeIndex >= 0 && typeIndex < BookSourceType.values.length
+          ? BookSourceType.values[typeIndex]
+          : BookSourceType.text,
       bookUrlPattern: json['bookUrlPattern'] as String?,
-      customOrder: json['customOrder'] as int? ?? 0,
-      enabled: json['enabled'] as bool? ?? true,
-      enabledExplore: json['enabledExplore'] as bool? ?? true,
+      customOrder: _asInt(json['customOrder']),
+      enabled: _asBool(json['enabled'], defaultValue: true),
+      enabledExplore: _asBool(json['enabledExplore'], defaultValue: true),
       jsLib: json['jsLib'] as String?,
       engine: json['engine'] as String?,
-      enabledCookieJar: json['enabledCookieJar'] as bool? ?? true,
+      enabledCookieJar: _asBool(json['enabledCookieJar'], defaultValue: true),
       concurrentRate: json['concurrentRate'] as String?,
       header: json['header'] as String?,
       loginUrl: json['loginUrl'] as String?,
@@ -177,34 +188,40 @@ class BookSource {
       coverDecodeJs: json['coverDecodeJs'] as String?,
       bookSourceComment: json['bookSourceComment'] as String?,
       variableComment: json['variableComment'] as String?,
-      lastUpdateTime: json['lastUpdateTime'] as int? ?? 0,
-      respondTime: json['respondTime'] as int? ?? 180000,
-      weight: json['weight'] as int? ?? 0,
+      lastUpdateTime: _asInt(json['lastUpdateTime']),
+      respondTime: _asInt(json['respondTime'], defaultValue: 180000),
+      weight: _asInt(json['weight']),
       searchUrl: json['searchUrl'] as String?,
       exploreUrl: json['exploreUrl'] as String?,
       exploreScreen: json['exploreScreen'] as String?,
-      ruleSearch: json['ruleSearch'] != null
-          ? SearchRule.fromJson(json['ruleSearch'] as Map<String, dynamic>)
-          : null,
-      ruleExplore: json['ruleExplore'] != null
-          ? ExploreRule.fromJson(json['ruleExplore'] as Map<String, dynamic>)
-          : null,
-      ruleBookInfo: json['ruleBookInfo'] != null
-          ? BookInfoRule.fromJson(json['ruleBookInfo'] as Map<String, dynamic>)
-          : null,
-      ruleToc: json['ruleToc'] != null
-          ? TocRule.fromJson(json['ruleToc'] as Map<String, dynamic>)
-          : null,
-      ruleContent: json['ruleContent'] != null
-          ? ContentRule.fromJson(json['ruleContent'] as Map<String, dynamic>)
-          : null,
-      ruleReview: json['ruleReview'] != null
-          ? ReviewRule.fromJson(json['ruleReview'] as Map<String, dynamic>)
-          : null,
-      eventListener: json['eventListener'] as bool? ?? false,
-      customButton: json['customButton'] as bool? ?? false,
-      nextPageLazyLoad: json['nextPageLazyLoad'] as bool? ?? false,
+      ruleSearch: ruleSearch == null ? null : SearchRule.fromJson(ruleSearch),
+      ruleExplore:
+          ruleExplore == null ? null : ExploreRule.fromJson(ruleExplore),
+      ruleBookInfo:
+          ruleBookInfo == null ? null : BookInfoRule.fromJson(ruleBookInfo),
+      ruleToc: ruleToc == null ? null : TocRule.fromJson(ruleToc),
+      ruleContent:
+          ruleContent == null ? null : ContentRule.fromJson(ruleContent),
+      ruleReview: ruleReview == null ? null : ReviewRule.fromJson(ruleReview),
+      eventListener: _asBool(json['eventListener']),
+      customButton: _asBool(json['customButton']),
+      nextPageLazyLoad: _asBool(json['nextPageLazyLoad']),
     );
+  }
+
+  static int _asInt(dynamic value, {int defaultValue = 0}) {
+    return value is int ? value : int.tryParse('$value') ?? defaultValue;
+  }
+
+  static bool _asBool(dynamic value, {bool defaultValue = false}) {
+    if (value == null) return defaultValue;
+    if (value is bool) return value;
+    return '$value'.toLowerCase() == 'true' || '$value' == '1';
+  }
+
+  static Map<String, dynamic>? _asMap(dynamic value) {
+    if (value is! Map) return null;
+    return value.map((key, item) => MapEntry('$key', item));
   }
 
   Map<String, dynamic> toJson() {
@@ -317,7 +334,7 @@ class BookSource {
     if (header == null || header!.isEmpty) {
       return {};
     }
-    
+
     try {
       final decoded = jsonDecode(header!);
       if (decoded is Map) {
@@ -334,7 +351,7 @@ class BookSource {
       }
       return headers;
     }
-    
+
     return {};
   }
 }

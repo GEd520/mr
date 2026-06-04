@@ -140,6 +140,13 @@ class _ProfilePageState extends State<ProfilePage> {
           ),
         ),
         ListTile(
+          leading: const Icon(Icons.history),
+          title: const Text('阅读记录'),
+          subtitle: Text('已读 $_bookCount 本'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => Navigator.pushNamed(context, AppRoutes.readRecord),
+        ),
+        ListTile(
           leading: const Icon(Icons.book),
           title: const Text('书源管理'),
           subtitle: Text('已导入 $_sourceCount 个书源'),

@@ -1,19 +1,21 @@
 import 'package:flutter/material.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:provider/provider.dart';
 import '../../models/book_source.dart';
 import '../../providers/discovery_provider.dart';
+import '../../services/book_source_import_service.dart';
 import '../../services/storage_service.dart';
 import 'book_source_edit_page.dart';
 
 /// 书源排序类型
 enum BookSourceSort {
-  manual,    // 手动排序
-  weight,    // 权重排序
-  name,      // 按名称
-  url,       // 按URL
-  update,    // 按更新时间
-  respond,   // 按响应时间
-  enable,    // 按启用状态
+  manual, // 手动排序
+  weight, // 权重排序
+  name, // 按名称
+  url, // 按URL
+  update, // 按更新时间
+  respond, // 按响应时间
+  enable, // 按启用状态
 }
 
 /// 书源管理页面
@@ -80,7 +82,8 @@ class _BookSourceManagePageState extends State<BookSourceManagePage> {
       // 提取所有分组
       _groups.clear();
       for (final source in _allSources) {
-        if (source.bookSourceGroup != null && source.bookSourceGroup!.isNotEmpty) {
+        if (source.bookSourceGroup != null &&
+            source.bookSourceGroup!.isNotEmpty) {
           _groups.add(source.bookSourceGroup!);
         }
       }
@@ -100,9 +103,14 @@ class _BookSourceManagePageState extends State<BookSourceManagePage> {
       } else if (keyword == '禁用' || keyword == 'disabled') {
         result = result.where((s) => !s.enabled).toList();
       } else if (keyword == '需登录' || keyword == 'need_login') {
-        result = result.where((s) => s.loginUrl != null && s.loginUrl!.isNotEmpty).toList();
+        result = result
+            .where((s) => s.loginUrl != null && s.loginUrl!.isNotEmpty)
+            .toList();
       } else if (keyword == '无分组' || keyword == 'no_group') {
-        result = result.where((s) => s.bookSourceGroup == null || s.bookSourceGroup!.isEmpty).toList();
+        result = result
+            .where(
+                (s) => s.bookSourceGroup == null || s.bookSourceGroup!.isEmpty)
+            .toList();
       } else if (keyword == '启用发现' || keyword == 'enabled_explore') {
         result = result.where((s) => s.enabledExplore).toList();
       } else if (keyword == '禁用发现' || keyword == 'disabled_explore') {
@@ -151,23 +159,29 @@ class _BookSourceManagePageState extends State<BookSourceManagePage> {
         break;
       case BookSourceSort.name:
         if (_isSortAscending) {
-          sortedSources.sort((a, b) => a.bookSourceName.compareTo(b.bookSourceName));
+          sortedSources
+              .sort((a, b) => a.bookSourceName.compareTo(b.bookSourceName));
         } else {
-          sortedSources.sort((a, b) => b.bookSourceName.compareTo(a.bookSourceName));
+          sortedSources
+              .sort((a, b) => b.bookSourceName.compareTo(a.bookSourceName));
         }
         break;
       case BookSourceSort.url:
         if (_isSortAscending) {
-          sortedSources.sort((a, b) => a.bookSourceUrl.compareTo(b.bookSourceUrl));
+          sortedSources
+              .sort((a, b) => a.bookSourceUrl.compareTo(b.bookSourceUrl));
         } else {
-          sortedSources.sort((a, b) => b.bookSourceUrl.compareTo(a.bookSourceUrl));
+          sortedSources
+              .sort((a, b) => b.bookSourceUrl.compareTo(a.bookSourceUrl));
         }
         break;
       case BookSourceSort.update:
         if (_isSortAscending) {
-          sortedSources.sort((a, b) => a.lastUpdateTime.compareTo(b.lastUpdateTime));
+          sortedSources
+              .sort((a, b) => a.lastUpdateTime.compareTo(b.lastUpdateTime));
         } else {
-          sortedSources.sort((a, b) => b.lastUpdateTime.compareTo(a.lastUpdateTime));
+          sortedSources
+              .sort((a, b) => b.lastUpdateTime.compareTo(a.lastUpdateTime));
         }
         break;
       case BookSourceSort.respond:
@@ -183,14 +197,18 @@ class _BookSourceManagePageState extends State<BookSourceManagePage> {
             final aEnabled = a.enabled ? 1 : 0;
             final bEnabled = b.enabled ? 1 : 0;
             final cmp = -(aEnabled.compareTo(bEnabled));
-            return cmp != 0 ? cmp : a.bookSourceName.compareTo(b.bookSourceName);
+            return cmp != 0
+                ? cmp
+                : a.bookSourceName.compareTo(b.bookSourceName);
           });
         } else {
           sortedSources.sort((a, b) {
             final aEnabled = a.enabled ? 1 : 0;
             final bEnabled = b.enabled ? 1 : 0;
             final cmp = aEnabled.compareTo(bEnabled);
-            return cmp != 0 ? cmp : a.bookSourceName.compareTo(b.bookSourceName);
+            return cmp != 0
+                ? cmp
+                : a.bookSourceName.compareTo(b.bookSourceName);
           });
         }
         break;
@@ -319,7 +337,8 @@ class _BookSourceManagePageState extends State<BookSourceManagePage> {
   }
 
   Future<void> _toggleSourceExplore(BookSource source) async {
-    final updatedSource = source.copyWith(enabledExplore: !source.enabledExplore);
+    final updatedSource =
+        source.copyWith(enabledExplore: !source.enabledExplore);
     await StorageService.instance.saveBookSource(updatedSource.toJson());
     await _loadSources();
   }
@@ -368,7 +387,9 @@ class _BookSourceManagePageState extends State<BookSourceManagePage> {
                       Navigator.pop(context);
                       _toggleSortOrder();
                     },
-                    icon: Icon(_isSortAscending ? Icons.arrow_upward : Icons.arrow_downward),
+                    icon: Icon(_isSortAscending
+                        ? Icons.arrow_upward
+                        : Icons.arrow_downward),
                     label: Text(_isSortAscending ? '升序' : '降序'),
                   ),
                 ],
@@ -384,14 +405,14 @@ class _BookSourceManagePageState extends State<BookSourceManagePage> {
               (BookSourceSort.respond, '按响应时间'),
               (BookSourceSort.enable, '按启用状态'),
             ].map((item) => RadioListTile<BookSourceSort>(
-              title: Text(item.$2),
-              value: item.$1,
-              groupValue: _sortType,
-              onChanged: (value) {
-                Navigator.pop(context);
-                _setSortType(value!);
-              },
-            )),
+                  title: Text(item.$2),
+                  value: item.$1,
+                  groupValue: _sortType,
+                  onChanged: (value) {
+                    Navigator.pop(context);
+                    _setSortType(value!);
+                  },
+                )),
           ],
         ),
       ),
@@ -407,7 +428,8 @@ class _BookSourceManagePageState extends State<BookSourceManagePage> {
           children: [
             Padding(
               padding: const EdgeInsets.all(16),
-              child: Text('分组筛选', style: Theme.of(context).textTheme.titleLarge),
+              child:
+                  Text('分组筛选', style: Theme.of(context).textTheme.titleLarge),
             ),
             const Divider(height: 1),
             ListTile(
@@ -476,17 +498,18 @@ class _BookSourceManagePageState extends State<BookSourceManagePage> {
               const Divider(),
               Padding(
                 padding: const EdgeInsets.all(16),
-                child: Text('自定义分组', style: Theme.of(context).textTheme.titleMedium),
+                child: Text('自定义分组',
+                    style: Theme.of(context).textTheme.titleMedium),
               ),
               ..._groups.map((group) => ListTile(
-                leading: const Icon(Icons.folder),
-                title: Text(group),
-                selected: _filterGroup == group,
-                onTap: () {
-                  Navigator.pop(context);
-                  _onSearch('group:$group');
-                },
-              )),
+                    leading: const Icon(Icons.folder),
+                    title: Text(group),
+                    selected: _filterGroup == group,
+                    onTap: () {
+                      Navigator.pop(context);
+                      _onSearch('group:$group');
+                    },
+                  )),
             ],
           ],
         ),
@@ -566,10 +589,24 @@ class _BookSourceManagePageState extends State<BookSourceManagePage> {
   }
 
   Future<void> _importFromLocal() async {
-    // TODO: 实现本地文件导入
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('本地导入功能开发中...')),
-    );
+    try {
+      final picked = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['json', 'txt'],
+        withData: true,
+      );
+      final bytes = picked?.files.single.bytes;
+      if (bytes == null) return;
+      final result = await BookSourceImportService().importBytes(bytes);
+      await _loadSources();
+      if (!mounted) return;
+      _showImportResult(result);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('导入失败: $e')),
+      );
+    }
   }
 
   Future<void> _importFromUrl() async {
@@ -598,12 +635,30 @@ class _BookSourceManagePageState extends State<BookSourceManagePage> {
       ),
     );
 
-    if (confirmed == true && controller.text.isNotEmpty) {
-      // TODO: 实现网络导入
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('网络导入功能开发中...')),
-      );
+    if (confirmed == true && controller.text.trim().isNotEmpty) {
+      try {
+        final result =
+            await BookSourceImportService().importText(controller.text);
+        await _loadSources();
+        if (!mounted) return;
+        _showImportResult(result);
+      } catch (e) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('网络导入失败: $e')),
+        );
+      }
     }
+  }
+
+  void _showImportResult(BookSourceImportResult result) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          '导入 ${result.sources.length} 个书源：新增 ${result.added}，更新 ${result.updated}，未变 ${result.unchanged}',
+        ),
+      ),
+    );
   }
 
   Future<void> _clearAllSources() async {
@@ -711,7 +766,8 @@ class _BookSourceManagePageState extends State<BookSourceManagePage> {
               _buildDetailItem('权重', source.weight.toString()),
               _buildDetailItem('响应时间', '${source.respondTime}ms'),
               _buildDetailItem('最后更新', _formatTime(source.lastUpdateTime)),
-              if (source.bookSourceComment != null && source.bookSourceComment!.isNotEmpty)
+              if (source.bookSourceComment != null &&
+                  source.bookSourceComment!.isNotEmpty)
                 _buildDetailItem('备注', source.bookSourceComment!),
               const Divider(),
               SwitchListTile(
@@ -739,7 +795,8 @@ class _BookSourceManagePageState extends State<BookSourceManagePage> {
                       child: OutlinedButton.icon(
                         icon: const Icon(Icons.delete),
                         label: const Text('删除书源'),
-                        style: OutlinedButton.styleFrom(foregroundColor: Colors.red),
+                        style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.red),
                         onPressed: () async {
                           Navigator.pop(context);
                           await _deleteSource(source);
@@ -789,9 +846,7 @@ class _BookSourceManagePageState extends State<BookSourceManagePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: _isSelectionMode
-          ? _buildSelectionAppBar()
-          : _buildNormalAppBar(),
+      appBar: _isSelectionMode ? _buildSelectionAppBar() : _buildNormalAppBar(),
       body: Column(
         children: [
           // 搜索框
@@ -855,7 +910,8 @@ class _BookSourceManagePageState extends State<BookSourceManagePage> {
                     itemCount: _filteredSources.length,
                     itemBuilder: (context, index) {
                       final source = _filteredSources[index];
-                      final isSelected = _selectedSourceUrls.contains(source.bookSourceUrl);
+                      final isSelected =
+                          _selectedSourceUrls.contains(source.bookSourceUrl);
                       return _buildSourceItem(source, isSelected);
                     },
                   ),
@@ -1109,7 +1165,8 @@ class _BookSourceManagePageState extends State<BookSourceManagePage> {
               if (source.bookSourceGroup != null) ...[
                 const SizedBox(width: 8),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                   decoration: BoxDecoration(
                     color: Theme.of(context).colorScheme.secondaryContainer,
                     borderRadius: BorderRadius.circular(4),

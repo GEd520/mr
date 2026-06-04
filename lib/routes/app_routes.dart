@@ -6,6 +6,7 @@ import '../pages/miniprogram/miniprogram_page.dart';
 import '../pages/profile/profile_page.dart';
 import '../pages/profile/book_source_manage_page.dart';
 import '../pages/profile/book_source_edit_page.dart';
+import '../pages/profile/read_record_page.dart';
 import '../pages/search/search_page.dart';
 import '../pages/detail/detail_page.dart';
 import '../pages/reader/novel_reader_page.dart';
@@ -24,6 +25,7 @@ class AppRoutes {
   static const String profile = '/profile';
   static const String bookSourceManage = '/book-source-manage';
   static const String bookSourceEdit = '/book-source-edit';
+  static const String readRecord = '/read-record';
   static const String search = '/search';
   static const String detail = '/detail';
   static const String novelReader = '/novel-reader';
@@ -52,6 +54,11 @@ class AppRoutes {
         final args = settings.arguments as Map<String, dynamic>?;
         return MaterialPageRoute(
           builder: (_) => BookSourceEditPage(sourceUrl: args?['sourceUrl']),
+        );
+      case readRecord:
+        final args = settings.arguments as Map<String, dynamic>?;
+        return MaterialPageRoute(
+          builder: (_) => ReadRecordPage(bookUrl: args?['bookUrl']),
         );
       case search:
         return MaterialPageRoute(builder: (_) => const SearchPage());
