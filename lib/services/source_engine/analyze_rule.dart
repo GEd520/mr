@@ -20,7 +20,7 @@ class AnalyzeRule {
   final Map<String, dynamic> _variables = {};
   final Map<String, String> _variableMap = {}; // 持久化变量存储
   JsEngineType? _sourceEngine; // 书源级引擎声明
-  
+
   // 规则缓存
   static final Map<String, List<_SourceRule>> _stringRuleCache = {};
   static final Map<String, RegExp?> _regexCache = {};
@@ -78,18 +78,20 @@ class AnalyzeRule {
   /// [content] 可选的内容，如果提供则对此内容执行规则
   /// [isUrl] 是否为URL
   /// [unescape] 是否反转义HTML
-  String? getString(String? ruleStr, {dynamic content, bool isUrl = false, bool unescape = true}) {
+  String? getString(String? ruleStr,
+      {dynamic content, bool isUrl = false, bool unescape = true}) {
     if (ruleStr == null || ruleStr.trim().isEmpty) return null;
-    
+
     final ruleList = _splitSourceRuleCacheString(ruleStr);
     debugPrint('📝 getString: 规则="$ruleStr", 拆分为${ruleList.length}段');
-    return _getString(ruleList, mContent: content, isUrl: isUrl, unescape: unescape);
+    return _getString(ruleList,
+        mContent: content, isUrl: isUrl, unescape: unescape);
   }
 
   /// 获取字符串列表
   List<String> getStringList(String? ruleStr, {bool isUrl = false}) {
     if (ruleStr == null || ruleStr.trim().isEmpty) return [];
-    
+
     final ruleList = _splitSourceRuleCacheString(ruleStr);
     return _getStringList(ruleList, isUrl: isUrl);
   }
@@ -97,7 +99,7 @@ class AnalyzeRule {
   /// 获取元素列表
   List<dynamic> getElements(String? ruleStr) {
     if (ruleStr == null || ruleStr.trim().isEmpty) return [];
-    
+
     final ruleList = _splitSourceRule(ruleStr, allInOne: true);
     return _getElements(ruleList);
   }
@@ -105,7 +107,7 @@ class AnalyzeRule {
   /// 获取单个元素
   dynamic getElement(String? ruleStr) {
     if (ruleStr == null || ruleStr.trim().isEmpty) return null;
-    
+
     final ruleList = _splitSourceRule(ruleStr, allInOne: true);
     return _getElement(ruleList);
   }
@@ -122,17 +124,17 @@ class AnalyzeRule {
 
   List<_SourceRule> _splitSourceRuleCacheString(String ruleStr) {
     if (ruleStr.isEmpty) return [];
-    
+
     // 检查缓存
     if (_stringRuleCache.containsKey(ruleStr)) {
       return _stringRuleCache[ruleStr]!;
     }
-    
+
     // 限制缓存大小
     if (_stringRuleCache.length >= _maxCacheSize) {
       _stringRuleCache.remove(_stringRuleCache.keys.first);
     }
-    
+
     final rules = _splitSourceRule(ruleStr);
     _stringRuleCache[ruleStr] = rules;
     return rules;
@@ -141,11 +143,11 @@ class AnalyzeRule {
   /// 分解规则生成规则列表
   List<_SourceRule> _splitSourceRule(String? ruleStr, {bool allInOne = false}) {
     if (ruleStr == null || ruleStr.isEmpty) return [];
-    
+
     final ruleList = <_SourceRule>[];
     var mode = RuleMode.default_;
     var start = 0;
-    
+
     // 检查是否为正则模式（以:开头）
     if (allInOne && ruleStr.startsWith(':')) {
       mode = RuleMode.regex;
@@ -154,9 +156,11 @@ class AnalyzeRule {
     } else if (_isRegex) {
       mode = RuleMode.regex;
     }
-    
+
     // 解析 @js: / @rhino: / @quickjs: / @java: / @ts: 和 <js></js> 规则
-    final jsPattern = RegExp(r'@(?:js|rhino|quickjs|java|ts):([\s\S]*?)(?=@(?:js|rhino|quickjs|java|ts):|$)', caseSensitive: false);
+    final jsPattern = RegExp(
+        r'@(?:js|rhino|quickjs|java|ts):([\s\S]*?)(?=@(?:js|rhino|quickjs|java|ts):|$)',
+        caseSensitive: false);
     final jsTagPattern = RegExp(r'<js>([\s\S]*?)</js>', caseSensitive: false);
 
     // 先处理 <js></js> 标签 → 替换为 @js:
@@ -166,7 +170,7 @@ class AnalyzeRule {
     if (jsTagMatches.isNotEmpty) {
       for (final match in jsTagMatches.reversed) {
         processedRule = processedRule.replaceRange(
-          match.start, match.end, '@js:${match.group(1)}');
+            match.start, match.end, '@js:${match.group(1)}');
       }
     }
 
@@ -180,7 +184,8 @@ class AnalyzeRule {
         if (match.start > lastEnd) {
           final before = processedRule.substring(lastEnd, match.start).trim();
           if (before.isNotEmpty) {
-            ruleList.add(_SourceRule.parse(before, isJson: _isJson, mode: mode));
+            ruleList
+                .add(_SourceRule.parse(before, isJson: _isJson, mode: mode));
           }
         }
         // 添加 JS 规则（保留完整前缀，让 JsEngine._resolveEngine 处理分流）
@@ -194,7 +199,8 @@ class AnalyzeRule {
       if (lastEnd < processedRule.length) {
         final remaining = processedRule.substring(lastEnd).trim();
         if (remaining.isNotEmpty) {
-          ruleList.add(_SourceRule.parse(remaining, isJson: _isJson, mode: mode));
+          ruleList
+              .add(_SourceRule.parse(remaining, isJson: _isJson, mode: mode));
         }
       }
     } else {
@@ -204,42 +210,43 @@ class AnalyzeRule {
         ruleList.add(_SourceRule.parse(rest, isJson: _isJson, mode: mode));
       }
     }
-    
+
     return ruleList;
   }
 
   // ================== 字符串获取 ==================
 
-  String? _getString(List<_SourceRule> ruleList, {dynamic mContent, bool isUrl = false, bool unescape = true}) {
+  String? _getString(List<_SourceRule> ruleList,
+      {dynamic mContent, bool isUrl = false, bool unescape = true}) {
     dynamic result = mContent ?? _content;
-    
+
     for (final rule in ruleList) {
       if (result == null) continue;
-      
+
       // 执行 @put 规则
       _executePutRule(rule.putMap);
-      
+
       // 应用变量替换
       final appliedRule = _applyVariables(rule);
-      
+
       // 执行规则
       result = _applyRule(result, appliedRule, listMode: false);
-      
+
       // 应用正则替换
       if (result != null && rule.replaceRegex.isNotEmpty) {
         result = _applyReplaceRegex(result.toString(), rule);
       }
     }
-    
+
     if (result == null) return null;
-    
+
     String resultStr = _toString(result) ?? '';
-    
+
     // HTML反转义
     if (unescape && resultStr.contains('&')) {
       resultStr = _unescapeHtml(resultStr);
     }
-    
+
     // URL处理
     if (isUrl) {
       if (resultStr.isEmpty) {
@@ -247,43 +254,52 @@ class AnalyzeRule {
       }
       return _getAbsoluteUrl(resultStr);
     }
-    
+
     return resultStr.isEmpty ? null : resultStr;
   }
 
-  List<String> _getStringList(List<_SourceRule> ruleList, {bool isUrl = false}) {
+  List<String> _getStringList(List<_SourceRule> ruleList,
+      {bool isUrl = false}) {
     dynamic result = _content;
-    
+
     for (final rule in ruleList) {
       if (result == null) continue;
-      
+
       _executePutRule(rule.putMap);
       final appliedRule = _applyVariables(rule);
       result = _applyRule(result, appliedRule, listMode: true);
-      
+
       if (result != null && rule.replaceRegex.isNotEmpty) {
         if (result is List) {
-          result = result.map((e) => _applyReplaceRegex(e.toString(), rule)).toList();
+          result = result
+              .map((e) => _applyReplaceRegex(e.toString(), rule))
+              .toList();
         } else {
           result = _applyReplaceRegex(result.toString(), rule);
         }
       }
     }
-    
+
     if (result == null) return [];
-    
+
     List<String> resultList;
     if (result is List) {
-      resultList = result.map((e) => _toString(e) ?? '').where((e) => e.isNotEmpty).toList();
+      resultList = result
+          .map((e) => _toString(e) ?? '')
+          .where((e) => e.isNotEmpty)
+          .toList();
     } else {
       final str = _toString(result);
       resultList = str != null && str.isNotEmpty ? [str] : [];
     }
-    
+
     if (isUrl) {
-      return resultList.map((url) => _getAbsoluteUrl(url)).where((e) => e.isNotEmpty).toList();
+      return resultList
+          .map((url) => _getAbsoluteUrl(url))
+          .where((e) => e.isNotEmpty)
+          .toList();
     }
-    
+
     return resultList;
   }
 
@@ -291,23 +307,25 @@ class AnalyzeRule {
 
   List<dynamic> _getElements(List<_SourceRule> ruleList) {
     dynamic result = _content;
-    
+
     for (final rule in ruleList) {
       if (result == null) continue;
-      
+
       _executePutRule(rule.putMap);
       final appliedRule = _applyVariables(rule);
       result = _applyRule(result, appliedRule, listMode: true);
-      
+
       if (result != null && rule.replaceRegex.isNotEmpty) {
         if (result is List) {
-          result = result.map((e) => _applyReplaceRegex(e.toString(), rule)).toList();
+          result = result
+              .map((e) => _applyReplaceRegex(e.toString(), rule))
+              .toList();
         } else {
           result = _applyReplaceRegex(result.toString(), rule);
         }
       }
     }
-    
+
     if (result == null) return [];
     if (result is List) return result;
     return [result];
@@ -320,10 +338,11 @@ class AnalyzeRule {
 
   // ================== 规则应用 ==================
 
-  dynamic _applyRule(dynamic content, _SourceRule rule, {required bool listMode}) {
+  dynamic _applyRule(dynamic content, _SourceRule rule,
+      {required bool listMode}) {
     final ruleStr = rule.rule;
     if (ruleStr.isEmpty) return content;
-    
+
     switch (rule.mode) {
       case RuleMode.json:
         return _applyJsonPath(content, ruleStr, listMode: listMode);
@@ -348,21 +367,22 @@ class AnalyzeRule {
   List<dynamic> _jsoupGetElements(dynamic content, String rule) {
     final element = _toElement(content);
     if (element == null || rule.isEmpty) return [];
-    
+
     final analyzer = _RuleAnalyzer(rule);
     final groups = analyzer.splitRule('&&', '||', '%%');
     final collected = <List<dynamic>>[];
-    
+
     for (final group in groups) {
       final elements = _selectElementsChain(element, group);
       collected.add(elements);
       if (elements.isNotEmpty && analyzer.elementsType == '||') break;
     }
-    
+
     // %% 交错合并
     if (analyzer.elementsType == '%%' && collected.isNotEmpty) {
       final result = <dynamic>[];
-      final maxLen = collected.map((e) => e.length).reduce((a, b) => a > b ? a : b);
+      final maxLen =
+          collected.map((e) => e.length).reduce((a, b) => a > b ? a : b);
       for (var i = 0; i < maxLen; i++) {
         for (final list in collected) {
           if (i < list.length) result.add(list[i]);
@@ -370,7 +390,7 @@ class AnalyzeRule {
       }
       return result;
     }
-    
+
     return collected.expand((e) => e).toList();
   }
 
@@ -380,15 +400,15 @@ class AnalyzeRule {
       debugPrint('📝 _jsoupGetString: element=${element != null}, rule为空');
       return null;
     }
-    
+
     debugPrint('📝 _jsoupGetString: rule="$rule"');
     final sourceRule = _JsoupSourceRule(rule);
     final analyzer = _RuleAnalyzer(sourceRule.elementsRule);
     final groups = analyzer.splitRule('&&', '||', '%%');
     debugPrint('📝 分组数: ${groups.length}, 类型: ${analyzer.elementsType}');
-    
+
     final results = <List<String>>[];
-    
+
     for (final group in groups) {
       debugPrint('📝 处理分组: "$group"');
       final values = sourceRule.isCss
@@ -400,10 +420,11 @@ class AnalyzeRule {
         if (analyzer.elementsType == '||') break;
       }
     }
-    
+
     final text = <String>[];
     if (analyzer.elementsType == '%%' && results.isNotEmpty) {
-      final maxLen = results.map((e) => e.length).reduce((a, b) => a > b ? a : b);
+      final maxLen =
+          results.map((e) => e.length).reduce((a, b) => a > b ? a : b);
       for (var i = 0; i < maxLen; i++) {
         for (final item in results) {
           if (i < item.length) text.add(item[i]);
@@ -414,7 +435,7 @@ class AnalyzeRule {
         text.addAll(item);
       }
     }
-    
+
     debugPrint('📝 最终结果: ${text.length}个文本段');
     if (text.isEmpty) return null;
     return text.length == 1 ? text.first : text.join('\n');
@@ -424,7 +445,7 @@ class AnalyzeRule {
   List<dynamic> _selectElementsChain(dom.Element root, String rule) {
     final parts = _RuleAnalyzer(rule)..trim();
     var current = <dynamic>[root];
-    
+
     for (final part in parts.splitRule('@')) {
       final next = <dynamic>[];
       for (final element in current) {
@@ -435,7 +456,7 @@ class AnalyzeRule {
       current = next;
       if (current.isEmpty) break;
     }
-    
+
     return current;
   }
 
@@ -444,28 +465,28 @@ class AnalyzeRule {
     final parsed = _ElementSelector.parse(rawRule);
     List<dom.Element> elements;
     var beforeRule = parsed.beforeRule;
-    
+
     // 处理 legados 特殊语法: #xxx 等同于 id.xxx
-    if (beforeRule.startsWith('#') && !beforeRule.contains('[') && !beforeRule.contains('.')) {
+    if (beforeRule.startsWith('#') &&
+        !beforeRule.contains('[') &&
+        !beforeRule.contains('.')) {
       // #ettt 格式，转换为 id.ettt 处理
       final idValue = beforeRule.substring(1);
       beforeRule = 'id.$idValue';
     }
-    
+
     if (beforeRule.isEmpty || beforeRule == 'children') {
       elements = root.children.toList();
     } else {
       final rules = beforeRule.split('.');
       switch (rules.first) {
         case 'class':
-          elements = rules.length > 1
-              ? root.getElementsByClassName(rules[1])
-              : [];
+          elements =
+              rules.length > 1 ? root.getElementsByClassName(rules[1]) : [];
           break;
         case 'tag':
-          elements = rules.length > 1
-              ? root.getElementsByTagName(rules[1])
-              : [];
+          elements =
+              rules.length > 1 ? root.getElementsByTagName(rules[1]) : [];
           break;
         case 'id':
           elements = rules.length > 1
@@ -490,7 +511,7 @@ class AnalyzeRule {
           }
       }
     }
-    
+
     return parsed.apply(elements);
   }
 
@@ -499,69 +520,81 @@ class AnalyzeRule {
     final parts = _RuleAnalyzer(rule)..trim();
     final rules = parts.splitRule('@');
     if (rules.isEmpty) return [];
-    
+
     // 如果只有一个规则部分
     if (rules.length == 1) {
       final singleRule = rules.first;
-      
+
       // 检查是否是提取规则（text, html, 属性等）
       final lowerRule = singleRule.toLowerCase();
-      if (lowerRule == 'text' || lowerRule == 'text()' ||
-          lowerRule == 'html' || lowerRule == 'html()' ||
-          lowerRule == 'owntext' || lowerRule == 'textnodes' ||
+      if (lowerRule == 'text' ||
+          lowerRule == 'text()' ||
+          lowerRule == 'html' ||
+          lowerRule == 'html()' ||
+          lowerRule == 'owntext' ||
+          lowerRule == 'textnodes' ||
           lowerRule == 'all' ||
-          lowerRule == 'href' || lowerRule == 'src' ||
-          lowerRule == 'hrefurl' || lowerRule == 'srcurl' ||
+          lowerRule == 'href' ||
+          lowerRule == 'src' ||
+          lowerRule == 'hrefurl' ||
+          lowerRule == 'srcurl' ||
           singleRule.startsWith('@')) {
         // 直接在根元素上提取
         return _extractLast([root], singleRule);
       }
-      
+
       // 否则先选择元素，再提取文本
       final elements = _selectElementsSingle(root, singleRule);
       if (elements.isEmpty) return [];
-      
+
       // 如果选择结果是元素列表，提取文本
       final elementList = elements.whereType<dom.Element>().toList();
       if (elementList.isNotEmpty) {
-        return elementList.map((e) => e.text.trim()).where((e) => e.isNotEmpty).toList();
+        return elementList
+            .map((e) => e.text.trim())
+            .where((e) => e.isNotEmpty)
+            .toList();
       }
-      
+
       return [];
     }
-    
+
     // 多步规则：前面的选择元素，最后一步提取内容
     var current = <dom.Element>[root];
     for (var i = 0; i < rules.length - 1; i++) {
       final next = <dom.Element>[];
       for (final element in current) {
-        next.addAll(_selectElementsSingle(element, rules[i]).whereType<dom.Element>());
+        next.addAll(
+            _selectElementsSingle(element, rules[i]).whereType<dom.Element>());
       }
       current = next;
       if (current.isEmpty) return [];
     }
-    
+
     return _extractLast(current, rules.last);
   }
 
   /// CSS选择器获取最后结果
   List<String> _cssLast(dom.Element root, String rule) {
     final lastAt = rule.lastIndexOf('@');
-    
+
     // 如果没有 @，直接选择元素并返回文本
     if (lastAt < 0) {
       try {
         final elements = root.querySelectorAll(rule).toList();
-        return elements.map((e) => e.text.trim()).where((e) => e.isNotEmpty).toList();
+        return elements
+            .map((e) => e.text.trim())
+            .where((e) => e.isNotEmpty)
+            .toList();
       } catch (e) {
         debugPrint('CSS selector failed: $rule $e');
         return [];
       }
     }
-    
+
     final selector = rule.substring(0, lastAt);
     final lastRule = rule.substring(lastAt + 1);
-    
+
     try {
       final elements = root.querySelectorAll(selector).toList();
       return _extractLast(elements, lastRule);
@@ -574,7 +607,7 @@ class AnalyzeRule {
   /// 提取最后结果
   List<String> _extractLast(List<dom.Element> elements, String lastRule) {
     final result = <String>[];
-    
+
     switch (lastRule.toLowerCase()) {
       case 'text':
       case 'text()':
@@ -583,7 +616,7 @@ class AnalyzeRule {
           if (text.isNotEmpty) result.add(text);
         }
         break;
-        
+
       case 'owntext':
         for (final element in elements) {
           // ownText 只获取直接子文本
@@ -595,7 +628,7 @@ class AnalyzeRule {
           if (ownText.isNotEmpty) result.add(ownText);
         }
         break;
-        
+
       case 'textnodes':
         for (final element in elements) {
           final texts = element.nodes
@@ -606,7 +639,7 @@ class AnalyzeRule {
           if (texts.isNotEmpty) result.add(texts);
         }
         break;
-        
+
       case 'html':
       case 'html()':
         for (final element in elements) {
@@ -617,31 +650,30 @@ class AnalyzeRule {
           if (html.isNotEmpty) result.add(html);
         }
         break;
-        
+
       case 'all':
         final html = elements.map((e) => e.outerHtml).join();
         if (html.isNotEmpty) result.add(html);
         break;
-        
+
       default:
         for (final element in elements) {
           final value = _getAttribute(element, lastRule);
           if (value.isNotEmpty && !result.contains(value)) result.add(value);
         }
     }
-    
+
     return result;
   }
 
   /// 获取属性值
   String _getAttribute(dom.Element element, String attr) {
     final key = attr.startsWith('@') ? attr.substring(1) : attr;
-    
+
     switch (key.toLowerCase()) {
       case 'href':
       case 'src':
-        // 返回原始属性值，不进行URL转换
-        return element.attributes[key.toLowerCase()] ?? '';
+        return _getAbsoluteUrl(element.attributes[key.toLowerCase()] ?? '');
       case 'hrefurl':
         return _getAbsoluteUrl(element.attributes['href'] ?? '');
       case 'srcurl':
@@ -653,13 +685,16 @@ class AnalyzeRule {
       case 'html()':
         return element.innerHtml;
       default:
-        return element.attributes[key] ?? element.attributes[key.toLowerCase()] ?? '';
+        return element.attributes[key] ??
+            element.attributes[key.toLowerCase()] ??
+            '';
     }
   }
 
   // ================== JSONPath 解析 ==================
 
-  dynamic _applyJsonPath(dynamic content, String jsonPath, {required bool listMode}) {
+  dynamic _applyJsonPath(dynamic content, String jsonPath,
+      {required bool listMode}) {
     dynamic data = content;
     if (data is String) {
       try {
@@ -668,7 +703,7 @@ class AnalyzeRule {
         return null;
       }
     }
-    
+
     // 处理内嵌规则 {$.rule}
     final innerPattern = RegExp(r'\{\$\.([^}]+)\}');
     var processedPath = jsonPath.replaceAllMapped(innerPattern, (match) {
@@ -676,15 +711,15 @@ class AnalyzeRule {
       final innerResult = _applyJsonPath(data, innerRule, listMode: false);
       return innerResult?.toString() ?? '';
     });
-    
+
     final tokens = _parseJsonPath(processedPath);
     dynamic current = data;
-    
+
     for (final token in tokens) {
       current = _jsonStep(current, token);
       if (current == null) return null;
     }
-    
+
     return current;
   }
 
@@ -692,16 +727,17 @@ class AnalyzeRule {
     var p = path.trim();
     if (p.startsWith(r'$.')) p = p.substring(2);
     if (p.startsWith(r'$')) p = p.substring(1);
-    
+
     final tokens = <String>[];
     final re = RegExp(r'([^\.\[\]]+)|\[([^\]]+)\]');
-    
+
     for (final match in re.allMatches(p)) {
       final value = match.group(1) ?? match.group(2);
       if (value == null || value.isEmpty) continue;
-      tokens.add(value == '*' ? '*' : value.replaceAll("'", '').replaceAll('"', ''));
+      tokens.add(
+          value == '*' ? '*' : value.replaceAll("'", '').replaceAll('"', ''));
     }
-    
+
     return tokens;
   }
 
@@ -711,7 +747,7 @@ class AnalyzeRule {
       if (value is List) return value;
       return null;
     }
-    
+
     final index = int.tryParse(token);
     if (index != null) {
       if (value is List) {
@@ -720,7 +756,7 @@ class AnalyzeRule {
       }
       return null;
     }
-    
+
     if (value is Map) return value[token];
     if (value is List) {
       return value
@@ -729,7 +765,7 @@ class AnalyzeRule {
           .expand((item) => item is List ? item : [item])
           .toList();
     }
-    
+
     return null;
   }
 
@@ -745,7 +781,8 @@ class AnalyzeRule {
 
   dynamic _applyJs(dynamic content, String jsCode) {
     try {
-      return JsEngine.instance.executeSync(jsCode, content, baseUrl: _baseUrl, sourceEngine: _sourceEngine);
+      return JsEngine.instance.executeSync(jsCode, content,
+          baseUrl: _baseUrl, sourceEngine: _sourceEngine);
     } catch (e) {
       debugPrint('JS execution failed: $e');
       return null;
@@ -754,12 +791,13 @@ class AnalyzeRule {
 
   // ================== 正则解析 ==================
 
-  dynamic _applyRegex(dynamic content, String pattern, {required bool listMode}) {
+  dynamic _applyRegex(dynamic content, String pattern,
+      {required bool listMode}) {
     final regex = _compileRegex(pattern);
     if (regex == null) return null;
-    
+
     final text = content.toString();
-    
+
     if (listMode) {
       return regex.allMatches(text).map((m) {
         if (m.groupCount > 0) {
@@ -768,7 +806,7 @@ class AnalyzeRule {
         return m.group(0) ?? '';
       }).toList();
     }
-    
+
     final match = regex.firstMatch(text);
     if (match == null) return null;
     return match.groupCount > 0 ? match.group(1) : match.group(0);
@@ -798,7 +836,7 @@ class AnalyzeRule {
   /// 应用变量替换
   _SourceRule _applyVariables(_SourceRule rule) {
     var next = rule.rule;
-    
+
     // 替换 @get:{key}
     next = next.replaceAllMapped(
       RegExp(r'@get:\{([^}]+)\}', caseSensitive: false),
@@ -807,7 +845,7 @@ class AnalyzeRule {
         return getVariable(key)?.toString() ?? '';
       },
     );
-    
+
     // 替换 {{variable}}
     next = next.replaceAllMapped(
       RegExp(r'\{\{([\s\S]*?)\}\}'),
@@ -818,16 +856,20 @@ class AnalyzeRule {
         if (value != null) return value.toString();
         // 否则尝试作为JS执行
         try {
-          return JsEngine.instance.executeSync(expr, _content, baseUrl: _baseUrl, sourceEngine: _sourceEngine)?.toString() ?? '';
+          return JsEngine.instance
+                  .executeSync(expr, _content,
+                      baseUrl: _baseUrl, sourceEngine: _sourceEngine)
+                  ?.toString() ??
+              '';
         } catch (_) {
           return '';
         }
       },
     );
-    
+
     // 替换 $1, $2 等正则捕获组引用
     // 这部分在 makeUpRule 中处理
-    
+
     return _SourceRule(
       next,
       rule.mode,
@@ -841,17 +883,17 @@ class AnalyzeRule {
   /// 应用正则替换
   String _applyReplaceRegex(String value, _SourceRule rule) {
     if (rule.replaceRegex.isEmpty) return value;
-    
+
     try {
       final regex = _compileRegex(rule.replaceRegex);
       if (regex == null) return value;
-      
+
       if (rule.replaceFirst) {
         final match = regex.firstMatch(value);
         if (match == null) return '';
         return match.group(0)!.replaceFirst(regex, rule.replacement);
       }
-      
+
       return value.replaceAll(regex, rule.replacement);
     } catch (e) {
       return value;
@@ -887,10 +929,10 @@ class AnalyzeRule {
     if (value.startsWith('http://') || value.startsWith('https://')) {
       return value;
     }
-    
+
     final base = _redirectUrl ?? _baseUrl;
     if (base == null || base.isEmpty) return value;
-    
+
     try {
       return Uri.parse(base).resolve(value).toString();
     } catch (_) {
@@ -939,7 +981,7 @@ class _SourceRule {
   }) {
     var rule = input.trim();
     var currentMode = mode;
-    
+
     // 模式识别
     if (currentMode != RuleMode.js && currentMode != RuleMode.regex) {
       if (rule.startsWith('@CSS:') || rule.startsWith('@css:')) {
@@ -960,7 +1002,7 @@ class _SourceRule {
         currentMode = RuleMode.xpath;
       }
     }
-    
+
     // 解析 @put 规则
     final putMap = <String, String>{};
     rule = rule.replaceAllMapped(
@@ -975,23 +1017,23 @@ class _SourceRule {
         return '';
       },
     );
-    
+
     // 解析 ## 分割的正则替换
     var replaceRegex = '';
     var replacement = '';
     var replaceFirst = false;
-    
+
     final sharpIndex = rule.indexOf('##');
     if (sharpIndex >= 0) {
       final mainRule = rule.substring(0, sharpIndex);
       final parts = rule.substring(sharpIndex + 2).split('##');
-      
+
       replaceRegex = parts.isNotEmpty ? parts[0] : '';
       replacement = parts.length > 1 ? parts[1] : '';
       replaceFirst = parts.length > 2;
       rule = mainRule;
     }
-    
+
     return _SourceRule(
       rule.trim(),
       currentMode,
@@ -1033,15 +1075,18 @@ class _RuleAnalyzer {
 
   List<String> splitRule(String first, [String? second, String? third]) {
     final types = [first, second, third].whereType<String>().toList();
-    
+
     for (final type in types) {
       final parts = _splitOutside(rule, type);
       if (parts.length > 1) {
         elementsType = type;
-        return parts.where((e) => e.trim().isNotEmpty).map((e) => e.trim()).toList();
+        return parts
+            .where((e) => e.trim().isNotEmpty)
+            .map((e) => e.trim())
+            .toList();
       }
     }
-    
+
     return [rule.trim()].where((e) => e.isNotEmpty).toList();
   }
 
@@ -1049,21 +1094,21 @@ class _RuleAnalyzer {
     final result = <String>[];
     var depth = 0;
     var start = 0;
-    
+
     for (var i = 0; i <= value.length - delimiter.length; i++) {
       final ch = value[i];
       if (ch == '[' || ch == '(' || ch == '{') depth++;
       if (ch == ']' || ch == ')' || ch == '}') {
         depth = depth > 0 ? depth - 1 : 0;
       }
-      
+
       if (depth == 0 && value.startsWith(delimiter, i)) {
         result.add(value.substring(start, i));
         start = i + delimiter.length;
         i = start - 1;
       }
     }
-    
+
     if (start == 0) return [value];
     result.add(value.substring(start));
     return result;
@@ -1083,14 +1128,15 @@ class _ElementSelector {
     var rule = rawRule.trim();
     var exclude = false;
     final indexes = <int>[];
-    
+
     // 支持 [!0,1,2] 或 [0,1,2] 格式
     final bracketMatch = RegExp(r'^(.*)\[(!?)([-\d,\s]+)\]$').firstMatch(rule);
     if (bracketMatch != null) {
       rule = bracketMatch.group(1)!.trim();
       exclude = bracketMatch.group(2) == '!';
       indexes.addAll(
-        bracketMatch.group(3)!
+        bracketMatch
+            .group(3)!
             .split(',')
             .map((e) => int.tryParse(e.trim()))
             .whereType<int>()
@@ -1098,17 +1144,18 @@ class _ElementSelector {
       );
       return _ElementSelector(rule, indexes, exclude);
     }
-    
+
     // 支持 .0 或 .!0 或 :0:1:2 格式
-    final dotMatch = RegExp(r'^(.*)([.!])(-?\d+)(?::(-?\d+))?(?::(-?\d+))?$').firstMatch(rule);
+    final dotMatch = RegExp(r'^(.*)([.!])(-?\d+)(?::(-?\d+))?(?::(-?\d+))?$')
+        .firstMatch(rule);
     if (dotMatch != null) {
       rule = dotMatch.group(1)!.trim();
       exclude = dotMatch.group(2) == '!';
-      
+
       final start = int.tryParse(dotMatch.group(3) ?? '');
       final end = int.tryParse(dotMatch.group(4) ?? '');
       final step = int.tryParse(dotMatch.group(5) ?? '');
-      
+
       if (start != null) {
         if (end != null) {
           // 范围选择
@@ -1128,16 +1175,16 @@ class _ElementSelector {
           indexes.add(start);
         }
       }
-      
+
       return _ElementSelector(rule, indexes, exclude);
     }
-    
+
     return _ElementSelector(rule, indexes, exclude);
   }
 
   List<dynamic> apply(List<dom.Element> elements) {
     if (indexes.isEmpty) return elements.toList();
-    
+
     final selected = <int>{};
     for (final index in indexes) {
       final fixed = index < 0 ? elements.length + index : index;
@@ -1145,14 +1192,14 @@ class _ElementSelector {
         selected.add(fixed);
       }
     }
-    
+
     if (exclude) {
       return [
         for (var i = 0; i < elements.length; i++)
           if (!selected.contains(i)) elements[i],
       ];
     }
-    
+
     return [for (final i in selected) elements[i]];
   }
 }

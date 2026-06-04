@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/book_source.dart';
+import '../services/book_source_locator.dart';
 import '../services/storage_service.dart';
 
 enum DiscoveryCategory { recommend, novel, comic, video, audio }
@@ -19,6 +20,14 @@ class DiscoveryProvider extends ChangeNotifier {
   bool get isLoading => _isLoading;
   List<dynamic> get content => _content;
   String? get currentGroupId => _currentGroupId;
+
+  List<BookSource> locateBookSources(String bookUrl) {
+    return BookSourceLocator.locate(bookUrl, _bookSources);
+  }
+
+  BookSource? locateBookSource(String bookUrl) {
+    return BookSourceLocator.locateFirst(bookUrl, _bookSources);
+  }
 
   void setCategory(DiscoveryCategory category) {
     _currentCategory = category;
