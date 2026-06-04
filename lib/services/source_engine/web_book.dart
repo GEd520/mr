@@ -683,10 +683,6 @@ class WebBook {
             itemAnalyzer.getString(searchRule.lastChapter ?? '');
         final wordCount = itemAnalyzer.getString(searchRule.wordCount ?? '');
 
-        debugPrint('📖 [$i] 书名: $name, 作者: $author');
-        AppLogger.instance
-            .debug(LogCategory.parse, '[$i] 书名: $name, 作者: $author');
-
         if (name != null && name.isNotEmpty) {
           // 拼接相对链接：用书源URL作为基准
           final resolvedBookUrl = resolveUrl(bookUrl, source.bookSourceUrl);

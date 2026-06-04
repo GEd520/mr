@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../../models/book.dart';
 import '../../models/book_source.dart';
@@ -452,7 +454,7 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     if (_debugCancelled) return;
 
     final searchHtml = webBook.lastSearchHtml ?? '';
-    _addLog('︽搜索页解析完成', state: 10, sourceHtml: searchHtml);
+    _addLog('︽搜索页解析完成: ${results.length} 条结果', state: 10, sourceHtml: searchHtml);
     _addLog('');
 
     if (results.isEmpty) {
@@ -461,25 +463,9 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     }
 
     final first = results.first;
-    _addLog('⇒获取书名');
-    _addLog('${first['name'] ?? ''}');
-    _addLog('⇒获取作者');
-    _addLog('${first['author'] ?? ''}');
-    _addLog('⇒获取分类');
-    _addLog('${first['kind'] ?? ''}');
-    _addLog('⇒获取字数');
-    _addLog('${first['wordCount'] ?? ''}');
-    _addLog('⇒获取最新章节');
-    _addLog('${first['lastChapter'] ?? ''}');
-    _addLog('⇒获取简介');
-    _addLog('${first['intro'] ?? ''}');
-    _addLog('⇒获取封面链接');
-    _addLog('${first['coverUrl'] ?? ''}');
-    _addLog('⇒获取详情链接');
+    _addLog('≡首本: ${first['name'] ?? ''} - ${first['author'] ?? ''}');
 
     final bookUrl = '${first['bookUrl'] ?? ''}'.trim();
-    _addLog(bookUrl);
-
     if (bookUrl.isEmpty) return;
     await _debugBookInfo(bookUrl);
   }
@@ -494,7 +480,7 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     if (_debugCancelled) return;
 
     final exploreHtml = webBook.lastExploreHtml ?? '';
-    _addLog('︽发现页解析完成', state: 15, sourceHtml: exploreHtml);
+    _addLog('︽发现页解析完成: ${results.length} 条结果', state: 15, sourceHtml: exploreHtml);
     _addLog('');
 
     if (results.isEmpty) {
@@ -503,21 +489,9 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     }
 
     final first = results.first;
-    _addLog('⇒获取书名');
-    _addLog('${first['name'] ?? ''}');
-    _addLog('⇒获取作者');
-    _addLog('${first['author'] ?? ''}');
-    _addLog('⇒获取分类');
-    _addLog('${first['kind'] ?? ''}');
-    _addLog('⇒获取简介');
-    _addLog('${first['intro'] ?? ''}');
-    _addLog('⇒获取封面链接');
-    _addLog('${first['coverUrl'] ?? ''}');
-    _addLog('⇒获取详情链接');
+    _addLog('≡首本: ${first['name'] ?? ''} - ${first['author'] ?? ''}');
 
     final bookUrl = '${first['bookUrl'] ?? ''}'.trim();
-    _addLog(bookUrl);
-
     if (bookUrl.isEmpty) return;
     await _debugBookInfo(bookUrl);
   }
@@ -539,29 +513,14 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
       return;
     }
 
-    _addLog('├获取书名');
-    _addLog('├${book.name}');
-    _addLog('├获取作者');
-    _addLog('├${book.author}');
-    _addLog('├获取分类');
-    _addLog('├${book.kind ?? ''}');
-    _addLog('├获取字数');
-    _addLog('├${book.wordCount ?? ''}');
-    _addLog('├获取最新章节');
-    _addLog('├${book.lastChapter ?? ''}');
-    _addLog('├获取简介');
-    _addLog('├${book.intro}');
-    _addLog('├获取封面链接');
-    _addLog('├${book.coverUrl}');
-    _addLog('└获取目录链接');
-    _addLog(book.tocUrl ?? '');
+    _addLog('≡${book.name} / ${book.author} / ${book.tocUrl ?? bookUrl}');
 
     final tocUrl = book.tocUrl?.trim();
     final effectiveTocUrl =
         (tocUrl != null && tocUrl.isNotEmpty) ? tocUrl : bookUrl;
 
     if (tocUrl != null && tocUrl.isNotEmpty) {
-      _addLog('≡已获取目录链接，开始解析目录');
+      _addLog('≡开始解析目录');
     } else {
       _addLog('≡目录链接为空，使用详情页作为目录页');
     }
@@ -575,14 +534,11 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     final realUrl = _extractRealUrl(tocUrl);
     _addLog('︾开始解析目录页');
 
-    _addLog('├获取目录链接');
-    _addLog('└$realUrl');
-
     final List<Chapter> chapters = await webBook.getChapterList(realUrl);
     if (_debugCancelled) return;
 
     final tocHtml = webBook.lastTocHtml ?? '';
-    _addLog('︽目录页解析完成', state: 30, sourceHtml: tocHtml);
+    _addLog('︽目录页解析完成: ${chapters.length} 章', state: 30, sourceHtml: tocHtml);
     _addLog('');
 
     if (chapters.isEmpty) {
@@ -590,15 +546,8 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
       return;
     }
 
-    _addLog('≡首章信息');
-    final Chapter first = chapters.first;
-    _addLog('◇章节名称:${first.title}');
-    _addLog('◇章节链接:${first.url ?? ''}');
-    _addLog('◇章节信息:${first.tag ?? ''}');
-    _addLog('◇├是否VIP:${first.isVip}');
-    _addLog('◇├是否购买:${first.isPay}');
-    _addLog('◇└目录总数:${chapters.length}');
-    _addLog('');
+    final first = chapters.first;
+    _addLog('≡首章: ${first.title} → ${first.url ?? ""}');
 
     final contentChapters = chapters
         .where((chapter) => !chapter.isVolume)
@@ -612,7 +561,6 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
 
     final chapterUrl = effectiveChapters.first.url?.trim();
     if (chapterUrl != null && chapterUrl.isNotEmpty) {
-      _addLog('≡开始解析首章正文: $chapterUrl');
       await _debugContent(chapterUrl);
     } else {
       _addLog('≡首章链接为空，无法跳转正文', state: -1);
@@ -632,11 +580,6 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     _addLog('︽正文页解析完成', state: 40, sourceHtml: contentHtml);
     _addLog('');
 
-    _addLog('≡获取成功:$realUrl');
-    _addLog('');
-    _addLog('├获取正文下一页链接');
-    _addLog('└${webBook.source.ruleContent?.nextContentUrl ?? ''}');
-
     if (content == null) {
       _addLog('≡正文解析失败: 返回null', state: -1);
       return;
@@ -648,8 +591,8 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
       return;
     }
 
-    _addLog('┌获取正文内容 (${trimmedContent.length}字符)');
-    _addLog('└\n$trimmedContent');
+    _addLog('≡正文: ${trimmedContent.length} 字符');
+    _addLog(trimmedContent);
     _addLog('≡解析完成', state: 1000);
   }
 
@@ -1108,18 +1051,35 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     );
   }
 
-  /// 导出日志
-  void _exportLogs() {
-    final text = AppLogger.instance.exportLogs(
-      category: _logFilterCategory,
-      minLevel: _logFilterLevel,
-    );
-    // 复制到剪贴板
-    Clipboard.setData(ClipboardData(text: text));
-    _addLog('≡已导出 ${_appLogs.length} 条日志到剪贴板');
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('已导出日志到剪贴板 (${text.length} 字符)')),
-    );
+  /// 导出日志到文件
+  Future<void> _exportLogs() async {
+    try {
+      final text = AppLogger.instance.exportLogs(
+        category: _logFilterCategory,
+        minLevel: _logFilterLevel,
+      );
+
+      // 获取外部存储目录
+      final dir = await getApplicationDocumentsDirectory();
+      final now = DateTime.now();
+      final fileName = 'APP_${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}.txt';
+      final file = File('${dir.path}/$fileName');
+      await file.writeAsString(text);
+
+      _addLog('≡已导出日志到: ${file.path}');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('日志已导出: ${file.path}')),
+        );
+      }
+    } catch (e) {
+      _addLog('≡导出日志失败: $e', state: -1);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('导出失败: $e')),
+        );
+      }
+    }
   }
 
   /// URL点击处理

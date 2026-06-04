@@ -61,15 +61,17 @@ class LogEntry {
     }
   }
 
+  /// UI 显示用简短格式
   String toShortString() {
-    final t = '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}:${time.second.toString().padLeft(2, '0')}.${time.millisecond.toString().padLeft(3, '0')}';
-    return '$levelIcon [$t] [${category.label}] $message';
+    return '[$levelName][${category.label}] $message';
   }
 
+  /// 导出文件用完整格式
   String toFullString() {
-    final base = toShortString();
+    final t = '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}:${time.second.toString().padLeft(2, '0')}';
+    final base = '[$t][$levelName][${category.label}] $message';
     if (detail != null && detail!.isNotEmpty) {
-      return '$base\n$detail';
+      return '$base\n  $detail';
     }
     return base;
   }
