@@ -7,7 +7,7 @@ import 'package:html/src/query_selector.dart' as html_query;
 import 'package:xml/xml.dart' as xml;
 
 import '../app_logger.dart';
-import 'js_engine.dart';
+import '../native/js_engine.dart';
 import 'legado_json_path.dart';
 import 'legado_xpath.dart';
 
@@ -21,10 +21,22 @@ class AnalyzeRule {
   String? _baseUrl;
   String? _redirectUrl;
   bool _isJson = false;
-  bool _isRegex = false;
+  // 注意：_isRegex 不再作为实例级全局状态
+  // 修复 legado 对比发现的 bug：_isRegex 一旦设置就影响后续所有规则
+  // 现在正则模式只作用于当前规则（通过 _SourceRule 传递）
   final Map<String, dynamic> _variables = {};
   final Map<String, String> _variableMap = {}; // 持久化变量存储
   JsEngineType? _sourceEngine; // 书源级引擎声明
+
+  // ===== 书源上下文（借鉴 legado 的 evalJS 绑定）=====
+  /// 书源元数据，在 JS 执行时注入 source 变量
+  /// 由 WebBook 调用 setSourceInfo() 设置
+  // ignore: unused_field
+  Map<String, dynamic>? _sourceInfo;  // 书源元数据
+  // ignore: unused_field
+  Map<String, dynamic>? _bookInfo;    // 书籍信息
+  // ignore: unused_field
+  Map<String, dynamic>? _chapterInfo; // 章节信息
 
   // 规则缓存
   static final Map<String, List<_SourceRule>> _stringRuleCache = {};
@@ -51,6 +63,23 @@ class AnalyzeRule {
   /// 设置书源级引擎声明
   AnalyzeRule setSourceEngine(JsEngineType? engine) {
     _sourceEngine = engine;
+    return this;
+  }
+
+  /// 设置书源上下文（借鉴 legado 的 evalJS 绑定）
+  /// 在 JS 执行时注入 source/book/chapter/cookie 等变量
+  AnalyzeRule setSourceInfo(Map<String, dynamic>? source) {
+    _sourceInfo = source;
+    return this;
+  }
+
+  AnalyzeRule setBookInfo(Map<String, dynamic>? book) {
+    _bookInfo = book;
+    return this;
+  }
+
+  AnalyzeRule setChapterInfo(Map<String, dynamic>? chapter) {
+    _chapterInfo = chapter;
     return this;
   }
 
@@ -154,12 +183,10 @@ class AnalyzeRule {
     var start = 0;
 
     // 检查是否为正则模式（以:开头）
+    // 修复：正则模式只作用于当前规则，不再设置全局 _isRegex
     if (allInOne && ruleStr.startsWith(':')) {
       mode = RuleMode.regex;
-      _isRegex = true;
       start = 1;
-    } else if (_isRegex) {
-      mode = RuleMode.regex;
     }
 
     // 解析 @js: / @rhino: / @quickjs: / @java: / @ts: 和 <js></js> 规则
@@ -855,10 +882,34 @@ class AnalyzeRule {
 
   // ================== JS 执行 ==================
 
+  /// JS 执行（借鉴 legado 的 evalJS 绑定上下文）
+  /// 注入 java/source/book/chapter/cookie/result/baseUrl 等变量
   dynamic _applyJs(dynamic content, String jsCode) {
     try {
-      return JsEngine.instance.executeSync(jsCode, content,
-          baseUrl: _baseUrl, sourceEngine: _sourceEngine);
+      // 同步执行 JS（QuickJS 模式）
+      // 注意：同步模式下 java.ajax() 等异步方法只能返回缓存值
+      return JsEngine.instance.executeSync(
+        jsCode,
+        content,
+        baseUrl: _baseUrl,
+        sourceEngine: _sourceEngine,
+      );
+    } catch (e) {
+      AppLogger.instance.logJsError('AnalyzeRule', e.toString());
+      return null;
+    }
+  }
+
+  /// JS 异步执行（带完整上下文绑定，借鉴 legado 的 evalJS）
+  /// 在需要 java.ajax() 等异步操作时使用此方法
+  Future<String?> applyJsAsync(dynamic content, String jsCode) async {
+    try {
+      return await JsEngine.instance.processJsRule(
+        content?.toString() ?? '',
+        jsCode,
+        baseUrl: _baseUrl,
+        sourceEngine: _sourceEngine,
+      );
     } catch (e) {
       AppLogger.instance.logJsError('AnalyzeRule', e.toString());
       return null;

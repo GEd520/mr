@@ -45,6 +45,10 @@ class BookSource {
   final bool customButton;
   final bool nextPageLazyLoad;
 
+  /// 书源变量（借鉴 legado 的 BookSource.variable）
+  /// 用于 @put/@get 规则的持久化存储，格式为 JSON 字符串
+  final String? variable;
+
   const BookSource({
     required this.bookSourceUrl,
     required this.bookSourceName,
@@ -80,6 +84,7 @@ class BookSource {
     this.eventListener = false,
     this.customButton = false,
     this.nextPageLazyLoad = false,
+    this.variable,
   });
 
   BookSource copyWith({
@@ -117,6 +122,7 @@ class BookSource {
     bool? eventListener,
     bool? customButton,
     bool? nextPageLazyLoad,
+    String? variable,
   }) {
     return BookSource(
       bookSourceUrl: bookSourceUrl ?? this.bookSourceUrl,
@@ -153,6 +159,7 @@ class BookSource {
       eventListener: eventListener ?? this.eventListener,
       customButton: customButton ?? this.customButton,
       nextPageLazyLoad: nextPageLazyLoad ?? this.nextPageLazyLoad,
+      variable: variable ?? this.variable,
     );
   }
 
@@ -206,6 +213,7 @@ class BookSource {
       eventListener: _asBool(json['eventListener']),
       customButton: _asBool(json['customButton']),
       nextPageLazyLoad: _asBool(json['nextPageLazyLoad']),
+      variable: json['variable'] as String?,
     );
   }
 
@@ -267,6 +275,7 @@ class BookSource {
       if (eventListener) 'eventListener': eventListener,
       if (customButton) 'customButton': customButton,
       if (nextPageLazyLoad) 'nextPageLazyLoad': nextPageLazyLoad,
+      if (variable != null) 'variable': variable,
     };
   }
 
@@ -360,5 +369,39 @@ class BookSource {
     }
 
     return {};
+  }
+
+  // ===== 变量管理（借鉴 legado 的 BookSource.variable）=====
+
+  /// 获取变量 Map
+  /// variable 字段为 JSON 字符串格式，如 {"key1":"value1","key2":"value2"}
+  Map<String, String> getVariableMap() {
+    if (variable == null || variable!.isEmpty) return {};
+    try {
+      final decoded = jsonDecode(variable!);
+      if (decoded is Map) {
+        return decoded.map((k, v) => MapEntry('$k', '$v'));
+      }
+    } catch (_) {}
+    return {};
+  }
+
+  /// 设置变量并返回新的 BookSource 实例
+  BookSource putVariable(String key, String value) {
+    final vars = getVariableMap();
+    vars[key] = value;
+    return copyWith(variable: jsonEncode(vars));
+  }
+
+  /// 获取变量值
+  String getVariable(String key) {
+    return getVariableMap()[key] ?? '';
+  }
+
+  /// 删除变量并返回新的 BookSource 实例
+  BookSource removeVariable(String key) {
+    final vars = getVariableMap();
+    vars.remove(key);
+    return copyWith(variable: vars.isEmpty ? null : jsonEncode(vars));
   }
 }

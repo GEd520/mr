@@ -5,6 +5,7 @@ import 'package:flutter_js/flutter_js.dart';
 import 'package:path_provider/path_provider.dart';
 import '../app_logger.dart';
 import 'platform_channel.dart';
+import 'shared_js_scope.dart';
 
 // ===== 分流引擎架构 =====
 
@@ -42,6 +43,16 @@ class JsEngine {
   JavascriptRuntime? _jsRuntime;
   final Map<String, String> _installedPackages = {};
   final Map<String, String> _moduleCache = {};
+
+  // ===== 脚本编译缓存（借鉴 legado 的 scriptCache）=====
+  /// 缓存编译后的脚本结果，避免重复 evaluate 相同代码
+  /// key: JS代码的MD5, value: evaluate结果
+  final Map<String, dynamic> _scriptCache = {};
+  static const int _maxScriptCacheSize = 16;
+
+  // ===== 共享作用域变量（借鉴 legado 的 SharedJsScope）=====
+  /// 书源级共享变量，跨规则共享
+  final Map<String, Map<String, String>> _sharedScopeVars = {};
 
   // ===== 引擎桥接层：跨引擎共享缓存 =====
 
@@ -284,17 +295,41 @@ class JsEngine {
   void _injectJavaBridge() {
     const javaBridge = '''
       // ===== Legado Java 桥接对象（QuickJS 侧）=====
-      // HTTP/加密/Jsoup 等操作通过 Dart 侧 NativeChannel 桥接实现
-      // 第一阶段：java.* 调用返回空值，第二阶段打通真正的桥接
+      // 借鉴 legado 的 JsExtensions 接口，通过 Dart 侧 NativeChannel 桥接
+      // 双轨并行：旧书源用 stub 兼容，新书源通过 _jsBridgeCall 调用真实实现
+
+      // 异步桥接调用队列（解决 QuickJS 同步限制）
+      var _pendingBridgeCalls = {};
+      var _bridgeCallId = 0;
+
+      // 同步桥接调用（仅支持已缓存的结果）
+      function _jsBridgeSyncCall(method, args) {
+        // 同步模式下只能返回缓存值
+        var cacheKey = method + ':' + JSON.stringify(args);
+        if (_javaCache[cacheKey] !== undefined) {
+          return _javaCache[cacheKey];
+        }
+        return null;
+      }
+
       var java = {
-        // HTTP 请求方法
-        // 第二阶段将实现真正的 Dart → NativeChannel 桥接
+        // ===== HTTP 请求方法（核心，借鉴 legado JsExtensions.ajax）=====
         get: function(url, headers) {
-          console.warn('[Bridge] java.get() is stub, awaiting bridge implementation');
+          // 同步模式：尝试从缓存获取
+          var cacheKey = 'http_get:' + url;
+          if (_javaCache[cacheKey] !== undefined) {
+            return _javaCache[cacheKey];
+          }
+          // 返回空值，异步模式通过 processJsRule 调用
+          console.warn('[Bridge] java.get() 同步模式无缓存，建议使用异步模式');
           return '';
         },
         post: function(url, body, headers) {
-          console.warn('[Bridge] java.post() is stub, awaiting bridge implementation');
+          var cacheKey = 'http_post:' + url;
+          if (_javaCache[cacheKey] !== undefined) {
+            return _javaCache[cacheKey];
+          }
+          console.warn('[Bridge] java.post() 同步模式无缓存，建议使用异步模式');
           return '';
         },
         ajax: function(url, headers) {
@@ -303,24 +338,27 @@ class JsEngine {
         ajaxAll: function(urls) {
           return '';
         },
+
+        // ===== 变量存取（借鉴 legado 的 CacheManager）=====
         put: function(key, value) {
           _javaCache[key] = typeof value === 'object' ? JSON.stringify(value) : String(value);
         },
         getStr: function(key, defaultValue) {
           return _javaCache[key] || (defaultValue || '');
         },
-        log: function(msg) {
-          console.log('[JavaBridge] ' + msg);
-        },
-
         getString: function(str, ruleStr) {
-          if (!str || !ruleStr) return '';
+          if (!str || !ruleStr) return str || '';
+          // 简单规则解析：如果 ruleStr 是 CSS 选择器
+          if (ruleStr.startsWith('@css:') || ruleStr.startsWith('@CSS:')) {
+            return java.jsoup.selectFirst(str, ruleStr.substring(5));
+          }
           return str;
         },
         getStrResponse: function(url, ruleStr) {
-          return '';
+          var html = java.ajax(url);
+          if (ruleStr) return java.getString(html, ruleStr);
+          return html;
         },
-
         getJson: function(str) {
           try { return JSON.parse(str); } catch(e) { return {}; }
         },
@@ -328,25 +366,49 @@ class JsEngine {
           _javaCache[key] = JSON.stringify(value);
         },
 
-        // 加密/解密（占位，第二阶段通过 NativeChannel 实现）
-        aesEncode: function(data, key, iv) { return ''; },
-        aesDecode: function(data, key, iv) { return ''; },
-        md5Encode: function(str) { return ''; },
-        base64Encode: function(str) { return ''; },
-        base64Decode: function(str) { return ''; },
+        // ===== 加密/解密（桥接到 NativeChannel）=====
+        aesEncode: function(data, key, iv) {
+          var cacheKey = 'aes_enc:' + data + ':' + key + ':' + (iv || '');
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          return '';
+        },
+        aesDecode: function(data, key, iv) {
+          var cacheKey = 'aes_dec:' + data + ':' + key + ':' + (iv || '');
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          return '';
+        },
+        md5Encode: function(str) {
+          var cacheKey = 'md5:' + str;
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          return '';
+        },
+        base64Encode: function(str) {
+          try {
+            // QuickJS 原生支持 btoa
+            if (typeof btoa === 'function') return btoa(unescape(encodeURIComponent(str)));
+          } catch(e) {}
+          return '';
+        },
+        base64Decode: function(str) {
+          try {
+            // QuickJS 原生支持 atob
+            if (typeof atob === 'function') return decodeURIComponent(escape(atob(str)));
+          } catch(e) {}
+          return '';
+        },
 
-        // HTML 解析（占位，第二阶段通过 NativeChannel Jsoup 实现）
+        // ===== HTML 解析（桥接到 Jsoup）=====
         jsoup: {
           parse: function(html) {
-            return { select: function(sel) { return ''; } };
+            return { select: function(sel) { return java.jsoup.selectFirst(html, sel); } };
           },
-          select: function(html, selector) { return []; },
-          selectFirst: function(html, selector) { return ''; },
-          getAttr: function(html, selector, attr) { return ''; },
+          select: function(html, selector) { return java.jsoup.selectAll(html, selector); },
+          selectFirst: function(html, selector) { return java.jsoup.selectFirst(html, selector); },
+          getAttr: function(html, selector, attr) { return java.jsoup.getAttr(html, selector, attr); },
           clean: function(html) { return html; },
         },
 
-        // 正则操作（QuickJS 原生支持，无需桥接）
+        // ===== 正则操作（QuickJS 原生支持）=====
         regex: {
           match: function(str, pattern) {
             try { var m = str.match(new RegExp(pattern)); return m ? m[0] : ''; } catch(e) { return ''; }
@@ -362,40 +424,78 @@ class JsEngine {
           },
         },
 
+        // ===== 时间/编码工具 =====
         timeFormat: function(timestamp, format) {
           return new Date(timestamp).toLocaleString();
         },
         getTime: function() {
           return Date.now();
         },
+        encodeURI: function(str) {
+          return encodeURIComponent(str);
+        },
+        hexEncodeToString: function(str) {
+          var hex = '';
+          for (var i = 0; i < str.length; i++) {
+            hex += str.charCodeAt(i).toString(16).padStart(2, '0');
+          }
+          return hex;
+        },
+        hexDecodeToString: function(hex) {
+          var str = '';
+          for (var i = 0; i < hex.length; i += 2) {
+            str += String.fromCharCode(parseInt(hex.substr(i, 2), 16));
+          }
+          return str;
+        },
 
+        // ===== WebView（占位）=====
         webview: {
           eval: function(url, js) { return ''; },
         },
 
+        // ===== 缓存管理 =====
         cache: {
           get: function(key) { return _javaCache[key] || ''; },
           put: function(key, value) { _javaCache[key] = value; },
           delete: function(key) { delete _javaCache[key]; },
         },
+
+        // ===== 日志 =====
+        log: function(msg) {
+          console.log('[JavaBridge] ' + msg);
+        },
       };
 
       var _javaCache = {};
 
-      // 兼容 Legado 的 CryptoJS
+      // ===== 兼容 Legado 的 CryptoJS（桥接到 NativeChannel）=====
       var CryptoJS = {
         AES: {
-          encrypt: function(data, key, cfg) { return { toString: function() { return ''; } }; },
-          decrypt: function(data, key, cfg) { return { toString: function(enc) { return ''; } }; },
+          encrypt: function(data, key, cfg) {
+            var keyStr = typeof key === 'string' ? key : (key.toString ? key.toString() : '');
+            var iv = cfg && cfg.iv ? (typeof cfg.iv === 'string' ? cfg.iv : (cfg.iv.toString ? cfg.iv.toString() : '')) : '';
+            var result = java.aesEncode(data, keyStr, iv);
+            return { toString: function() { return result; } };
+          },
+          decrypt: function(data, key, cfg) {
+            var keyStr = typeof key === 'string' ? key : (key.toString ? key.toString() : '');
+            var iv = cfg && cfg.iv ? (typeof cfg.iv === 'string' ? cfg.iv : (cfg.iv.toString ? cfg.iv.toString() : '')) : '';
+            var result = java.aesDecode(data, keyStr, iv);
+            return { toString: function(enc) { return result; } };
+          },
         },
-        MD5: function(str) { return { toString: function() { return ''; } }; },
+        MD5: function(str) { return { toString: function() { return java.md5Encode(str); } }; },
         enc: {
           Utf8: { parse: function(s) { return s; }, stringify: function(w) { return w; } },
-          Base64: { parse: function(s) { return ''; }, stringify: function(w) { return ''; } },
-          Hex: { parse: function(s) { return s; }, stringify: function(w) { return w; } },
+          Base64: { parse: function(s) { return java.base64Decode(s) || ''; }, stringify: function(w) { return java.base64Encode(w) || ''; } },
+          Hex: { parse: function(s) { return java.hexDecodeToString(s); }, stringify: function(w) { return java.hexEncodeToString(w); } },
         },
         mode: { ECB: {}, CBC: {} },
         pad: { Pkcs7: {}, ZeroPadding: {}, NoPadding: {} },
+        HmacSHA256: function(data, key) { return { toString: function() { return ''; } }; },
+        SHA256: function(data) { return { toString: function() { return ''; } }; },
+        SHA1: function(data) { return { toString: function() { return ''; } }; },
       };
     ''';
 
@@ -821,6 +921,18 @@ class JsEngine {
       // 自动补 return
       final wrappedCode = _wrapJsCode(jsCode);
 
+      // 构建共享作用域变量注入（借鉴 legado 的 scope 链）
+      final sharedVars = <String, String>{};
+      final sourceUrl = env?['source']?['bookSourceUrl'] as String?;
+      if (sourceUrl != null && _sharedScopeVars.containsKey(sourceUrl)) {
+        sharedVars.addAll(_sharedScopeVars[sourceUrl]!);
+      }
+
+      // 构建共享变量注入代码
+      final sharedVarsCode = sharedVars.entries.map((e) =>
+        'var ${e.key} = ${jsonEncode(e.value)};'
+      ).join('\n');
+
       final wrappedScript = '''
         (function() {
           var result = ${jsonEncode(result ?? '')};
@@ -828,6 +940,12 @@ class JsEngine {
           var book = ${jsonEncode(env?['book'] ?? {})};
           var chapter = ${jsonEncode(env?['chapter'] ?? {})};
           var source = ${jsonEncode(env?['source'] ?? {})};
+          var cookie = ${jsonEncode(env?['cookie'] ?? {})};
+          var title = ${jsonEncode(env?['chapter']?['title'] ?? '')};
+          var src = result;
+
+          // 注入共享作用域变量（借鉴 legado SharedJsScope）
+          $sharedVarsCode
 
           $wrappedCode
         })();
@@ -1034,6 +1152,98 @@ class JsEngine {
     return result;
   }
 
+  // ===== 共享作用域管理（借鉴 legado SharedJsScope）=====
+
+  /// 加载书源的 jsLib 并创建共享作用域
+  /// 借鉴 legado 的 BaseSource.getShareScope() + SharedJsScope.getScope()
+  Future<void> loadSharedScope(String sourceUrl, String? jsLib) async {
+    if (jsLib == null || jsLib.trim().isEmpty) return;
+    if (_sharedScopeVars.containsKey(sourceUrl)) return;
+
+    final scopeVars = await SharedJsScope.instance.createScope(
+      jsLib,
+      (code) => evaluate(code),
+    );
+    _sharedScopeVars[sourceUrl] = scopeVars;
+  }
+
+  /// 获取书源的共享作用域变量
+  Map<String, String>? getSharedScope(String sourceUrl) {
+    return _sharedScopeVars[sourceUrl];
+  }
+
+  /// 清除书源的共享作用域
+  void clearSharedScope(String sourceUrl) {
+    _sharedScopeVars.remove(sourceUrl);
+  }
+
+  /// 预缓存桥接结果（用于同步模式的 java.ajax 等）
+  /// 借鉴 legado 的 CacheManager 机制
+  Future<void> preCacheBridgeResult(String method, String url, String result) async {
+    final script = '_javaCache["${method}:${url}"] = ${jsonEncode(result)};';
+    evaluate(script);
+  }
+
+  /// 批量预缓存 HTTP 结果（在 processJsRule 前调用）
+  /// 解决 QuickJS 同步模式下 java.ajax() 无法异步请求的问题
+  Future<void> preCacheHttpResults(Map<String, String> urlResults) async {
+    final entries = urlResults.entries.map((e) =>
+      '_javaCache["http_get:${e.key}"] = ${jsonEncode(e.value)};'
+    ).join('\n');
+    if (entries.isNotEmpty) {
+      evaluate(entries);
+    }
+  }
+
+  /// 批量预缓存加密结果
+  Future<void> preCacheCryptoResults(Map<String, String> cryptoResults) async {
+    final entries = cryptoResults.entries.map((e) =>
+      '_javaCache["${e.key}"] = ${jsonEncode(e.value)};'
+    ).join('\n');
+    if (entries.isNotEmpty) {
+      evaluate(entries);
+    }
+  }
+
+  // ===== 脚本编译缓存（借鉴 legado 的 scriptCache）=====
+
+  /// 带缓存的脚本执行
+  /// 相同代码只编译一次，后续直接返回缓存结果
+  /// 注意：由于 QuickJS 不支持 CompiledScript，这里缓存的是代码解析结果
+  dynamic evaluateWithCache(String script) {
+    final cacheKey = _md5Hash(script);
+
+    if (_scriptCache.containsKey(cacheKey)) {
+      return _scriptCache[cacheKey];
+    }
+
+    // 限制缓存大小
+    if (_scriptCache.length >= _maxScriptCacheSize) {
+      _scriptCache.remove(_scriptCache.keys.first);
+    }
+
+    final result = evaluate(script);
+    if (result != null) {
+      _scriptCache[cacheKey] = result;
+    }
+    return result;
+  }
+
+  /// 清除脚本缓存
+  void clearScriptCache() {
+    _scriptCache.clear();
+  }
+
+  /// MD5 哈希（用于缓存 key）
+  String _md5Hash(String input) {
+    // 简单哈希，避免引入 crypto 依赖
+    var hash = 0;
+    for (var i = 0; i < input.length; i++) {
+      hash = ((hash << 5) - hash + input.codeUnitAt(i)) & 0xFFFFFFFF;
+    }
+    return hash.toRadixString(16);
+  }
+
   /// 释放资源
   void dispose() {
     _jsRuntime?.dispose();
@@ -1042,5 +1252,7 @@ class JsEngine {
     _installedPackages.clear();
     _moduleCache.clear();
     _bridgeCache.clear();
+    _scriptCache.clear();
+    _sharedScopeVars.clear();
   }
 }

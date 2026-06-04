@@ -449,45 +449,53 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     if (_debugCancelled) return;
     final webBook = _webBook!;
     _addLog('︾开始解析搜索页');
-    _addLog('≡搜索关键字: $keyword');
 
     final results = await webBook.searchBook(keyword);
     if (_debugCancelled) return;
 
     final searchHtml = webBook.lastSearchHtml ?? '';
-    _addLog('︽搜索页解析完成: ${results.length} 条结果', state: 10, sourceHtml: searchHtml);
-    _addLog('');
+    _addLog('≡获取成功', state: 10, sourceHtml: searchHtml);
+
+    _addLog('┌获取书籍列表');
+    _addLog('└列表大小:${results.length}');
 
     if (results.isEmpty) {
       _addLog('≡未获取到书籍', state: -1);
       return;
     }
 
-    // 逐条输出搜索结果详细信息
-    for (int i = 0; i < results.length; i++) {
-      final item = results[i];
-      _addLog('─── 搜索结果 #${i + 1} ───');
-      _addLog('  书名: ${item['name'] ?? ''}');
-      _addLog('  作者: ${item['author'] ?? ''}');
-      _addLog('  分类: ${item['kind'] ?? ''}');
-      _addLog('  字数: ${item['wordCount'] ?? ''}');
-      _addLog('  最新章节: ${item['lastChapter'] ?? ''}');
-      final intro = '${item['intro'] ?? ''}'.trim();
-      if (intro.isNotEmpty) {
-        _addLog('  简介: ${intro.length > 100 ? '${intro.substring(0, 100)}...' : intro}');
-      }
-      _addLog('  封面链接: ${item['coverUrl'] ?? ''}');
-      _addLog('  详情链接: ${item['bookUrl'] ?? ''}');
-    }
+    // 仅对第一条搜索结果输出详细字段日志（Legado原版行为：index==0时log=true）
+    final item = results.first;
+    _addLog('┌获取书名');
+    _addLog('└${item['name'] ?? ''}');
+    _addLog('┌获取作者');
+    _addLog('└${item['author'] ?? ''}');
+    _addLog('┌获取分类');
+    final kind = '${item['kind'] ?? ''}'.trim();
+    _addLog(kind.isNotEmpty ? '└$kind' : '└<空>');
+    _addLog('┌获取字数');
+    final wordCount = '${item['wordCount'] ?? ''}'.trim();
+    _addLog(wordCount.isNotEmpty ? '└$wordCount' : '└<空>');
+    _addLog('┌获取最新章节');
+    final lastChapter = '${item['lastChapter'] ?? ''}'.trim();
+    _addLog(lastChapter.isNotEmpty ? '└$lastChapter' : '└<空>');
+    _addLog('┌获取简介');
+    final intro = '${item['intro'] ?? ''}'.trim();
+    _addLog(intro.isNotEmpty ? '└${intro.length > 100 ? '${intro.substring(0, 100)}...' : intro}' : '└<空>');
+    _addLog('┌获取封面链接');
+    _addLog('└${item['coverUrl'] ?? ''}');
+    _addLog('┌获取详情页链接');
+    _addLog('└${item['bookUrl'] ?? ''}');
+
+    _addLog('◇书籍总数:${results.length}');
+    _addLog('︽搜索页解析完成');
 
     final first = results.first;
     final bookUrl = '${first['bookUrl'] ?? ''}'.trim();
     if (bookUrl.isEmpty) {
-      _addLog('≡首本详情链接为空，无法继续', state: -1);
+      _addLog('≡详情页链接为空，无法继续', state: -1);
       return;
     }
-    _addLog('');
-    _addLog('≡自动跳转详情页: $bookUrl');
     await _debugBookInfo(bookUrl);
   }
 
@@ -496,43 +504,47 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     final webBook = _webBook!;
     final realUrl = _extractRealUrl(exploreUrl);
     _addLog('︾开始解析发现页');
-    _addLog('≡发现URL: $realUrl');
 
     final results = await webBook.exploreBook(realUrl);
     if (_debugCancelled) return;
 
     final exploreHtml = webBook.lastExploreHtml ?? '';
-    _addLog('︽发现页解析完成: ${results.length} 条结果', state: 15, sourceHtml: exploreHtml);
-    _addLog('');
+    _addLog('≡获取成功', state: 15, sourceHtml: exploreHtml);
+
+    _addLog('┌获取书籍列表');
+    _addLog('└列表大小:${results.length}');
 
     if (results.isEmpty) {
       _addLog('≡未获取到书籍', state: -1);
       return;
     }
 
-    // 逐条输出发现结果详细信息
-    for (int i = 0; i < results.length; i++) {
-      final item = results[i];
-      _addLog('─── 发现结果 #${i + 1} ───');
-      _addLog('  书名: ${item['name'] ?? ''}');
-      _addLog('  作者: ${item['author'] ?? ''}');
-      _addLog('  分类: ${item['kind'] ?? ''}');
-      final intro = '${item['intro'] ?? ''}'.trim();
-      if (intro.isNotEmpty) {
-        _addLog('  简介: ${intro.length > 100 ? '${intro.substring(0, 100)}...' : intro}');
-      }
-      _addLog('  封面链接: ${item['coverUrl'] ?? ''}');
-      _addLog('  详情链接: ${item['bookUrl'] ?? ''}');
-    }
+    // 仅对第一条发现结果输出详细字段日志（Legado原版行为：index==0时log=true）
+    final item = results.first;
+    _addLog('┌获取书名');
+    _addLog('└${item['name'] ?? ''}');
+    _addLog('┌获取作者');
+    _addLog('└${item['author'] ?? ''}');
+    _addLog('┌获取分类');
+    final kind = '${item['kind'] ?? ''}'.trim();
+    _addLog(kind.isNotEmpty ? '└$kind' : '└<空>');
+    _addLog('┌获取简介');
+    final intro = '${item['intro'] ?? ''}'.trim();
+    _addLog(intro.isNotEmpty ? '└${intro.length > 100 ? '${intro.substring(0, 100)}...' : intro}' : '└<空>');
+    _addLog('┌获取封面链接');
+    _addLog('└${item['coverUrl'] ?? ''}');
+    _addLog('┌获取详情页链接');
+    _addLog('└${item['bookUrl'] ?? ''}');
+
+    _addLog('◇书籍总数:${results.length}');
+    _addLog('︽发现页解析完成');
 
     final first = results.first;
     final bookUrl = '${first['bookUrl'] ?? ''}'.trim();
     if (bookUrl.isEmpty) {
-      _addLog('≡首本详情链接为空，无法继续', state: -1);
+      _addLog('≡详情页链接为空，无法继续', state: -1);
       return;
     }
-    _addLog('');
-    _addLog('≡自动跳转详情页: $bookUrl');
     await _debugBookInfo(bookUrl);
   }
 
@@ -540,51 +552,51 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     if (_debugCancelled) return;
     final webBook = _webBook!;
     _addLog('︾开始解析详情页');
-    _addLog('≡详情页URL: $bookUrl');
 
     final Book? book = await webBook.getBookInfo(bookUrl);
     if (_debugCancelled) return;
 
     final bookHtml = webBook.lastBookInfoHtml ?? '';
-    _addLog('︽详情页解析完成', state: 20, sourceHtml: bookHtml);
-    _addLog('');
+    _addLog('≡获取成功', state: 20, sourceHtml: bookHtml);
 
     if (book == null) {
       _addLog('≡详情页解析失败', state: -1);
       return;
     }
 
-    // 逐字段输出详情信息
-    _addLog('─── 书籍详情 ───');
-    _addLog('  书名: ${book.name}');
-    _addLog('  作者: ${book.author}');
-    _addLog('  分类: ${book.kind ?? ''}');
-    _addLog('  字数: ${book.wordCount ?? ''}');
-    _addLog('  最新章节: ${book.lastChapter ?? ''}');
-    _addLog('  总章数: ${book.totalChapterNum?.toString() ?? ''}');
-    _addLog('  状态: ${book.status ?? ''}');
-    _addLog('  封面链接: ${book.coverUrl}');
-    _addLog('  详情链接: ${book.bookUrl}');
-    _addLog('  目录链接: ${book.tocUrl ?? ''}');
+    // 逐字段输出详情信息（Legado格式：┌获取字段/└结果）
+    _addLog('┌获取书名');
+    _addLog('└${book.name}');
+    _addLog('┌获取作者');
+    _addLog('└${book.author}');
+    _addLog('┌获取分类');
+    final kind = '${book.kind ?? ''}'.trim();
+    _addLog(kind.isNotEmpty ? '└$kind' : '└<空>');
+    _addLog('┌获取字数');
+    final wordCount = '${book.wordCount ?? ''}'.trim();
+    _addLog(wordCount.isNotEmpty ? '└$wordCount' : '└<空>');
+    _addLog('┌获取最新章节');
+    final lastChapter = '${book.lastChapter ?? ''}'.trim();
+    _addLog(lastChapter.isNotEmpty ? '└$lastChapter' : '└<空>');
+    _addLog('┌获取简介');
     final intro = book.intro.trim();
-    if (intro.isNotEmpty) {
-      _addLog('  简介: ${intro.length > 200 ? '${intro.substring(0, 200)}...' : intro}');
-    }
-    if (book.tags != null && book.tags!.isNotEmpty) {
-      _addLog('  标签: ${book.tags!.join(', ')}');
-    }
-    _addLog('');
+    _addLog(intro.isNotEmpty ? '└${intro.length > 200 ? '${intro.substring(0, 200)}...' : intro}' : '└<空>');
+    _addLog('┌获取封面链接');
+    _addLog('└${book.coverUrl}');
+    _addLog('┌获取目录链接');
+    _addLog('└${book.tocUrl ?? ''}');
+
+    _addLog('︽详情页解析完成');
 
     final tocUrl = book.tocUrl?.trim();
     final effectiveTocUrl =
         (tocUrl != null && tocUrl.isNotEmpty) ? tocUrl : bookUrl;
 
     if (tocUrl != null && tocUrl.isNotEmpty) {
-      _addLog('≡开始解析目录（目录链接: $tocUrl）');
+      // 有目录链接，继续解析目录
     } else {
       _addLog('≡目录链接为空，使用详情页作为目录页');
     }
-    _addLog('');
     await _debugToc(effectiveTocUrl);
   }
 
@@ -593,52 +605,25 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     final webBook = _webBook!;
     final realUrl = _extractRealUrl(tocUrl);
     _addLog('︾开始解析目录页');
-    _addLog('≡目录页URL: $realUrl');
 
     final List<Chapter> chapters = await webBook.getChapterList(realUrl);
     if (_debugCancelled) return;
 
     final tocHtml = webBook.lastTocHtml ?? '';
-    _addLog('︽目录页解析完成: ${chapters.length} 章', state: 30, sourceHtml: tocHtml);
-    _addLog('');
+    _addLog('≡获取成功', state: 30, sourceHtml: tocHtml);
+
+    _addLog('┌获取目录列表');
+    _addLog('└列表大小:${chapters.length}');
 
     if (chapters.isEmpty) {
       _addLog('≡没有正文章节', state: -1);
       return;
     }
 
-    // 统计信息
-    final volumeCount = chapters.where((c) => c.isVolume).length;
-    final contentCount = chapters.where((c) => !c.isVolume).length;
-    final vipCount = chapters.where((c) => c.isVip).length;
-    final payCount = chapters.where((c) => c.isPay).length;
+    _addLog('┌解析目录列表');
+    _addLog('└目录列表解析完成');
 
-    _addLog('─── 目录统计 ───');
-    _addLog('  总数: ${chapters.length}');
-    _addLog('  卷名数: $volumeCount');
-    _addLog('  正文章节数: $contentCount');
-    _addLog('  VIP章节数: $vipCount');
-    _addLog('  付费章节数: $payCount');
-    _addLog('');
-
-    // 逐条输出章节详细信息
-    _addLog('─── 章节列表 ───');
-    for (int i = 0; i < chapters.length; i++) {
-      final ch = chapters[i];
-      final flags = <String>[];
-      if (ch.isVolume) flags.add('卷名');
-      if (ch.isVip) flags.add('VIP');
-      if (ch.isPay) flags.add('付费');
-      final flagStr = flags.isNotEmpty ? ' [${flags.join(',')}]' : '';
-      final urlStr = ch.url ?? '';
-      _addLog('  #${i + 1} ${ch.title}$flagStr');
-      if (urlStr.isNotEmpty) {
-        _addLog('       → $urlStr');
-      }
-    }
-    _addLog('');
-
-    // 找到第一个正文章节
+    // 首章详细信息（Legado格式：◇章节名称/◇章节链接/◇是否VIP/◇是否购买）
     final contentChapters = chapters
         .where((chapter) => !chapter.isVolume)
         .toList();
@@ -650,11 +635,23 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     }
 
     final firstContent = effectiveChapters.first;
-    _addLog('≡首章: ${firstContent.title} → ${firstContent.url ?? ""}');
+    _addLog('≡首章信息');
+    _addLog('◇章节名称:${firstContent.title}');
+    _addLog('◇章节链接:${firstContent.url ?? ""}');
+    if (firstContent.wordCount != null) {
+      _addLog('◇章节信息:${firstContent.tag ?? ""} ${firstContent.wordCount}');
+      _addLog('⇒已识别到章节信息中的字数');
+    } else if (firstContent.tag != null && firstContent.tag!.isNotEmpty) {
+      _addLog('◇章节信息:${firstContent.tag}');
+    }
+    _addLog('◇是否VIP:${firstContent.isVip}');
+    _addLog('◇是否购买:${firstContent.isPay}');
+
+    _addLog('◇目录总数:${chapters.length}');
+    _addLog('︽目录页解析完成');
 
     final chapterUrl = firstContent.url?.trim();
     if (chapterUrl != null && chapterUrl.isNotEmpty) {
-      _addLog('≡自动跳转正文页: $chapterUrl');
       await _debugContent(chapterUrl);
     } else {
       _addLog('≡首章链接为空，无法跳转正文', state: -1);
@@ -671,8 +668,7 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     if (_debugCancelled) return;
 
     final contentHtml = webBook.lastContentHtml ?? '';
-    _addLog('︽正文页解析完成', state: 40, sourceHtml: contentHtml);
-    _addLog('');
+    _addLog('≡获取成功', state: 40, sourceHtml: contentHtml);
 
     if (content == null) {
       _addLog('≡正文解析失败: 返回null', state: -1);
@@ -685,8 +681,10 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
       return;
     }
 
-    _addLog('≡正文: ${trimmedContent.length} 字符');
-    _addLog(trimmedContent);
+    // Legado格式：┌获取章节名称/└结果/┌获取正文内容/└内容
+    _addLog('┌获取正文内容');
+    _addLog('└\n$trimmedContent');
+    _addLog('︽正文页解析完成');
     _addLog('≡解析完成', state: 1000);
   }
 
@@ -1015,7 +1013,7 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     Color bodyColor = const Color(0xFF444444);
     FontWeight bodyWeight = FontWeight.w400;
 
-    // 根据特殊字符和内容设置颜色
+    // 根据特殊字符和内容设置颜色（Legado符号体系）
     if (body.startsWith('︾')) {
       bodyColor = const Color(0xFF1976D2);
       bodyWeight = FontWeight.w500;
@@ -1028,6 +1026,15 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     } else if (body.startsWith('≡')) {
       bodyColor = const Color(0xFF616161);
       bodyWeight = FontWeight.w400;
+    } else if (body.startsWith('┌')) {
+      bodyColor = const Color(0xFF1565C0);
+      bodyWeight = FontWeight.w500;
+    } else if (body.startsWith('└')) {
+      bodyColor = const Color(0xFF333333);
+      bodyWeight = FontWeight.w400;
+    } else if (body.startsWith('◇')) {
+      bodyColor = const Color(0xFF6A1B9A);
+      bodyWeight = FontWeight.w500;
     } else if (body.contains('错误') || body.contains('失败')) {
       bodyColor = const Color(0xFFD32F2F);
       bodyWeight = FontWeight.w600;
