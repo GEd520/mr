@@ -313,28 +313,6 @@ class WebBook {
     }
   }
 
-  /// 执行 JS 规则（带书籍上下文）
-  Future<String?> _executeJsWithBook(
-    String jsCode, {
-    String? result,
-    String? baseUrl,
-    Map<String, dynamic>? book,
-    Map<String, dynamic>? chapter,
-  }) async {
-    try {
-      return await JsEngine.instance.processJsWithBook(
-        jsCode,
-        book: book,
-        chapter: chapter,
-        content: result,
-        sourceEngine: source.engineType,
-      );
-    } catch (e) {
-      debugPrint('❌ JS执行失败(带上下文): $e');
-      return null;
-    }
-  }
-
   /// 解析可能包含 JS 的 URL
   /// 支持 @js: 前缀的动态 URL 生成
   Future<String> _resolveUrl(String url, {String? keyword, int? page}) async {
@@ -757,27 +735,6 @@ class WebBook {
     final nameRule = useSearchFallback
         ? (searchRule?.name ?? '')
         : (exploreRule.name ?? '');
-    final authorRule = useSearchFallback
-        ? (searchRule?.author ?? '')
-        : (exploreRule.author ?? '');
-    final coverUrlRule = useSearchFallback
-        ? (searchRule?.coverUrl ?? '')
-        : (exploreRule.coverUrl ?? '');
-    final introRule = useSearchFallback
-        ? (searchRule?.intro ?? '')
-        : (exploreRule.intro ?? '');
-    final bookUrlRule = useSearchFallback
-        ? (searchRule?.bookUrl ?? '')
-        : (exploreRule.bookUrl ?? '');
-    final kindRule = useSearchFallback
-        ? (searchRule?.kind ?? '')
-        : (exploreRule.kind ?? '');
-    final lastChapterRule = useSearchFallback
-        ? (searchRule?.lastChapter ?? '')
-        : (exploreRule.lastChapter ?? '');
-    final wordCountRule = useSearchFallback
-        ? (searchRule?.wordCount ?? '')
-        : (exploreRule.wordCount ?? '');
 
     if (useSearchFallback && searchRule != null) {
       AppLogger.instance.info(LogCategory.parse, '发现规则为空，退回搜索规则');

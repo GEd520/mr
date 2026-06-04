@@ -239,15 +239,6 @@ class _BookSourceManagePageState extends State<BookSourceManagePage> {
     _applyFilterAndSort();
   }
 
-  void _setFilterGroup(String? group) {
-    setState(() {
-      _filterGroup = group;
-      _searchKeyword = '';
-      _searchController.clear();
-    });
-    _applyFilterAndSort();
-  }
-
   void _toggleSelectionMode() {
     setState(() {
       _isSelectionMode = !_isSelectionMode;
@@ -1241,22 +1232,4 @@ class _BookSourceManagePageState extends State<BookSourceManagePage> {
     );
   }
 
-  String _getSortName() {
-    switch (_sortType) {
-      case BookSourceSort.manual:
-        return '手动';
-      case BookSourceSort.weight:
-        return '权重';
-      case BookSourceSort.name:
-        return '名称';
-      case BookSourceSort.url:
-        return 'URL';
-      case BookSourceSort.update:
-        return '更新';
-      case BookSourceSort.respond:
-        return '响应';
-      case BookSourceSort.enable:
-        return '状态';
-    }
-  }
 }

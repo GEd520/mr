@@ -25,8 +25,8 @@ class _AudioPlayerPageState extends State<AudioPlayerPage>
   Duration _currentPosition = Duration.zero;
   Duration _totalDuration = const Duration(minutes: 5);
   double _volume = 1.0;
-  bool _isTimerActive = false;
   int _timerMinutes = 0;
+  bool _isTimerActive = false;
 
   @override
   void initState() {

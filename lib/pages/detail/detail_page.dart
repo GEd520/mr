@@ -29,7 +29,6 @@ class _DetailPageState extends State<DetailPage> {
   List<Chapter> _chapters = [];
   bool _isDescExpanded = false;
   int _totalWordCount = 0;
-  bool _showFullChapterList = false;
 
   @override
   void initState() {
@@ -844,11 +843,6 @@ class _DetailPageState extends State<DetailPage> {
       onTap: () => _openChapter(chapter),
       onLongPress: () => _openFullChapterList(),
     );
-  }
-
-  String _formatDate(DateTime? date) {
-    if (date == null) return '未知';
-    return '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
   }
 
   void _toggleBookshelf() {

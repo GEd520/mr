@@ -14,11 +14,9 @@ class ReaderTtsManager {
   int _paragraphIndex = 0;
   double _rate = 0.5;
 
-  /// 当前朗读章节正文
-  String _chapterContent = '';
-
   /// 段落列表
   List<String> _paragraphs = [];
+  String _chapterContent = '';
 
   VoidCallback? _onStateChanged;
   VoidCallback? _onParagraphChanged;

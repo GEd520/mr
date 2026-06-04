@@ -1,8 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../providers/bookshelf_provider.dart';
-import '../../models/book.dart';
-import '../../services/storage_service.dart';
 
 /// 阅读记录页面 - 参考 legados 的 ReadRecordActivity
 class ReadRecordPage extends StatefulWidget {
