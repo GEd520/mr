@@ -78,14 +78,20 @@ class StorageService {
 
   Future<void> saveBookSource(Map<String, dynamic> sourceData) async {
     final sourceUrl = sourceData['bookSourceUrl'] as String? ?? '';
-    if (sourceUrl.isNotEmpty) {
-      if (_bookSourceBox == null) {
-        debugPrint('⚠️ StorageService: _bookSourceBox 未初始化，尝试初始化...');
+    if (sourceUrl.isEmpty) return;
+
+    if (!_initialized) {
+      debugPrint('⚠️ StorageService: 未初始化，尝试初始化...');
+      try {
         await init();
+      } catch (e) {
+        debugPrint('❌ StorageService 初始化失败: $e');
+        return;
       }
-      await _bookSourceBox?.put(sourceUrl, sourceData);
-      await _bookSourceBox?.flush();
     }
+
+    await _bookSourceBox?.put(sourceUrl, sourceData);
+    await _bookSourceBox?.flush();
   }
 
   Future<void> saveBookSources(List<Map<String, dynamic>> sources) async {

@@ -307,14 +307,24 @@ class _BookSourceEditPageState extends State<BookSourceEditPage>
       return;
     }
 
-    await StorageService.instance.saveBookSource(source.toJson());
-    _hasChanges = false;
+    try {
+      await StorageService.instance.saveBookSource(source.toJson());
+      _hasChanges = false;
+      debugPrint('✅ 书源保存成功: ${source.bookSourceUrl}');
 
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('保存成功')),
-      );
-      Navigator.pop(context, true);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('保存成功')),
+        );
+        Navigator.pop(context, true);  // 返回 true 触发列表刷新
+      }
+    } catch (e) {
+      debugPrint('❌ 保存书源失败: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('保存失败: $e')),
+        );
+      }
     }
   }
 
@@ -430,10 +440,33 @@ class _BookSourceEditPageState extends State<BookSourceEditPage>
     }
   }
 
-  void _debugSource() async {
+  Future<void> _debugSource() async {
     final source = _buildSourceFromEntities();
-    await StorageService.instance.saveBookSource(source.toJson());
+
+    if (source.bookSourceUrl.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('书源地址不能为空，无法调试')),
+        );
+      }
+      return;
+    }
+
+    try {
+      await StorageService.instance.saveBookSource(source.toJson());
+      debugPrint('✅ 书源保存成功: ${source.bookSourceUrl}');
+    } catch (e) {
+      debugPrint('❌ 保存书源失败: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('保存书源失败: $e')),
+        );
+      }
+      // 保存失败也继续跳转，让调试页面自行处理
+    }
+
     if (mounted) {
+      debugPrint('🔄 跳转调试页面: sourceUrl=${source.bookSourceUrl}');
       Navigator.pushNamed(context, AppRoutes.bookSourceDebug, arguments: {
         'sourceUrl': source.bookSourceUrl,
       });

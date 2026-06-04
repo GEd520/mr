@@ -68,9 +68,8 @@ class _BookSourceManagePageState extends State<BookSourceManagePage> {
         builder: (context) => BookSourceEditPage(sourceUrl: sourceUrl),
       ),
     );
-    if (result == true) {
-      _loadSources();
-    }
+    // 无论返回值如何，都刷新列表（保存可能成功但未返回 true）
+    _loadSources();
   }
 
   Future<void> _loadSources() async {
