@@ -213,4 +213,22 @@ class AppLogger {
     if (chars < 1024 * 1024) return '${(chars / 1024).toStringAsFixed(1)} KB';
     return '${(chars / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
+
+  /// 导出日志为文本
+  String exportLogs({LogCategory? category, LogLevel? minLevel}) {
+    final filtered = getLogs(category: category, minLevel: minLevel);
+    if (filtered.isEmpty) return '暂无日志';
+
+    final sb = StringBuffer();
+    sb.writeln('=== 日志导出 ===');
+    sb.writeln('导出时间: ${DateTime.now().toString().substring(0, 19)}');
+    sb.writeln('日志条数: ${filtered.length}');
+    sb.writeln('');
+
+    for (final entry in filtered) {
+      sb.writeln(entry.toFullString());
+    }
+
+    return sb.toString();
+  }
 }

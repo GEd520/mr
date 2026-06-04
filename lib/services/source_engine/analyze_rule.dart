@@ -580,8 +580,9 @@ class AnalyzeRule {
       final singleRule = rules.first;
 
       // 检查是否是提取规则（text, html, 属性等）
+      // 如果原始规则以 @ 开头（被 trim 去掉了），说明是属性提取
       final lowerRule = singleRule.toLowerCase();
-      if (lowerRule == 'text' ||
+      final isExtractionRule = lowerRule == 'text' ||
           lowerRule == 'text()' ||
           lowerRule == 'html' ||
           lowerRule == 'html()' ||
@@ -592,8 +593,29 @@ class AnalyzeRule {
           lowerRule == 'src' ||
           lowerRule == 'hrefurl' ||
           lowerRule == 'srcurl' ||
-          singleRule.startsWith('@')) {
+          lowerRule == 'onclick' ||
+          lowerRule == 'title' ||
+          lowerRule == 'alt' ||
+          lowerRule == 'style' ||
+          lowerRule == 'data-src' ||
+          lowerRule == 'data-original' ||
+          lowerRule == 'content' ||
+          lowerRule == 'name' ||
+          lowerRule == 'value' ||
+          lowerRule == 'action' ||
+          lowerRule == 'placeholder' ||
+          singleRule.startsWith('@') ||
+          // 原始规则以 @ 开头（被 trim 去掉了 @），是属性提取
+          rule.startsWith('@');
+
+      if (isExtractionRule) {
         // 直接在根元素上提取
+        return _extractLast([root], singleRule);
+      }
+
+      // 尝试作为属性提取（如果根元素有该属性）
+      if (root.attributes[singleRule] != null ||
+          root.attributes[singleRule.toLowerCase()] != null) {
         return _extractLast([root], singleRule);
       }
 
@@ -738,11 +760,50 @@ class AnalyzeRule {
       case 'html':
       case 'html()':
         return element.innerHtml;
+      case 'onclick':
+        // 从 onclick 属性的 JS 代码中提取 URL
+        return _extractUrlFromJs(element.attributes['onclick'] ?? '');
       default:
-        return element.attributes[key] ??
+        final value = element.attributes[key] ??
             element.attributes[key.toLowerCase()] ??
             '';
+        // 如果属性值包含 JS 跳转代码，尝试提取 URL
+        if (value.contains('location.href') || value.contains('location=')) {
+          final extracted = _extractUrlFromJs(value);
+          if (extracted.isNotEmpty && extracted != value) return extracted;
+        }
+        return value;
     }
+  }
+
+  /// 从 JS 代码中提取 URL
+  /// 支持格式: location.href='url', window.open('url'), ShowRead('url'), etc.
+  static String _extractUrlFromJs(String jsCode) {
+    if (jsCode.isEmpty) return '';
+    final patterns = [
+      // location.href='url' / location.href="url"
+      RegExp(r"""location\.href\s*=\s*['"]([^'"]+)['"]"""),
+      // location='url' / location="url"
+      RegExp(r"""location\s*=\s*['"]([^'"]+)['"]"""),
+      // window.location='url' / window.location="url"
+      RegExp(r"""window\.location\s*=\s*['"]([^'"]+)['"]"""),
+      // window.location.href='url'
+      RegExp(r"""window\.location\.href\s*=\s*['"]([^'"]+)['"]"""),
+      // window.open('url')
+      RegExp(r"""window\.open\s*\(\s*['"]([^'"]+)['"]"""),
+      // 通用函数调用: funcName('url') / funcName("url")
+      RegExp(r"""['"]([^'"]*(?:\/|\.html?|\.htm|\.php|\.asp|\.jsp)[^'"]*)['"]"""),
+    ];
+    for (final pattern in patterns) {
+      final match = pattern.firstMatch(jsCode);
+      if (match != null && match.groupCount > 0) {
+        final url = match.group(1) ?? '';
+        if (url.isNotEmpty && (url.startsWith('/') || url.startsWith('http'))) {
+          return url;
+        }
+      }
+    }
+    return jsCode;
   }
 
   // ================== JSONPath 解析 ==================

@@ -601,17 +601,21 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     _addLog('');
 
     final contentChapters = chapters
-        .where((chapter) => !(chapter.isVolume &&
-            (chapter.url ?? '').startsWith(chapter.title)))
+        .where((chapter) => !chapter.isVolume)
         .toList();
-    if (contentChapters.isEmpty) {
+    // 如果全部是卷名，则不过滤
+    final effectiveChapters = contentChapters.isNotEmpty ? contentChapters : chapters;
+    if (effectiveChapters.isEmpty) {
       _addLog('≡没有正文章节');
       return;
     }
 
-    final chapterUrl = contentChapters.first.url?.trim();
+    final chapterUrl = effectiveChapters.first.url?.trim();
     if (chapterUrl != null && chapterUrl.isNotEmpty) {
+      _addLog('≡开始解析首章正文: $chapterUrl');
       await _debugContent(chapterUrl);
+    } else {
+      _addLog('≡首章链接为空，无法跳转正文', state: -1);
     }
   }
 
@@ -1032,7 +1036,9 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
       ));
     }
 
-    return Padding(
+    return GestureDetector(
+      onTap: () => _showDebugLogDetail(line, body),
+      child: Padding(
       padding: const EdgeInsets.only(bottom: 4),
       child: SelectableText.rich(
         TextSpan(
@@ -1058,6 +1064,61 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
           );
         },
       ),
+      ),
+    );
+  }
+
+  /// 显示调试日志详情对话框
+  void _showDebugLogDetail(String fullLine, String body) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('日志详情'),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SelectableText(
+                body,
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontFamily: 'monospace',
+                  height: 1.5,
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: body));
+              Navigator.pop(ctx);
+              _addLog('≡已复制日志内容');
+            },
+            child: const Text('复制'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('关闭'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 导出日志
+  void _exportLogs() {
+    final text = AppLogger.instance.exportLogs(
+      category: _logFilterCategory,
+      minLevel: _logFilterLevel,
+    );
+    // 复制到剪贴板
+    Clipboard.setData(ClipboardData(text: text));
+    _addLog('≡已导出 ${_appLogs.length} 条日志到剪贴板');
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('已导出日志到剪贴板 (${text.length} 字符)')),
     );
   }
 
@@ -1247,6 +1308,11 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
                   style: const TextStyle(fontSize: 12, color: Colors.grey)),
               const Spacer(),
               IconButton(
+                icon: const Icon(Icons.file_download_outlined, size: 18),
+                tooltip: '导出日志',
+                onPressed: () => _exportLogs(),
+              ),
+              IconButton(
                 icon: const Icon(Icons.delete_outline, size: 18),
                 tooltip: '清空日志',
                 onPressed: () {
@@ -1318,7 +1384,9 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
         bgColor = Colors.transparent;
     }
 
-    return Container(
+    return GestureDetector(
+      onTap: () => _showLogDetailDialog(entry),
+      child: Container(
       margin: const EdgeInsets.only(bottom: 2),
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
@@ -1375,6 +1443,51 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
                 overflow: TextOverflow.ellipsis,
               ),
             ),
+        ],
+      ),
+      ),
+    );
+  }
+
+  void _showLogDetailDialog(LogEntry entry) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Row(
+          children: [
+            Text(entry.levelIcon),
+            const SizedBox(width: 8),
+            Text(entry.category.label),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('时间: ${entry.time.toString().substring(0, 19)}'),
+              const SizedBox(height: 4),
+              Text('级别: ${entry.level.name}'),
+              const SizedBox(height: 8),
+              const Text('消息:', style: TextStyle(fontWeight: FontWeight.bold)),
+              SelectableText(entry.message, style: const TextStyle(fontFamily: 'monospace')),
+              if (entry.detail != null && entry.detail!.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                const Text('详情:', style: TextStyle(fontWeight: FontWeight.bold)),
+                SelectableText(entry.detail!, style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Clipboard.setData(ClipboardData(text: '${entry.message}\n${entry.detail ?? ''}')),
+            child: const Text('复制'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('关闭'),
+          ),
         ],
       ),
     );
