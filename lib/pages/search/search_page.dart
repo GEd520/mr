@@ -261,6 +261,7 @@ class _SearchPageState extends State<SearchPage> {
     final intro = result['intro']?.toString().trim() ?? '';
     final lastChapter = result['lastChapter']?.toString().trim() ?? '';
     final wordCount = result['wordCount']?.toString().trim() ?? '';
+    final sourceName = result['sourceName']?.toString().trim() ?? '';
     final tags = _resultTags(result);
 
     return InkWell(
@@ -321,6 +322,7 @@ class _SearchPageState extends State<SearchPage> {
                       _buildMetadataChip(
                         wordCount.isEmpty ? '字数未知' : wordCount,
                       ),
+                      if (sourceName.isNotEmpty) _buildMetadataChip(sourceName),
                     ],
                   ),
                   const SizedBox(height: 5),
@@ -375,6 +377,7 @@ class _SearchPageState extends State<SearchPage> {
     final intro = result['intro']?.toString().trim() ?? '';
     final lastChapter = result['lastChapter']?.toString().trim() ?? '';
     final wordCount = result['wordCount']?.toString().trim() ?? '';
+    final sourceName = result['sourceName']?.toString().trim() ?? '';
     final tags = _resultTags(result);
     return GestureDetector(
       onTap: () => _openDetail(result),
@@ -447,6 +450,18 @@ class _SearchPageState extends State<SearchPage> {
                       color: Theme.of(context).colorScheme.primary,
                     ),
                   ),
+                  if (sourceName.isNotEmpty) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      sourceName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 9,
+                        color: Theme.of(context).colorScheme.secondary,
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
