@@ -932,25 +932,20 @@ class WebBook {
         ..setContent(html, baseUrl: response.url)
         ..setSourceEngine(source.engineType)
         ..setSourceInfo(_sourceToMap(source));
-      // 借鉴 legado 的 BookInfo.kt：init 是普通规则（CSS/XPath/JS均可），不是纯JS
-      // legado: val initResult = analyzeRule.getString(ruleBookInfo.init)
+      // 借鉴 legado 的 BookInfo.kt：init 规则用 getElement() 获取元素对象
+      // legado: analyzeRule.setContent(analyzeRule.getElement(infoRule.init))
       if (bookInfoRule.init != null && bookInfoRule.init!.isNotEmpty) {
-        final initResult = analyzer.getString(bookInfoRule.init!);
-        if (initResult != null && initResult.isNotEmpty) {
-          html = initResult;
-          AppLogger.instance.logJsResult('init', '${initResult.length} chars');
+        final initElement = analyzer.getElement(bookInfoRule.init!);
+        if (initElement != null) {
+          analyzer.setContent(initElement);
+          AppLogger.instance.logJsResult('init', '元素定位成功，内容已替换');
         }
       }
 
-      // 保存源码（init 处理后的）
+      // 保存源码
       lastBookInfoHtml = html;
 
-      // 重新解析 init 处理后的内容
-      analyzer = AnalyzeRule()
-        ..setContent(html, baseUrl: bookUrl)
-        ..setSourceEngine(source.engineType)
-        ..setSourceInfo(_sourceToMap(source));
-
+      // 直接使用 init 处理后的 analyzer（无需重新创建）
       final name = analyzer.getString(bookInfoRule.name ?? '');
       final author = analyzer.getString(bookInfoRule.author ?? '');
       final rawCoverUrl = analyzer.getString(bookInfoRule.coverUrl ?? '');
@@ -1031,7 +1026,18 @@ class WebBook {
         ..setSourceInfo(_sourceToMap(source))
         ..setBookInfo(book != null ? _bookToMap(book) : null);
 
-      final chapterElements = analyzer.getElements(tocRule.chapterList ?? '');
+      // 借鉴 legado 的 BookChapterList.kt：- 前缀表示不反转，+ 前缀表示反转（默认反转）
+      var chapterListRule = tocRule.chapterList ?? '';
+      var reverse = false; // legado: reverse=true 表示保持原始顺序（不反转）
+      if (chapterListRule.startsWith('-')) {
+        reverse = true;
+        chapterListRule = chapterListRule.substring(1);
+      }
+      if (chapterListRule.startsWith('+')) {
+        chapterListRule = chapterListRule.substring(1);
+      }
+
+      final chapterElements = analyzer.getElements(chapterListRule);
       var chapterNames = <String>[];
       var chapterUrls = <String>[];
       final chapterVolumes = <bool>[];
@@ -1102,6 +1108,17 @@ class WebBook {
           index: i,
           url: resolvedUrl.isEmpty ? null : resolvedUrl,
         ));
+      }
+
+      // 借鉴 legado 的 BookChapterList.kt：默认反转章节列表
+      // reverse=true（-前缀）表示保持原始顺序，不反转
+      // reverse=false（无前缀或+前缀）表示反转列表
+      if (!reverse && chapters.isNotEmpty) {
+        final reversed = chapters.reversed.toList();
+        chapters.clear();
+        for (int i = 0; i < reversed.length; i++) {
+          chapters.add(reversed[i].copyWith(index: i));
+        }
       }
 
       // 处理 nextTocUrl（目录下一页，支持 JS）
