@@ -324,9 +324,20 @@ class WebBook {
   }
 
   /// 解析可能包含 JS 的 URL
-  /// 支持 @js: 前缀的动态 URL 生成
+  /// 借鉴 legado：先做变量替换，只有真正的 JS 规则才走 JS 执行
+  /// 支持 @js: 前缀的动态 URL 生成和 {{key}}/{{page}} 模板替换
   Future<String> _resolveUrl(String url, {String? keyword, int? page}) async {
-    if (_isJsRule(url)) {
+    // 借鉴 legado：区分真正的 JS 规则和 URL 模板
+    // 只有以 @js:/<js>/@rhino: 等前缀开头的才是 JS 规则
+    // 包含 {{}} 的 URL 模板只做变量替换，不走 JS 执行
+    final isRealJsRule = url.startsWith('@js:') ||
+        url.startsWith('@rhino:') ||
+        url.startsWith('@quickjs:') ||
+        url.startsWith('@java:') ||
+        url.startsWith('@ts:') ||
+        url.startsWith('<js>');
+
+    if (isRealJsRule) {
       final extraEnv = <String, dynamic>{};
       if (keyword != null) extraEnv['key'] = keyword;
       if (page != null) extraEnv['page'] = page;
@@ -346,7 +357,18 @@ class WebBook {
         return resolved;
       }
     }
-    return url;
+
+    // URL 模板变量替换（借鉴 legado 的 searchUrl 解析）
+    var resolved = url;
+    if (keyword != null) {
+      resolved = resolved
+          .replaceAll('{{key}}', Uri.encodeComponent(keyword))
+          .replaceAll('{{searchKey}}', Uri.encodeComponent(keyword));
+    }
+    if (page != null) {
+      resolved = resolved.replaceAll('{{page}}', page.toString());
+    }
+    return resolved;
   }
 
   /// 将相对链接拼接成绝对链接

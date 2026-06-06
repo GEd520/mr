@@ -492,25 +492,24 @@ class JsEngine {
 
       // ===== console 增强 =====
       // 借鉴 legado：所有 console 输出同步到调试页面
-      if (typeof console === 'undefined') {
-        var _consoleLogs = [];
-        globalThis.console = {
-          log: function() { var msg = Array.from(arguments).join(' '); _consoleLogs.push({level:'log', msg:msg}); },
-          warn: function() { var msg = Array.from(arguments).join(' '); _consoleLogs.push({level:'warn', msg:msg}); },
-          error: function() { var msg = Array.from(arguments).join(' '); _consoleLogs.push({level:'error', msg:msg}); },
-          info: function() { var msg = Array.from(arguments).join(' '); _consoleLogs.push({level:'info', msg:msg}); },
-          debug: function() { var msg = Array.from(arguments).join(' '); _consoleLogs.push({level:'debug', msg:msg}); },
-          dir: function(obj) { _consoleLogs.push({level:'log', msg: JSON.stringify(obj, null, 2)}); },
-          table: function(data) { _consoleLogs.push({level:'log', msg: JSON.stringify(data, null, 2)}); },
-          time: function(label) { _consoleLogs._timers = _consoleLogs._timers || {}; _consoleLogs._timers[label] = Date.now(); },
-          timeEnd: function(label) { _consoleLogs._timers = _consoleLogs._timers || {}; if (_consoleLogs._timers[label]) { var ms = Date.now() - _consoleLogs._timers[label]; _consoleLogs.push({level:'info', msg: label + ': ' + ms + 'ms'}); delete _consoleLogs._timers[label]; } },
-          count: function(label) { _consoleLogs._counts = _consoleLogs._counts || {}; _consoleLogs._counts[label] = (_consoleLogs._counts[label] || 0) + 1; _consoleLogs.push({level:'info', msg: label + ': ' + _consoleLogs._counts[label]}); },
-          assert: function(condition) { if (!condition) { var msg = Array.from(arguments).slice(1).join(' ') || 'Assertion failed'; _consoleLogs.push({level:'error', msg: msg}); } },
-          clear: function() { _consoleLogs.length = 0; },
-          _getLogs: function() { return _consoleLogs; },
-          _clearLogs: function() { _consoleLogs.length = 0; },
-        };
-      }
+      // 注意：总是覆盖 console，因为 QuickJS 可能已有内置 console 但没有 _getLogs
+      var _consoleLogs = [];
+      globalThis.console = {
+        log: function() { var msg = Array.from(arguments).join(' '); _consoleLogs.push({level:'log', msg:msg}); },
+        warn: function() { var msg = Array.from(arguments).join(' '); _consoleLogs.push({level:'warn', msg:msg}); },
+        error: function() { var msg = Array.from(arguments).join(' '); _consoleLogs.push({level:'error', msg:msg}); },
+        info: function() { var msg = Array.from(arguments).join(' '); _consoleLogs.push({level:'info', msg:msg}); },
+        debug: function() { var msg = Array.from(arguments).join(' '); _consoleLogs.push({level:'debug', msg:msg}); },
+        dir: function(obj) { _consoleLogs.push({level:'log', msg: JSON.stringify(obj, null, 2)}); },
+        table: function(data) { _consoleLogs.push({level:'log', msg: JSON.stringify(data, null, 2)}); },
+        time: function(label) { _consoleLogs._timers = _consoleLogs._timers || {}; _consoleLogs._timers[label] = Date.now(); },
+        timeEnd: function(label) { _consoleLogs._timers = _consoleLogs._timers || {}; if (_consoleLogs._timers[label]) { var ms = Date.now() - _consoleLogs._timers[label]; _consoleLogs.push({level:'info', msg: label + ': ' + ms + 'ms'}); delete _consoleLogs._timers[label]; } },
+        count: function(label) { _consoleLogs._counts = _consoleLogs._counts || {}; _consoleLogs._counts[label] = (_consoleLogs._counts[label] || 0) + 1; _consoleLogs.push({level:'info', msg: label + ': ' + _consoleLogs._counts[label]}); },
+        assert: function(condition) { if (!condition) { var msg = Array.from(arguments).slice(1).join(' ') || 'Assertion failed'; _consoleLogs.push({level:'error', msg: msg}); } },
+        clear: function() { _consoleLogs.length = 0; },
+        _getLogs: function() { return _consoleLogs; },
+        _clearLogs: function() { _consoleLogs.length = 0; },
+      };
 
       // ===== btoa/atob 全局函数 =====
       // Base64 编码/解码，QuickJS 原生可能不提供
@@ -1756,6 +1755,8 @@ class JsEngine {
     } catch (e) {
       debugPrint('JsEngine QuickJS exception: $e');
       AppLogger.instance.logJsError('QuickJS', e.toString());
+      // 即使异常也尝试提取 console 日志
+      _flushConsoleLogs();
       // QuickJS 异常 → 降级到 Rust 引擎
       return fallbackToRustEngine(jsCode, result: result, env: env);
     }
@@ -1766,7 +1767,21 @@ class JsEngine {
   void _flushConsoleLogs() {
     if (!_initialized || _jsRuntime == null) return;
     try {
-      final logsResult = evaluate('typeof console !== "undefined" && console._getLogs ? JSON.stringify(console._getLogs()) : "[]"');
+      // 先检查 console 是否存在且有 _getLogs 方法
+      final checkResult = evaluate('typeof console !== "undefined" ? (typeof console._getLogs === "function" ? "has_getLogs" : "no_getLogs") : "no_console"');
+      if (checkResult == 'no_console') {
+        debugPrint('JsEngine: console 不存在，重新注入');
+        // 重新注入 console
+        evaluate('var _consoleLogs = []; globalThis.console = { log: function() { var msg = Array.from(arguments).join(" "); _consoleLogs.push({level:"log", msg:msg}); }, warn: function() { var msg = Array.from(arguments).join(" "); _consoleLogs.push({level:"warn", msg:msg}); }, error: function() { var msg = Array.from(arguments).join(" "); _consoleLogs.push({level:"error", msg:msg}); }, info: function() { var msg = Array.from(arguments).join(" "); _consoleLogs.push({level:"info", msg:msg}); }, debug: function() { var msg = Array.from(arguments).join(" "); _consoleLogs.push({level:"debug", msg:msg}); }, _getLogs: function() { return _consoleLogs; }, _clearLogs: function() { _consoleLogs.length = 0; } };');
+        return; // 下次执行时再提取
+      }
+      if (checkResult == 'no_getLogs') {
+        debugPrint('JsEngine: console 存在但没有 _getLogs，重新注入');
+        evaluate('var _consoleLogs = []; globalThis.console = { log: function() { var msg = Array.from(arguments).join(" "); _consoleLogs.push({level:"log", msg:msg}); }, warn: function() { var msg = Array.from(arguments).join(" "); _consoleLogs.push({level:"warn", msg:msg}); }, error: function() { var msg = Array.from(arguments).join(" "); _consoleLogs.push({level:"error", msg:msg}); }, info: function() { var msg = Array.from(arguments).join(" "); _consoleLogs.push({level:"info", msg:msg}); }, debug: function() { var msg = Array.from(arguments).join(" "); _consoleLogs.push({level:"debug", msg:msg}); }, _getLogs: function() { return _consoleLogs; }, _clearLogs: function() { _consoleLogs.length = 0; } };');
+        return;
+      }
+
+      final logsResult = evaluate('JSON.stringify(console._getLogs())');
       if (logsResult == null || logsResult == '[]' || logsResult == 'undefined') return;
 
       final logsJson = logsResult;
@@ -1798,7 +1813,7 @@ class JsEngine {
       }
 
       // 清除已提取的日志
-      evaluate('typeof console !== "undefined" && console._clearLogs ? console._clearLogs() : 0');
+      evaluate('console._clearLogs()');
     } catch (e) {
       // 日志提取失败不影响主流程
       debugPrint('JsEngine: console日志提取失败: $e');
