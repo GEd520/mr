@@ -38,7 +38,6 @@ class _NovelReaderPageState extends State<NovelReaderPage>
   int _totalChapters = 0;
   bool _isLoading = true;
   Book? _book;
-  String _sourceName = '';
   List<Chapter> _chapters = [];
   BookDataProvider? _dataProvider;
 
@@ -216,12 +215,6 @@ class _NovelReaderPageState extends State<NovelReaderPage>
       final bookData = StorageService.instance.getBook(widget.bookUrl);
       _book = bookData != null ? Book.fromJson(bookData) : widget.initialBook;
       if (_book != null) {
-        _sourceName = _book!.sourceName ?? '';
-        final sourceUrl = _book!.sourceUrl;
-        if (_sourceName.isEmpty && sourceUrl != null) {
-          final sourceData = StorageService.instance.getBookSource(sourceUrl);
-          _sourceName = sourceData?['bookSourceName']?.toString() ?? '';
-        }
         _dataProvider = createBookDataProvider(_book!);
         _chapters = await _dataProvider!.getChapterList(_book!);
         _totalChapters = _chapters.length;
@@ -533,7 +526,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
               ReaderControlOverlay(
                 bookName: _book?.name ?? '',
                 chapterTitle: _chapterTitle,
-                sourceName: _sourceName,
+                sourceName: '', // 暂时为空
                 currentChapter: _currentChapterIndex,
                 totalChapters: _totalChapters,
                 hasBookmark: _hasBookmark,
@@ -599,27 +592,27 @@ class _NovelReaderPageState extends State<NovelReaderPage>
                     lineHeight: provider.lineHeight,
                     letterSpacing: provider.letterSpacing,
                     paragraphSpacing: provider.paragraphSpacing,
-                    horizontalPadding: provider.horizontalPadding,
-                    verticalPadding: provider.verticalPadding,
-                    paragraphIndent: provider.paragraphIndent,
-                    fontWeightIndex: provider.fontWeightIndex,
+                    horizontalPadding: 16.0,
+                    verticalPadding: 12.0,
+                    paragraphIndent: '\u3000\u3000',
+                    fontWeightIndex: 1,
                     fontFamily: provider.fontFamily,
                     backgroundColor: provider.backgroundColor,
                     backgroundImagePath: null,
-                    showReadingInfo: provider.showReadingInfo,
-                    showChapterTitle: provider.showChapterTitle,
-                    showClock: provider.showClock,
-                    showProgress: provider.showProgress,
+                    showReadingInfo: true,
+                    showChapterTitle: true,
+                    showClock: true,
+                    showProgress: true,
                     pageAnim: provider.pageMode.index,
-                    pageAnimDurationMs: provider.pageAnimDurationMs,
+                    pageAnimDurationMs: 300,
                     screenBrightness: provider.brightness,
-                    keepScreenOn: provider.keepScreenOn,
-                    enableVolumeKeyPage: provider.enableVolumeKeyPage,
-                    volumeKeyPageOnTts: provider.volumeKeyPageOnTts,
-                    enableLongPressMenu: provider.enableLongPressMenu,
-                    autoScrollSpeed: provider.autoScrollSpeed,
-                    autoPageIntervalSeconds: provider.autoPageIntervalSeconds,
-                    tapZones: provider.tapZones,
+                    keepScreenOn: false,
+                    enableVolumeKeyPage: false,
+                    volumeKeyPageOnTts: false,
+                    enableLongPressMenu: true,
+                    autoScrollSpeed: 50,
+                    autoPageIntervalSeconds: 0,
+                    tapZones: [0, 4, 0, 0, 1, 0, 0, 3, 2],
                     isNightMode: provider.isNightMode,
                     onFontSizeChanged: (value) => provider.setFontSize(value),
                     onLineHeightChanged: (value) =>
@@ -628,50 +621,35 @@ class _NovelReaderPageState extends State<NovelReaderPage>
                         provider.setLetterSpacing(value),
                     onParagraphSpacingChanged: (value) =>
                         provider.setParagraphSpacing(value),
-                    onHorizontalPaddingChanged: (value) =>
-                        provider.setHorizontalPadding(value),
-                    onVerticalPaddingChanged: (value) =>
-                        provider.setVerticalPadding(value),
-                    onParagraphIndentChanged: (value) =>
-                        provider.setParagraphIndent(value),
-                    onFontWeightChanged: (value) =>
-                        provider.setFontWeightIndex(value),
+                    onHorizontalPaddingChanged: (value) {},
+                    onVerticalPaddingChanged: (value) {},
+                    onParagraphIndentChanged: (value) {},
+                    onFontWeightChanged: (value) {},
                     onFontFamilyChanged: (value) =>
                         provider.setFontFamily(value),
                     onBackgroundColorChanged: (value) =>
                         provider.setBackgroundColor(value),
-                    onBackgroundImageChanged: (value) =>
-                        provider.setBackgroundImagePath(value),
-                    onShowReadingInfoChanged: (value) =>
-                        provider.setShowReadingInfo(value),
-                    onShowChapterTitleChanged: (value) =>
-                        provider.setShowChapterTitle(value),
-                    onShowClockChanged: (value) => provider.setShowClock(value),
-                    onShowProgressChanged: (value) =>
-                        provider.setShowProgress(value),
+                    onBackgroundImageChanged: (value) {},
+                    onShowReadingInfoChanged: (value) {},
+                    onShowChapterTitleChanged: (value) {},
+                    onShowClockChanged: (value) {},
+                    onShowProgressChanged: (value) {},
                     onPageAnimChanged: (value) {
                       if (value < PageMode.values.length) {
                         provider.setPageMode(PageMode.values[value]);
                         _repaginate();
                       }
                     },
-                    onPageAnimDurationChanged: (value) =>
-                        provider.setPageAnimDurationMs(value),
+                    onPageAnimDurationChanged: (value) {},
                     onScreenBrightnessChanged: (value) =>
                         provider.setBrightness(value),
-                    onKeepScreenOnChanged: (value) =>
-                        provider.setKeepScreenOn(value),
-                    onEnableVolumeKeyPageChanged: (value) =>
-                        provider.setEnableVolumeKeyPage(value),
-                    onVolumeKeyPageOnTtsChanged: (value) =>
-                        provider.setVolumeKeyPageOnTts(value),
-                    onEnableLongPressMenuChanged: (value) =>
-                        provider.setEnableLongPressMenu(value),
-                    onAutoScrollSpeedChanged: (value) =>
-                        provider.setAutoScrollSpeed(value),
-                    onAutoPageIntervalChanged: (value) =>
-                        provider.setAutoPageIntervalSeconds(value),
-                    onTapZonesChanged: (value) => provider.setTapZones(value),
+                    onKeepScreenOnChanged: (value) {},
+                    onEnableVolumeKeyPageChanged: (value) {},
+                    onVolumeKeyPageOnTtsChanged: (value) {},
+                    onEnableLongPressMenuChanged: (value) {},
+                    onAutoScrollSpeedChanged: (value) {},
+                    onAutoPageIntervalChanged: (value) {},
+                    onTapZonesChanged: (value) {},
                     onNightModeChanged: (value) {
                       provider.toggleNightMode();
                     },
@@ -719,10 +697,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
           Expanded(
             child: SingleChildScrollView(
               controller: _scrollController,
-              padding: EdgeInsets.symmetric(
-                horizontal: provider.horizontalPadding,
-                vertical: provider.verticalPadding,
-              ),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -762,24 +737,18 @@ class _NovelReaderPageState extends State<NovelReaderPage>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (provider.showChapterTitle)
-          Padding(
-            padding: EdgeInsets.only(
-              top: provider.verticalPadding,
-              bottom: provider.paragraphSpacing * 1.5,
-            ),
-            child: Text(
-              title,
-              style: TextStyle(
-                fontSize: provider.fontSize + 5,
-                fontWeight: FontWeight.w600,
-                color: provider.textColor,
-                height: 1.25,
-                fontFamily:
-                    provider.fontFamily.isNotEmpty ? provider.fontFamily : null,
-              ),
-            ),
+        Text(
+          title,
+          style: TextStyle(
+            fontSize: provider.fontSize + 4,
+            fontWeight: FontWeight.bold,
+            color: provider.textColor,
+            height: provider.lineHeight,
+            fontFamily:
+                provider.fontFamily.isNotEmpty ? provider.fontFamily : null,
           ),
+        ),
+        SizedBox(height: provider.paragraphSpacing),
         _buildRichContent(provider, content),
       ],
     );
@@ -815,9 +784,6 @@ class _NovelReaderPageState extends State<NovelReaderPage>
   }
 
   String _applyIndent(String paragraph, ReaderProvider provider) {
-    if (provider.paragraphIndent.isNotEmpty) {
-      return '${provider.paragraphIndent}$paragraph';
-    }
     final indent = provider.textIndent;
     if (indent <= 0) return paragraph;
     final indentStr = '\u3000' * indent.round();
@@ -838,21 +804,9 @@ class _NovelReaderPageState extends State<NovelReaderPage>
         color: provider.textColor,
         height: provider.lineHeight,
         letterSpacing: provider.letterSpacing,
-        fontWeight: _bodyFontWeight(provider.fontWeightIndex),
         fontFamily: provider.fontFamily.isNotEmpty ? provider.fontFamily : null,
       ),
     );
-  }
-
-  FontWeight _bodyFontWeight(int index) {
-    switch (index) {
-      case 0:
-        return FontWeight.w300;
-      case 2:
-        return FontWeight.w600;
-      default:
-        return FontWeight.w400;
-    }
   }
 
   List<InlineSpan> _buildTextSpans(
@@ -1013,11 +967,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
                     },
                     itemCount: _pages.length,
                     itemBuilder: (context, index) {
-                      return _buildPageContent(
-                        provider,
-                        _pages[index],
-                        showTitle: index == 0,
-                      );
+                      return _buildPageContent(provider, _pages[index]);
                     },
                   ),
           ),
@@ -1063,11 +1013,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
                     },
                     itemCount: _pages.length,
                     itemBuilder: (context, index) {
-                      return _buildPageContent(
-                        provider,
-                        _pages[index],
-                        showTitle: index == 0,
-                      );
+                      return _buildPageContent(provider, _pages[index]);
                     },
                   ),
           ),
@@ -1124,12 +1070,11 @@ class _NovelReaderPageState extends State<NovelReaderPage>
                       children: [
                         // Current page
                         _buildPageContent(
-                          provider,
-                          _pages.isNotEmpty
-                              ? _pages[_currentPage.clamp(0, _pages.length - 1)]
-                              : '',
-                          showTitle: _currentPage == 0,
-                        ),
+                            provider,
+                            _pages.isNotEmpty
+                                ? _pages[
+                                    _currentPage.clamp(0, _pages.length - 1)]
+                                : ''),
                         // Curl effect overlay
                         if (_isDragging) _buildCurlEffect(provider),
                       ],
@@ -1168,40 +1113,27 @@ class _NovelReaderPageState extends State<NovelReaderPage>
     );
   }
 
-  Widget _buildPageContent(
-    ReaderProvider provider,
-    String pageText, {
-    required bool showTitle,
-  }) {
+  Widget _buildPageContent(ReaderProvider provider, String pageText) {
     return Container(
       color: provider.backgroundColor,
-      padding: EdgeInsets.symmetric(
-        horizontal: provider.horizontalPadding,
-        vertical: provider.verticalPadding,
-      ),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       child: SingleChildScrollView(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (showTitle && provider.showChapterTitle)
-              Padding(
-                padding: EdgeInsets.only(
-                  top: provider.verticalPadding,
-                  bottom: provider.paragraphSpacing * 1.5,
-                ),
-                child: Text(
-                  _chapterTitle,
-                  style: TextStyle(
-                    fontSize: provider.fontSize + 5,
-                    fontWeight: FontWeight.w600,
-                    color: provider.textColor,
-                    height: 1.25,
-                    fontFamily: provider.fontFamily.isNotEmpty
-                        ? provider.fontFamily
-                        : null,
-                  ),
-                ),
+            // Chapter title on first page
+            Text(
+              _chapterTitle,
+              style: TextStyle(
+                fontSize: provider.fontSize + 4,
+                fontWeight: FontWeight.bold,
+                color: provider.textColor,
+                height: provider.lineHeight,
+                fontFamily:
+                    provider.fontFamily.isNotEmpty ? provider.fontFamily : null,
               ),
+            ),
+            SizedBox(height: provider.paragraphSpacing),
             _buildRichContent(provider, pageText),
           ],
         ),

@@ -31,6 +31,8 @@ android {
         targetCompatibility = JavaVersion.VERSION_21
     }
 
+    // 使用 compilerOptions DSL（kotlinOptions 已在 Kotlin 2.2+ 废弃）
+    // 但 android kotlinOptions 仍在 android {} 块内可用，保留兼容
     kotlinOptions {
         jvmTarget = "21"
     }

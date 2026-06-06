@@ -93,16 +93,10 @@ class AppRoutes {
         );
       case comicReader:
         final args = settings.arguments as Map<String, dynamic>?;
-        final bookData = args?['bookData'];
         return MaterialPageRoute(
           builder: (_) => ComicReaderPage(
-            bookUrl: args?['bookUrl'] ?? args?['bookId'] ?? '',
-            chapterIndex: args?['chapterIndex'] ?? 0,
-            initialBook: bookData is Book
-                ? bookData
-                : bookData is Map
-                    ? Book.fromJson(Map<String, dynamic>.from(bookData))
-                    : null,
+            bookId: args?['bookId'] ?? args?['bookUrl'] ?? '',
+            chapterId: args?['chapterId'] ?? args?['chapterIndex']?.toString() ?? '0',
           ),
         );
       case videoPlayer:

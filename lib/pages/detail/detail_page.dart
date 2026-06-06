@@ -149,10 +149,7 @@ class _DetailPageState extends State<DetailPage> {
             child: BackdropFilter(
               filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
               child: Container(
-                color: Theme.of(context)
-                    .colorScheme
-                    .surface
-                    .withValues(alpha: 0.85),
+                color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.85),
               ),
             ),
           ),
@@ -581,10 +578,8 @@ class _DetailPageState extends State<DetailPage> {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
         decoration: BoxDecoration(
-          color: Theme.of(context)
-              .colorScheme
-              .primaryContainer
-              .withValues(alpha: 0.5),
+          color:
+              Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.5),
           borderRadius: BorderRadius.circular(4),
         ),
         child: Row(
@@ -916,12 +911,9 @@ class _DetailPageState extends State<DetailPage> {
       );
       return;
     }
-    final route = _book?.mediaType == MediaType.comic
-        ? AppRoutes.comicReader
-        : AppRoutes.novelReader;
     Navigator.pushNamed(
       context,
-      route,
+      AppRoutes.novelReader,
       arguments: {
         'bookUrl': widget.bookUrl,
         'chapterIndex': _book?.durChapterIndex ?? 0,
@@ -955,12 +947,9 @@ class _DetailPageState extends State<DetailPage> {
 
   void _openChapter(Chapter chapter) {
     if (chapter.isVolume) return;
-    final route = _book?.mediaType == MediaType.comic
-        ? AppRoutes.comicReader
-        : AppRoutes.novelReader;
     Navigator.pushNamed(
       context,
-      route,
+      AppRoutes.novelReader,
       arguments: {
         'bookUrl': widget.bookUrl,
         'chapterIndex': chapter.index,
