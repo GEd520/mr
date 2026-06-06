@@ -184,6 +184,7 @@ function content(url) {
       enabledCookieJar: true,
       engine: 'quickjs',
       jsLib: code,
+      sourceFormat: 'js',
       header: headerMeta,
       searchUrl: searchUrlMeta ?? '',
       exploreUrl: exploreUrlMeta ?? '',

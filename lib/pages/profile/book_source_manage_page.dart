@@ -154,16 +154,14 @@ class _BookSourceManagePageState extends State<BookSourceManagePage> {
   }
 
   Future<void> _navigateToEditPage({String? sourceUrl, BookSource? templateSource}) async {
-    // 借鉴 legado：根据书源类型选择编辑器
-    // 如果书源有 jsLib（纯JS书源），进入 JS 代码编辑器
-    // 否则进入 JSON 表单编辑器
+    // 根据书源文件格式选择编辑器
+    // sourceFormat == 'js' → JS代码编辑器
+    // sourceFormat == 'json' 或 null → JSON表单编辑器
     if (sourceUrl != null && templateSource == null) {
-      // 编辑已有书源：检查是否为 JS 类型
       final data = StorageService.instance.getBookSource(sourceUrl);
       if (data != null) {
-        final jsLib = data['jsLib'] as String? ?? '';
-        final engine = data['engine'] as String? ?? '';
-        if (jsLib.isNotEmpty || engine == 'quickjs') {
+        final sourceFormat = data['sourceFormat'] as String? ?? '';
+        if (sourceFormat == 'js') {
           // JS 书源 → 进入 JS 编辑器
           await Navigator.push(
             context,
@@ -186,7 +184,6 @@ class _BookSourceManagePageState extends State<BookSourceManagePage> {
         ),
       ),
     );
-    // 无论返回值如何，都刷新列表（保存可能成功但未返回 true）
     _loadSources();
   }
 
@@ -318,9 +315,9 @@ class _BookSourceManagePageState extends State<BookSourceManagePage> {
         width: (MediaQuery.of(context).size.width - 56) / 2,
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
-          border: Border.all(color: template.color.withOpacity(0.3)),
+          border: Border.all(color: template.color.withValues(alpha: 0.3)),
           borderRadius: BorderRadius.circular(12),
-          color: template.color.withOpacity(0.05),
+          color: template.color.withValues(alpha: 0.05),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -682,47 +679,49 @@ class _BookSourceManagePageState extends State<BookSourceManagePage> {
     showModalBottomSheet(
       context: context,
       builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text('排序方式', style: Theme.of(context).textTheme.titleLarge),
-                  TextButton.icon(
-                    onPressed: () {
-                      Navigator.pop(context);
-                      _toggleSortOrder();
-                    },
-                    icon: Icon(_isSortAscending
-                        ? Icons.arrow_upward
-                        : Icons.arrow_downward),
-                    label: Text(_isSortAscending ? '升序' : '降序'),
-                  ),
-                ],
+        child: RadioGroup<BookSourceSort>(
+          groupValue: _sortType,
+          onChanged: (value) {
+            Navigator.pop(context);
+            _setSortType(value!);
+          },
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('排序方式', style: Theme.of(context).textTheme.titleLarge),
+                    TextButton.icon(
+                      onPressed: () {
+                        Navigator.pop(context);
+                        _toggleSortOrder();
+                      },
+                      icon: Icon(_isSortAscending
+                          ? Icons.arrow_upward
+                          : Icons.arrow_downward),
+                      label: Text(_isSortAscending ? '升序' : '降序'),
+                    ),
+                  ],
+                ),
               ),
-            ),
-            const Divider(height: 1),
-            ...[
-              (BookSourceSort.manual, '手动排序'),
-              (BookSourceSort.weight, '按权重'),
-              (BookSourceSort.name, '按名称'),
-              (BookSourceSort.url, '按URL'),
-              (BookSourceSort.update, '按更新时间'),
-              (BookSourceSort.respond, '按响应时间'),
-              (BookSourceSort.enable, '按启用状态'),
-            ].map((item) => RadioListTile<BookSourceSort>(
-                  title: Text(item.$2),
-                  value: item.$1,
-                  groupValue: _sortType,
-                  onChanged: (value) {
-                    Navigator.pop(context);
-                    _setSortType(value!);
-                  },
-                )),
-          ],
+              const Divider(height: 1),
+              ...[
+                (BookSourceSort.manual, '手动排序'),
+                (BookSourceSort.weight, '按权重'),
+                (BookSourceSort.name, '按名称'),
+                (BookSourceSort.url, '按URL'),
+                (BookSourceSort.update, '按更新时间'),
+                (BookSourceSort.respond, '按响应时间'),
+                (BookSourceSort.enable, '按启用状态'),
+              ].map((item) => RadioListTile<BookSourceSort>(
+                    title: Text(item.$2),
+                    value: item.$1,
+                  )),
+            ],
+          ),
         ),
       ),
     );
@@ -910,12 +909,15 @@ class _BookSourceManagePageState extends State<BookSourceManagePage> {
     try {
       final picked = await FilePicker.platform.pickFiles(
         type: FileType.custom,
-        allowedExtensions: const ['json', 'txt'],
+        allowedExtensions: const ['json', 'txt', 'js'],
         withData: true,
       );
-      final bytes = picked?.files.single.bytes;
+      final file = picked?.files.single;
+      final bytes = file?.bytes;
       if (bytes == null) return;
-      final result = await BookSourceImportService().importBytes(bytes);
+      // 根据文件后缀判定格式
+      final ext = file?.extension?.toLowerCase();
+      final result = await BookSourceImportService().importBytes(bytes, fileExtension: ext);
       await _loadSources();
       if (!mounted) return;
       _showImportResult(result);
