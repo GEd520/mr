@@ -154,6 +154,29 @@ class _BookSourceManagePageState extends State<BookSourceManagePage> {
   }
 
   Future<void> _navigateToEditPage({String? sourceUrl, BookSource? templateSource}) async {
+    // 借鉴 legado：根据书源类型选择编辑器
+    // 如果书源有 jsLib（纯JS书源），进入 JS 代码编辑器
+    // 否则进入 JSON 表单编辑器
+    if (sourceUrl != null && templateSource == null) {
+      // 编辑已有书源：检查是否为 JS 类型
+      final data = StorageService.instance.getBookSource(sourceUrl);
+      if (data != null) {
+        final jsLib = data['jsLib'] as String? ?? '';
+        final engine = data['engine'] as String? ?? '';
+        if (jsLib.isNotEmpty || engine == 'quickjs') {
+          // JS 书源 → 进入 JS 编辑器
+          await Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => JsSourceEditPage(sourceUrl: sourceUrl),
+            ),
+          );
+          _loadSources();
+          return;
+        }
+      }
+    }
+    // JSON 书源或新建 → 进入 JSON 表单编辑器
     await Navigator.push(
       context,
       MaterialPageRoute(

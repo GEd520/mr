@@ -1198,6 +1198,20 @@ class AnalyzeRule {
       },
     );
 
+    // 借鉴 legado：如果变量替换后规则中不再包含 {{}} 和选择器语法，
+    // 说明整个规则已变成纯文本模板，应设为 literal 模式直接返回
+    // 检测条件：不含 {{}}、不含 @（选择器）、不含 <js> 标签
+    if (!literal && !next.contains('{{') && !next.contains('}}')) {
+      final hasSelector = next.contains('@') ||
+          next.contains('<js>') ||
+          next.contains(r'$.') ||
+          next.contains(r'$[') ||
+          next.startsWith('/');
+      if (!hasSelector) {
+        literal = true;
+      }
+    }
+
     // 替换 $1, $2 等正则捕获组引用
     // 这部分在 makeUpRule 中处理
 
