@@ -1,6 +1,7 @@
 package com.example.dan_shenqi
 
 import android.content.Context
+import android.os.Build
 import android.util.Base64
 import android.util.Log
 import io.flutter.embedding.engine.FlutterEngine
@@ -20,6 +21,7 @@ import java.util.concurrent.TimeUnit
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
+import kotlin.coroutines.resume
 
 /**
  * Android 原生桥接插件
@@ -95,6 +97,8 @@ class NativePlugin(private val context: Context) {
             "putData" -> putData(call, result)
             "getData" -> getData(call, result)
             "deleteData" -> deleteData(call, result)
+            "getDeviceInfo" -> getDeviceInfo(call, result)
+            "executeWebViewJs" -> executeWebViewJs(call, result)
             // 内置 Node.js 运行时
             "nodeSetup" -> nodeSetup(call, result)
             "nodeStartProxy" -> nodeStartProxy(call, result)
@@ -685,6 +689,172 @@ class NativePlugin(private val context: Context) {
 
             sharedPreferences.edit().remove(key).apply()
             result.success(null)
+        } catch (e: Exception) {
+            result.error("ERROR", e.message, null)
+        }
+    }
+
+    // ===== 设备信息 =====
+
+    /**
+     * 获取设备信息（SDK版本、品牌、型号等）
+     */
+    private fun getDeviceInfo(call: io.flutter.plugin.common.MethodCall, result: io.flutter.plugin.common.MethodChannel.Result) {
+        try {
+            result.success(mapOf(
+                "sdkInt" to Build.VERSION.SDK_INT,
+                "release" to Build.VERSION.RELEASE,
+                "brand" to Build.BRAND,
+                "model" to Build.MODEL,
+                "manufacturer" to Build.MANUFACTURER
+            ))
+        } catch (e: Exception) {
+            result.error("ERROR", e.message, null)
+        }
+    }
+
+    // ===== WebView JS 执行（借鉴 legado 的 BackstageWebView）=====
+
+    /**
+     * 在后台 WebView 中加载 URL 并执行 JS 代码
+     * 借鉴 legado 的 BackstageWebView.getStrResponse()
+     *
+     * 流程：
+     * 1. 创建后台 WebView
+     * 2. 加载 URL（或直接加载 HTML）
+     * 3. 页面加载完成后执行 JS 代码
+     * 4. 返回 JS 执行结果
+     * 5. 如果有 sourceRegex，嗅探匹配的资源 URL
+     */
+    private fun executeWebViewJs(call: io.flutter.plugin.common.MethodCall, result: io.flutter.plugin.common.MethodChannel.Result) {
+        val url = call.argument<String>("url") ?: ""
+        val jsCode = call.argument<String>("jsCode") ?: "document.documentElement.outerHTML"
+        val sourceRegex = call.argument<String>("sourceRegex")
+        val html = call.argument<String>("html")
+        val delayTime = call.argument<Int>("delayTime") ?: 200
+
+        if (url.isEmpty() && html.isNullOrEmpty()) {
+            result.error("ERROR", "url or html is required", null)
+            return
+        }
+
+        try {
+            // 使用协程异步执行 WebView 操作
+            CoroutineScope(Dispatchers.Main).launch {
+                try {
+                    val jsResult = withTimeoutOrNull(30000L) {
+                        suspendCancellableCoroutine<String?> { cont ->
+                            // 创建后台 WebView（借鉴 legado 的 WebViewPool）
+                            val webView = android.webkit.WebView(context).apply {
+                                settings.javaScriptEnabled = true
+                                settings.domStorageEnabled = true
+                                settings.databaseEnabled = true
+                                settings.loadWithOverviewMode = true
+                                settings.useWideViewPort = true
+                                settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                            }
+
+                            var isCompleted = false
+
+                            webView.webViewClient = object : android.webkit.WebViewClient() {
+                                override fun onPageFinished(view: android.webkit.WebView?, pageUrl: String?) {
+                                    super.onPageFinished(view, pageUrl)
+                                    // 借鉴 legado 的 EvalJsRunnable：延迟执行 JS
+                                    CoroutineScope(Dispatchers.Main).launch {
+                                        delay(delayTime.toLong())
+                                        if (!isCompleted) {
+                                            webView.evaluateJavascript(jsCode) { jsResult ->
+                                                isCompleted = true
+                                                webView.destroy()
+                                                if (jsResult != null && jsResult != "null") {
+                                                    // 去掉 JSON 引号
+                                                    val cleanResult = jsResult
+                                                        .trimStart('"')
+                                                        .trimEnd('"')
+                                                        .replace("\\u003C", "<")
+                                                        .replace("\\u003E", ">")
+                                                        .replace("\\/", "/")
+                                                        .replace("\\n", "\n")
+                                                        .replace("\\t", "\t")
+                                                        .replace("\\\"", "\"")
+                                                    cont.resume(cleanResult)
+                                                } else {
+                                                    cont.resume(null)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                override fun onReceivedError(view: android.webkit.WebView?, request: android.webkit.WebResourceRequest?, error: android.webkit.WebResourceError?) {
+                                    super.onReceivedError(view, request, error)
+                                    if (!isCompleted) {
+                                        isCompleted = true
+                                        webView.destroy()
+                                        cont.resume(null)
+                                    }
+                                }
+                            }
+
+                            // sourceRegex 嗅探（借鉴 legado 的 SnifferWebClient）
+                            if (sourceRegex != null && sourceRegex.isNotEmpty()) {
+                                webView.webViewClient = object : android.webkit.WebViewClient() {
+                                    override fun shouldInterceptRequest(view: android.webkit.WebView?, request: android.webkit.WebResourceRequest?): android.webkit.WebResourceResponse? {
+                                        val resUrl = request?.url?.toString() ?: ""
+                                        try {
+                                            if (resUrl.matches(Regex(sourceRegex))) {
+                                                if (!isCompleted) {
+                                                    isCompleted = true
+                                                    CoroutineScope(Dispatchers.Main).launch {
+                                                        webView.destroy()
+                                                        cont.resume(resUrl)
+                                                    }
+                                                }
+                                            }
+                                        } catch (e: Exception) {
+                                            Log.w(TAG, "sourceRegex匹配失败: $e")
+                                        }
+                                        return super.shouldInterceptRequest(view, request)
+                                    }
+
+                                    override fun onPageFinished(view: android.webkit.WebView?, pageUrl: String?) {
+                                        super.onPageFinished(view, pageUrl)
+                                        // 即使有 sourceRegex，也在页面完成后执行 JS
+                                        CoroutineScope(Dispatchers.Main).launch {
+                                            delay(delayTime.toLong())
+                                            if (!isCompleted) {
+                                                webView.evaluateJavascript(jsCode) { jsResult ->
+                                                    isCompleted = true
+                                                    webView.destroy()
+                                                    if (jsResult != null && jsResult != "null") {
+                                                        val cleanResult = jsResult
+                                                            .trimStart('"').trimEnd('"')
+                                                            .replace("\\u003C", "<").replace("\\u003E", ">")
+                                                            .replace("\\/", "/").replace("\\n", "\n")
+                                                        cont.resume(cleanResult)
+                                                    } else {
+                                                        cont.resume(null)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 加载页面
+                            if (html != null && html.isNotEmpty()) {
+                                webView.loadDataWithBaseURL(url, html, "text/html", "UTF-8", url)
+                            } else {
+                                webView.loadUrl(url)
+                            }
+                        }
+                    }
+                    result.success(jsResult)
+                } catch (e: Exception) {
+                    result.error("WEBVIEW_ERROR", e.message, null)
+                }
+            }
         } catch (e: Exception) {
             result.error("ERROR", e.message, null)
         }

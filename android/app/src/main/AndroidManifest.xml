@@ -1,21 +1,69 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- 网络权限：允许应用发起网络请求 -->
+    <!-- ===== 网络权限 ===== -->
+    <!-- 允许应用发起网络请求（书源解析、下载书籍） -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- 检查网络连接状态（离线提示） -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
-    <!-- 存储权限：允许读写外部存储 -->
+    <!-- WiFi状态（下载大文件时判断WiFi连接） -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
+    <!-- 网络连接变化监听（阅读时网络中断提示） -->
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE"/>
+
+    <!-- ===== 存储权限 ===== -->
+    <!-- 读取外部存储（导入书源文件、打开本地书籍） -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
+    <!-- 写入外部存储（导出书源、导出日志、下载书籍） -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
+    <!-- Android 13+ 读取媒体图片（封面缓存、WebView图片） -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
-    <!-- Android 11+ 管理所有文件 -->
+    <!-- Android 13+ 读取媒体视频（视频书源） -->
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO"/>
+    <!-- Android 13+ 读取媒体音频（有声书源） -->
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO"/>
+    <!-- Android 11+ 管理所有文件（书源导出、日志导出、书籍下载到公共目录） -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>
 
+    <!-- ===== 后台/服务权限 ===== -->
+    <!-- 后台服务（TTS朗读、后台下载） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <!-- Android 14+ 前台服务类型 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
+    <!-- 后台运行不休眠（TTS持续朗读） -->
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <!-- 开机自启（可选，恢复下载任务） -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+
+    <!-- ===== 音频权限 ===== -->
+    <!-- TTS语音朗读 -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
+
+    <!-- ===== 通知权限 ===== -->
+    <!-- Android 13+ 通知权限（下载进度通知、TTS控制通知） -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+
+    <!-- ===== 安装权限 ===== -->
+    <!-- 安装APK更新（应用内更新） -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
+
+    <!-- ===== WebView相关 ===== -->
+    <!-- WebView Cookie管理（书源登录） -->
+    <uses-permission android:name="android.permission.SET_WEB_VIEW_CLIENT"/>
+
+    <!-- ===== 硬件特性声明（不强制要求） ===== -->
+    <!-- 触摸屏（不强制，支持遥控器/键盘操作） -->
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false"/>
+
     <application
-        android:label="dan_shenqi"
+        android:label="单书器"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="true"
-        android:networkSecurityConfig="@xml/network_security_config">
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:requestLegacyExternalStorage="true"
+        android:allowBackup="true"
+        android:fullBackupContent="@xml/backup_rules">
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -25,10 +73,6 @@
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"
             android:windowSoftInputMode="adjustResize">
-            <!-- Specifies an Android theme to apply to this Activity as soon as
-                 the Android process has started. This theme is visible to the user
-                 while the Flutter UI initializes. After that, this theme continues
-                 to determine the Window background behind the Flutter UI. -->
             <meta-data
               android:name="io.flutter.embedding.android.NormalTheme"
               android:resource="@style/NormalTheme"
@@ -38,12 +82,20 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+
+        <!-- 前台服务（TTS朗读） -->
+        <service
+            android:name=".TtsService"
+            android:foregroundServiceType="mediaPlayback"
+            android:exported="false" />
+
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
     </application>
+
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and
          https://developer.android.com/reference/android/content/Intent#ACTION_PROCESS_TEXT.
@@ -53,6 +105,19 @@
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
+        </intent>
+        <!-- 允许查询浏览器（WebView登录） -->
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="https"/>
+        </intent>
+        <!-- 允许查询文件管理器（导入/导出） -->
+        <intent>
+            <action android:name="android.intent.action.GET_CONTENT"/>
+        </intent>
+        <!-- 允许查询安装器（应用更新） -->
+        <intent>
+            <action android:name="android.intent.action.INSTALL_PACKAGE"/>
         </intent>
     </queries>
 </manifest>

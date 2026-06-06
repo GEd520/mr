@@ -8,6 +8,7 @@ class ExploreShowProvider extends ChangeNotifier {
   bool _isLoading = false;
   String? _error;
   bool _hasMore = true;
+  // ignore: unused_field
   int _currentPage = 1;
 
   List<Map<String, dynamic>> get books => _books;

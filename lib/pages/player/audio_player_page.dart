@@ -26,6 +26,7 @@ class _AudioPlayerPageState extends State<AudioPlayerPage>
   Duration _totalDuration = const Duration(minutes: 5);
   double _volume = 1.0;
   int _timerMinutes = 0;
+  // ignore: unused_field
   bool _isTimerActive = false;
 
   @override

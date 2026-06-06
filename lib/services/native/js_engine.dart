@@ -54,6 +54,18 @@ class JsEngine {
   /// 书源级共享变量，跨规则共享
   final Map<String, Map<String, String>> _sharedScopeVars = {};
 
+  /// 书源级 jsLib 缓存（借鉴 legado 的 SharedJsScope）
+  /// key: bookSourceUrl, value: jsLib 代码
+  final Map<String, String> _jsLibCache = {};
+
+  /// 当前已加载到 globalThis 的 jsLib 所属的书源 URL
+  /// 借鉴 legado 的 SharedJsScope：同一书源的 jsLib 只加载一次，切换书源时清除旧的
+  String? _currentJsLibSourceUrl;
+
+  /// 当前已加载的 jsLib 中定义的全局函数名列表
+  /// 用于切换书源时清除旧函数，避免全局污染
+  final List<String> _currentJsLibFunctions = [];
+
   // ===== 引擎桥接层：跨引擎共享缓存 =====
 
   /// 跨引擎共享缓存（QuickJS 和 Rhino 均可读写）
@@ -694,7 +706,7 @@ class JsEngine {
 
   /// 同步执行 JS 代码（用于 AnalyzeRule 规则解析）
   /// 默认走 QuickJS，如果代码含 java. 且无 ES6 特征，自动走 Rhino
-  dynamic executeSync(String jsCode, dynamic content, {String? baseUrl, JsEngineType? sourceEngine}) {
+  dynamic executeSync(String jsCode, dynamic content, {String? baseUrl, JsEngineType? sourceEngine, Map<String, dynamic>? variables}) {
     // 先提取 JS 代码（去掉 <js></js> 标签或 @js: 前缀）
     final extracted = _extractJsCode(jsCode) ?? jsCode;
     final resolved = resolveEngine(extracted, sourceEngine: sourceEngine);
@@ -704,29 +716,68 @@ class JsEngine {
       debugPrint('JsEngine: Rhino 不支持同步执行，降级到 QuickJS: ${jsCode.substring(0, jsCode.length > 50 ? 50 : jsCode.length)}...');
     }
 
-    return _executeQuickJSSync(resolved.code, content, baseUrl: baseUrl);
+    return _executeQuickJSSync(resolved.code, content, baseUrl: baseUrl, variables: variables);
   }
 
   /// QuickJS 同步执行
-  dynamic _executeQuickJSSync(String jsCode, dynamic content, {String? baseUrl}) {
+  dynamic _executeQuickJSSync(String jsCode, dynamic content, {String? baseUrl, Map<String, dynamic>? variables}) {
     if (!_initialized || _jsRuntime == null) {
       debugPrint('JsEngine not initialized, cannot executeSync');
       return null;
     }
     try {
-      final contentStr = content is String
-          ? jsonEncode(content)
-          : jsonEncode(content?.toString() ?? '');
+      // content 序列化：List/Map 直接 jsonEncode，String 也 jsonEncode（加引号转义），其他 toString
+      String contentStr;
+      if (content is List || content is Map) {
+        contentStr = jsonEncode(content);
+      } else if (content is String) {
+        contentStr = jsonEncode(content);
+      } else {
+        contentStr = jsonEncode(content?.toString() ?? '');
+      }
 
       // 自动补 return：如果 JS 代码不以 return 结尾，自动包裹使其返回最后一个表达式的值
       final wrappedCode = _wrapJsCode(jsCode);
+
+      // 构建变量注入代码（排除核心变量，避免覆盖 result/baseUrl/content）
+      final coreVars = {'result', 'baseUrl', 'content', 'src'};
+      final varInjections = <String>[];
+      if (variables != null) {
+        for (final entry in variables.entries) {
+          if (!coreVars.contains(entry.key)) {
+            varInjections.add('var ${entry.key} = ${jsonEncode(entry.value)};');
+          }
+        }
+      }
+      final varCode = varInjections.join('\n');
+
+      // 构建共享作用域变量注入（借鉴 legado 的 scope 链）
+      final sharedVars = <String, String>{};
+      final sourceUrl = variables?['source']?['bookSourceUrl'] as String?;
+      if (sourceUrl != null && _sharedScopeVars.containsKey(sourceUrl)) {
+        sharedVars.addAll(_sharedScopeVars[sourceUrl]!);
+      }
+      final sharedVarsCode = sharedVars.entries.map((e) =>
+        'var ${e.key} = ${jsonEncode(e.value)};'
+      ).join('\n');
+
+      // jsLib 已通过 loadJsLib() 加载到全局作用域
+      // 借鉴 legado：evalJS 时 bindings.prototype = sharedScope
+      // QuickJS 等价：jsLib 函数在 globalThis 上，IIFE 内部自动可访问
 
       final wrappedScript = '''
         (function() {
           var result = $contentStr;
           var baseUrl = ${jsonEncode(baseUrl ?? '')};
           var content = result;
-          $wrappedCode
+          var src = result;
+          $sharedVarsCode
+          $varCode
+          var __returnValue = (function() { $wrappedCode })();
+          if (typeof __returnValue === 'object' && __returnValue !== null) {
+            return JSON.stringify(__returnValue);
+          }
+          return __returnValue;
         })();
       ''';
       final evalResult = _jsRuntime!.evaluate(wrappedScript);
@@ -802,7 +853,7 @@ class JsEngine {
   // ===== 书源规则执行（分流核心）=====
 
   /// 处理 JS 书源规则（异步）
-  Future<String?> processJsRule(String content, String jsCode, {String? baseUrl, JsEngineType? sourceEngine}) async {
+  Future<String?> processJsRule(String content, String jsCode, {String? baseUrl, JsEngineType? sourceEngine, Map<String, dynamic>? env}) async {
     if (!_initialized || _jsRuntime == null) {
       await init();
       if (!_initialized || _jsRuntime == null) return null;
@@ -817,11 +868,20 @@ class JsEngine {
       resolved.code,
     );
 
-    if (resolved.engine == JsEngineType.rhino) {
-      return _executeRhinoRule(resolved.code, result: content, env: {'baseUrl': baseUrl ?? ''});
+    // 合并 env：传入的 env 优先，补充 baseUrl
+    final mergedEnv = <String, dynamic>{
+      'baseUrl': baseUrl ?? '',
+    };
+    if (env != null) {
+      mergedEnv.addAll(env);
+      if (!mergedEnv.containsKey('baseUrl')) mergedEnv['baseUrl'] = baseUrl ?? '';
     }
 
-    return _executeQuickJSRule(resolved.code, result: content, env: {'baseUrl': baseUrl ?? ''});
+    if (resolved.engine == JsEngineType.rhino) {
+      return _executeRhinoRule(resolved.code, result: content, env: mergedEnv);
+    }
+
+    return _executeQuickJSRule(resolved.code, result: content, env: mergedEnv);
   }
 
   /// 处理带书籍上下文的 JS 规则
@@ -829,6 +889,7 @@ class JsEngine {
     String jsCode, {
     Map<String, dynamic>? book,
     Map<String, dynamic>? chapter,
+    Map<String, dynamic>? source,
     String? content,
     int? index,
     JsEngineType? sourceEngine,
@@ -842,19 +903,31 @@ class JsEngine {
     final extracted = _extractJsCode(jsCode) ?? jsCode;
     final resolved = resolveEngine(extracted, sourceEngine: sourceEngine);
 
+    final env = <String, dynamic>{
+      'book': book ?? {},
+      'chapter': chapter ?? {},
+      'source': source ?? {},
+      'cookie': <String, String>{},
+      'baseUrl': book?['bookUrl'] ?? '',
+    };
+
     if (resolved.engine == JsEngineType.rhino) {
-      return _executeRhinoRule(
-        resolved.code,
-        result: content,
-        env: {
-          'book': book ?? {},
-          'chapter': chapter ?? {},
-          'baseUrl': book?['bookUrl'] ?? '',
-        },
-      );
+      return _executeRhinoRule(resolved.code, result: content, env: env);
     }
 
     try {
+      final wrappedCode = _wrapJsCode(resolved.code);
+
+      // 构建共享作用域变量注入
+      final sharedVars = <String, String>{};
+      final sourceUrl = source?['bookSourceUrl'] as String?;
+      if (sourceUrl != null && _sharedScopeVars.containsKey(sourceUrl)) {
+        sharedVars.addAll(_sharedScopeVars[sourceUrl]!);
+      }
+      final sharedVarsCode = sharedVars.entries.map((e) =>
+        'var ${e.key} = ${jsonEncode(e.value)};'
+      ).join('\n');
+
       final wrappedScript = '''
         (function() {
           var result = ${jsonEncode(content ?? '')};
@@ -862,8 +935,15 @@ class JsEngine {
           var content = result;
           var book = ${jsonEncode(book ?? {})};
           var chapter = ${jsonEncode(chapter ?? {})};
+          var source = ${jsonEncode(source ?? {})};
+          var cookie = ${jsonEncode(<String, String>{})};
           var index = ${jsonEncode(index ?? 0)};
-          ${resolved.code}
+          $sharedVarsCode
+          var __returnValue = (function() { $wrappedCode })();
+          if (typeof __returnValue === 'object' && __returnValue !== null) {
+            return JSON.stringify(__returnValue);
+          }
+          return __returnValue;
         })();
       ''';
       final evalResult = _jsRuntime!.evaluate(wrappedScript);
@@ -912,6 +992,7 @@ class JsEngine {
   Future<String?> _executeQuickJSRule(String jsCode, {
     String? result,
     Map<String, dynamic>? env,
+    Map<String, dynamic>? variables,
   }) async {
     if (!_initialized || _jsRuntime == null) {
       await init();
@@ -933,6 +1014,22 @@ class JsEngine {
         'var ${e.key} = ${jsonEncode(e.value)};'
       ).join('\n');
 
+      // 构建额外变量注入代码（排除核心变量，避免覆盖）
+      final coreVars = {'result', 'baseUrl', 'content', 'src', 'book', 'chapter', 'source', 'cookie', 'title'};
+      final varInjections = <String>[];
+      if (variables != null) {
+        for (final entry in variables.entries) {
+          if (!coreVars.contains(entry.key)) {
+            varInjections.add('var ${entry.key} = ${jsonEncode(entry.value)};');
+          }
+        }
+      }
+      final varCode = varInjections.join('\n');
+
+      // jsLib 已通过 loadJsLib() 加载到全局作用域
+      // 借鉴 legado：evalJS 时 bindings.prototype = sharedScope
+      // QuickJS 等价：jsLib 函数在 globalThis 上，IIFE 内部自动可访问
+
       final wrappedScript = '''
         (function() {
           var result = ${jsonEncode(result ?? '')};
@@ -947,7 +1044,14 @@ class JsEngine {
           // 注入共享作用域变量（借鉴 legado SharedJsScope）
           $sharedVarsCode
 
-          $wrappedCode
+          // 注入额外变量（如 key, page 等）
+          $varCode
+
+          var __returnValue = (function() { $wrappedCode })();
+          if (typeof __returnValue === 'object' && __returnValue !== null) {
+            return JSON.stringify(__returnValue);
+          }
+          return __returnValue;
         })();
       ''';
 
@@ -1156,6 +1260,86 @@ class JsEngine {
 
   /// 加载书源的 jsLib 并创建共享作用域
   /// 借鉴 legado 的 BaseSource.getShareScope() + SharedJsScope.getScope()
+  /// 加载书源 jsLib（借鉴 legado 的 SharedJsScope + getShareScope 机制）
+  ///
+  /// legado 的做法：
+  /// 1. SharedJsScope.getScope(jsLib) 把 jsLib eval 到一个独立的 scope 对象中
+  /// 2. evalJS 时 bindings.prototype = sharedScope，通过原型链访问 jsLib 函数
+  /// 3. 同一书源的 jsLib 只加载一次（LRU 缓存），切换书源时用新的 scope
+  ///
+  /// QuickJS 的等价实现：
+  /// 1. 把 jsLib eval 到 globalThis 上（等价于 legado 的 eval(jsLib, scope)）
+  /// 2. 同一书源只加载一次，切换书源时先清除旧的全局函数
+  /// 3. 用 _currentJsLibSourceUrl 追踪当前加载了哪个书源的 jsLib
+  void loadJsLib(String sourceUrl, String jsLib) {
+    if (jsLib.trim().isEmpty) return;
+
+    // 缓存 jsLib 代码
+    _jsLibCache[sourceUrl] = jsLib;
+
+    // 如果当前已加载的就是同一个书源，不需要重新加载
+    if (_currentJsLibSourceUrl == sourceUrl) return;
+
+    // 切换书源：先清除旧的 jsLib 全局函数
+    _clearCurrentJsLib();
+
+    // 提取 jsLib 中定义的函数名（用于后续清除）
+    _extractFunctionNames(jsLib);
+
+    // 把 jsLib eval 到全局作用域（等价于 legado 的 RhinoScriptEngine.eval(jsLib, scope)）
+    try {
+      _jsRuntime?.evaluate(jsLib);
+      _currentJsLibSourceUrl = sourceUrl;
+      debugPrint('📚 已加载书源JS库到全局作用域: $sourceUrl (${_currentJsLibFunctions.length}个函数)');
+    } catch (e) {
+      debugPrint('❌ 加载书源JS库失败: $e');
+    }
+  }
+
+  /// 清除当前已加载的 jsLib 全局函数
+  /// 借鉴 legado 的 scope 切换机制：切换书源时清除旧的 scope
+  void _clearCurrentJsLib() {
+    if (_currentJsLibFunctions.isEmpty || _jsRuntime == null) return;
+    try {
+      final deleteCode = _currentJsLibFunctions.map((fn) => 'try{delete globalThis.$fn}catch(e){}').join(';');
+      _jsRuntime!.evaluate(deleteCode);
+      debugPrint('📚 已清除旧书源JS库: $_currentJsLibSourceUrl (${_currentJsLibFunctions.length}个函数)');
+    } catch (e) {
+      debugPrint('❌ 清除旧书源JS库失败: $e');
+    }
+    _currentJsLibFunctions.clear();
+    _currentJsLibSourceUrl = null;
+  }
+
+  /// 提取 JS 代码中定义的函数名
+  /// 匹配 function xxx() 和 var/const/let/this.xxx = function/()=> 模式
+  void _extractFunctionNames(String jsLib) {
+    _currentJsLibFunctions.clear();
+    // 匹配 function xxx( 模式
+    final funcPattern = RegExp(r'function\s+(\w+)\s*\(');
+    for (final m in funcPattern.allMatches(jsLib)) {
+      _currentJsLibFunctions.add(m.group(1)!);
+    }
+    // 匹配 var/const/let xxx = function / xxx = ()=> / xxx = (...) => 模式
+    final varPattern = RegExp(r'(?:var|const|let)\s+(\w+)\s*=\s*(?:function|\(|[^(]*=>)');
+    for (final m in varPattern.allMatches(jsLib)) {
+      _currentJsLibFunctions.add(m.group(1)!);
+    }
+    // 匹配 this.xxx = function / this.xxx = ()=> 模式
+    final thisPattern = RegExp(r'this\.(\w+)\s*=\s*(?:function|\(|[^(]*=>)');
+    for (final m in thisPattern.allMatches(jsLib)) {
+      _currentJsLibFunctions.add(m.group(1)!);
+    }
+  }
+
+  /// 获取书源的 jsLib 代码
+  String? getJsLib(String sourceUrl) => _jsLibCache[sourceUrl];
+
+  /// 清除书源的 jsLib 缓存
+  void clearJsLib(String sourceUrl) {
+    _jsLibCache.remove(sourceUrl);
+  }
+
   Future<void> loadSharedScope(String sourceUrl, String? jsLib) async {
     if (jsLib == null || jsLib.trim().isEmpty) return;
     if (_sharedScopeVars.containsKey(sourceUrl)) return;

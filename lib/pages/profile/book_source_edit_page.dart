@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import '../../models/book_source.dart';
 import '../../models/rules/search_rule.dart';
 import '../../models/rules/explore_rule.dart';
@@ -1015,47 +1016,10 @@ class _BookSourceEditPageState extends State<BookSourceEditPage>
   }
 
   void _showHelp() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('书源编辑帮助'),
-        content: const SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text('规则语法：', style: TextStyle(fontWeight: FontWeight.bold)),
-              SizedBox(height: 8),
-              Text('• @css: 使用CSS选择器'),
-              Text('• @xpath: 使用XPath选择器'),
-              Text('• @json: 使用JSONPath'),
-              Text('• @js: 执行JavaScript'),
-              Text('• : 执行JavaScript（简写）'),
-              SizedBox(height: 16),
-              Text('特殊变量：', style: TextStyle(fontWeight: FontWeight.bold)),
-              SizedBox(height: 8),
-              Text('• {{key}}: 搜索关键字'),
-              Text('• {{page}}: 页码'),
-              Text('• {{result}}: 上一步结果'),
-              SizedBox(height: 16),
-              Text('规则链接：', style: TextStyle(fontWeight: FontWeight.bold)),
-              SizedBox(height: 8),
-              Text('• 使用 @ 分隔多个规则步骤'),
-              Text('• 例如: class.book-item@tag.a@text'),
-              SizedBox(height: 16),
-              Text('URL选项：', style: TextStyle(fontWeight: FontWeight.bold)),
-              SizedBox(height: 8),
-              Text('• 在URL后添加 ,{选项}'),
-              Text('• 例如: http://example.com,{"method":"POST"}'),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('知道了'),
-          ),
-        ],
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const _SourceHelpPage(),
       ),
     );
   }
@@ -1301,6 +1265,91 @@ class _ContentEditPageState extends State<_ContentEditPage> {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// 书源帮助文档页面（加载 Markdown 文件渲染，支持切换文档）
+class _SourceHelpPage extends StatefulWidget {
+  const _SourceHelpPage();
+
+  @override
+  State<_SourceHelpPage> createState() => _SourceHelpPageState();
+}
+
+class _SourceHelpPageState extends State<_SourceHelpPage> with SingleTickerProviderStateMixin {
+  late TabController _tabController;
+  String _generalHelp = '';
+  String _jsHelp = '';
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 2, vsync: this);
+    _loadMarkdown();
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadMarkdown() async {
+    try {
+      final results = await Future.wait([
+        rootBundle.loadString('assets/templates/book_source_help.md'),
+        rootBundle.loadString('assets/templates/book_source_js_help.md'),
+      ]);
+      if (mounted) {
+        setState(() {
+          _generalHelp = results[0];
+          _jsHelp = results[1];
+          _loading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _generalHelp = '# 加载帮助文档失败\n\n$e';
+          _jsHelp = _generalHelp;
+          _loading = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('书源帮助文档'),
+        bottom: TabBar(
+          controller: _tabController,
+          tabs: const [
+            Tab(text: '规则语法', icon: Icon(Icons.menu_book, size: 18)),
+            Tab(text: 'JS 开发', icon: Icon(Icons.javascript, size: 18)),
+          ],
+        ),
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : TabBarView(
+              controller: _tabController,
+              children: [
+                Markdown(
+                  data: _generalHelp,
+                  padding: const EdgeInsets.all(16),
+                  selectable: true,
+                ),
+                Markdown(
+                  data: _jsHelp,
+                  padding: const EdgeInsets.all(16),
+                  selectable: true,
+                ),
+              ],
+            ),
     );
   }
 }

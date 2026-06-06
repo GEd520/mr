@@ -7,7 +7,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:permission_handler/permission_handler.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../../models/book.dart';
 import '../../models/book_source.dart';
@@ -598,16 +598,16 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     } else {
       _addLog('≡目录链接为空，使用详情页作为目录页');
     }
-    await _debugToc(effectiveTocUrl);
+    await _debugToc(effectiveTocUrl, book: book);
   }
 
-  Future<void> _debugToc(String tocUrl) async {
+  Future<void> _debugToc(String tocUrl, {Book? book}) async {
     if (_debugCancelled) return;
     final webBook = _webBook!;
     final realUrl = _extractRealUrl(tocUrl);
     _addLog('︾开始解析目录页');
 
-    final List<Chapter> chapters = await webBook.getChapterList(realUrl);
+    final List<Chapter> chapters = await webBook.getChapterList(realUrl, book: book);
     if (_debugCancelled) return;
 
     final tocHtml = webBook.lastTocHtml ?? '';
@@ -653,19 +653,19 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
 
     final chapterUrl = firstContent.url?.trim();
     if (chapterUrl != null && chapterUrl.isNotEmpty) {
-      await _debugContent(chapterUrl);
+      await _debugContent(chapterUrl, book: book, chapter: firstContent);
     } else {
       _addLog('≡首章链接为空，无法跳转正文', state: -1);
     }
   }
 
-  Future<void> _debugContent(String chapterUrl) async {
+  Future<void> _debugContent(String chapterUrl, {Book? book, Chapter? chapter}) async {
     if (_debugCancelled) return;
     final webBook = _webBook!;
     final realUrl = _extractRealUrl(chapterUrl);
     _addLog('︾开始解析正文页');
 
-    final String? content = await webBook.getContent(realUrl);
+    final String? content = await webBook.getContent(realUrl, book: book, chapter: chapter);
     if (_debugCancelled) return;
 
     final contentHtml = webBook.lastContentHtml ?? '';
@@ -1153,65 +1153,35 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     );
   }
 
-  /// 导出日志到文件
+  /// 导出日志到文件并通过share_plus分享（无需任何存储权限）
   Future<void> _exportLogs() async {
     try {
-      // 请求存储权限（Android端）
-      if (!kIsWeb && Platform.isAndroid) {
-        final status = await Permission.storage.request();
-        if (!status.isGranted) {
-          // Android 11+ 尝试请求管理所有文件权限
-          if (await Permission.manageExternalStorage.request().isDenied) {
-            _addLog('≡导出日志需要存储权限', state: -1);
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('导出日志需要存储权限，请在设置中授予权限')),
-              );
-            }
-            return;
-          }
-        }
-      }
-
       final text = AppLogger.instance.exportLogs(
         category: _logFilterCategory,
         minLevel: _logFilterLevel,
       );
 
-      // 优先导出到公共 Downloads 目录，失败则回退到应用内部目录
-      String filePath;
-      if (!kIsWeb && Platform.isAndroid) {
-        final downloadsDir = Directory('/storage/emulated/0/Download');
-        if (downloadsDir.existsSync()) {
-          final now = DateTime.now();
-          final fileName = 'APP_${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}.txt';
-          final file = File('${downloadsDir.path}/$fileName');
-          await file.writeAsString(text);
-          filePath = file.path;
-        } else {
-          // 回退到应用内部目录
-          final dir = await getApplicationDocumentsDirectory();
-          final now = DateTime.now();
-          final fileName = 'APP_${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}.txt';
-          final file = File('${dir.path}/$fileName');
-          await file.writeAsString(text);
-          filePath = file.path;
-        }
-      } else {
-        final dir = await getApplicationDocumentsDirectory();
-        final now = DateTime.now();
-        final fileName = 'APP_${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}.txt';
-        final file = File('${dir.path}/$fileName');
-        await file.writeAsString(text);
-        filePath = file.path;
-      }
+      // 写入应用临时目录（无需任何权限）
+      final dir = await getTemporaryDirectory();
+      final now = DateTime.now();
+      final fileName = 'APP_${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}.txt';
+      final file = File('${dir.path}/$fileName');
+      await file.writeAsString(text);
 
-      _addLog('≡已导出日志到: $filePath');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('日志已导出: $filePath')),
-        );
+      _addLog('≡正在导出日志...');
+      if (!mounted) return;
+      // 通过系统分享面板导出，用户可选择保存到任意位置
+      await Share.shareXFiles(
+        [XFile(file.path)],
+        subject: '导出调试日志',
+        text: '导出调试日志',
+      );
+
+      // 分享完成后清理临时文件
+      if (file.existsSync()) {
+        await file.delete();
       }
+      _addLog('≡日志导出完成');
     } catch (e) {
       _addLog('≡导出日志失败: $e', state: -1);
       if (mounted) {

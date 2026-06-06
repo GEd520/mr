@@ -1,13 +1,17 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
+import 'package:share_plus/share_plus.dart';
 import '../../models/book_source.dart';
 import '../../providers/discovery_provider.dart';
 import '../../services/book_source_import_service.dart';
 import '../../services/storage_service.dart';
 import 'book_source_edit_page.dart';
+import 'js_source_edit_page.dart';
 
 /// 书源模板定义
 class SourceTemplate {
@@ -17,6 +21,7 @@ class SourceTemplate {
   final IconData icon;
   final Color color;
   final String assetPath;
+  final bool isJsFile; // 是否为纯JS文件模板
 
   const SourceTemplate({
     required this.id,
@@ -25,15 +30,24 @@ class SourceTemplate {
     required this.icon,
     required this.color,
     required this.assetPath,
+    this.isJsFile = false,
   });
 }
 
-/// 可用模板列表
-const List<SourceTemplate> kSourceTemplates = [
+/// JSON模板列表（创建.json书源文件）
+const List<SourceTemplate> kJsonTemplates = [
   SourceTemplate(
-    id: 'json',
-    name: 'JSON 模板',
-    description: '阅读3.0原版格式，兼容Legado书源',
+    id: 'json_custom',
+    name: '自定义',
+    description: '空白模板，无预设值，完全自由配置',
+    icon: Icons.edit_note,
+    color: Colors.grey,
+    assetPath: '', // 空模板，无资源文件
+  ),
+  SourceTemplate(
+    id: 'json_default',
+    name: '默认模板',
+    description: '阅读3.0原版格式，CSS选择器规则，兼容Legado',
     icon: Icons.data_object,
     color: Colors.blue,
     assetPath: 'assets/templates/book_source_template.json',
@@ -47,15 +61,7 @@ const List<SourceTemplate> kSourceTemplates = [
     assetPath: 'assets/templates/book_source_json_template.json',
   ),
   SourceTemplate(
-    id: 'js',
-    name: 'JS 模板',
-    description: 'JavaScript书源，支持自定义解析逻辑',
-    icon: Icons.code,
-    color: Colors.orange,
-    assetPath: 'assets/templates/book_source_js_template.json',
-  ),
-  SourceTemplate(
-    id: 'xpath',
+    id: 'json_xpath',
     name: 'XPath 模板',
     description: '使用XPath选择器解析HTML/XML',
     icon: Icons.account_tree,
@@ -63,12 +69,33 @@ const List<SourceTemplate> kSourceTemplates = [
     assetPath: 'assets/templates/book_source_xpath_template.json',
   ),
   SourceTemplate(
-    id: 'regex',
+    id: 'json_regex',
     name: '正则模板',
     description: '使用正则表达式匹配网页内容',
     icon: Icons.pattern,
     color: Colors.red,
     assetPath: 'assets/templates/book_source_regex_template.json',
+  ),
+  SourceTemplate(
+    id: 'json_js',
+    name: 'JSON+JS 模板',
+    description: 'JSON格式 + JS规则混合，jsLib内置工具库',
+    icon: Icons.code,
+    color: Colors.orange,
+    assetPath: 'assets/templates/book_source_js_template.json',
+  ),
+];
+
+/// JS模板列表（创建.js书源文件）
+const List<SourceTemplate> kJsTemplates = [
+  SourceTemplate(
+    id: 'js_file',
+    name: '纯JS书源',
+    description: '全新格式，整个书源就是一个JS文件，自由度最高',
+    icon: Icons.javascript,
+    color: Colors.amber,
+    assetPath: 'assets/templates/book_source_js_file_template.js',
+    isJsFile: true,
   ),
 ];
 
@@ -127,7 +154,7 @@ class _BookSourceManagePageState extends State<BookSourceManagePage> {
   }
 
   Future<void> _navigateToEditPage({String? sourceUrl, BookSource? templateSource}) async {
-    final result = await Navigator.push(
+    await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (context) => BookSourceEditPage(
@@ -140,43 +167,87 @@ class _BookSourceManagePageState extends State<BookSourceManagePage> {
     _loadSources();
   }
 
-  /// 显示模板选择对话框
+  /// 显示模板选择对话框（底部弹出式，分两大类）
   Future<void> _showTemplatePicker() async {
-    final selected = await showDialog<SourceTemplate>(
+    final selected = await showModalBottomSheet<SourceTemplate>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('选择书源模板'),
-        content: SizedBox(
-          width: double.maxFinite,
-          child: ListView.builder(
-            shrinkWrap: true,
-            itemCount: kSourceTemplates.length,
-            itemBuilder: (context, index) {
-              final template = kSourceTemplates[index];
-              return ListTile(
-                leading: CircleAvatar(
-                  backgroundColor: template.color.withOpacity(0.2),
-                  child: Icon(template.icon, color: template.color, size: 20),
-                ),
-                title: Text(template.name),
-                subtitle: Text(
-                  template.description,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => DraggableScrollableSheet(
+        initialChildSize: 0.65,
+        minChildSize: 0.4,
+        maxChildSize: 0.85,
+        expand: false,
+        builder: (context, scrollController) => Column(
+          children: [
+            // 顶部拖拽指示条
+            Container(
+              margin: const EdgeInsets.symmetric(vertical: 12),
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.grey.shade300,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            // 标题
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: Row(
+                children: [
+                  const Text('选择书源模板', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  const Spacer(),
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () => Navigator.pop(context),
                   ),
-                ),
-                onTap: () => Navigator.pop(context, template),
-              );
-            },
-          ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 4),
+            // 模板列表
+            Expanded(
+              child: ListView(
+                controller: scrollController,
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                children: [
+                  // JSON 模板分组标题
+                  _buildSectionHeader(
+                    icon: Icons.data_object,
+                    title: 'JSON 书源模板',
+                    subtitle: '创建 .json 格式书源',
+                    color: Colors.blue,
+                  ),
+                  const SizedBox(height: 4),
+                  // JSON 模板网格
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: kJsonTemplates.map((t) => _buildTemplateCard(context, t)).toList(),
+                  ),
+                  const SizedBox(height: 16),
+                  // JS 模板分组标题
+                  _buildSectionHeader(
+                    icon: Icons.javascript,
+                    title: 'JS 书源模板',
+                    subtitle: '创建 .js 格式书源',
+                    color: Colors.amber.shade800,
+                  ),
+                  const SizedBox(height: 4),
+                  // JS 模板网格
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: kJsTemplates.map((t) => _buildTemplateCard(context, t)).toList(),
+                  ),
+                  const SizedBox(height: 24),
+                ],
+              ),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
-        ],
       ),
     );
 
@@ -185,16 +256,107 @@ class _BookSourceManagePageState extends State<BookSourceManagePage> {
     }
   }
 
+  Widget _buildSectionHeader({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required Color color,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(6),
+            decoration: BoxDecoration(
+              color: color.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(icon, size: 18, color: color),
+          ),
+          const SizedBox(width: 10),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: color)),
+              Text(subtitle, style: TextStyle(fontSize: 11, color: Colors.grey.shade600)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTemplateCard(BuildContext context, SourceTemplate template) {
+    return InkWell(
+      onTap: () => Navigator.pop(context, template),
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        width: (MediaQuery.of(context).size.width - 56) / 2,
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          border: Border.all(color: template.color.withOpacity(0.3)),
+          borderRadius: BorderRadius.circular(12),
+          color: template.color.withOpacity(0.05),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(template.icon, color: template.color, size: 20),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    template.name,
+                    style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: template.color),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              template.description,
+              style: TextStyle(fontSize: 11, color: Colors.grey.shade600, height: 1.3),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   /// 从模板创建书源
   Future<void> _createFromTemplate(SourceTemplate template) async {
     try {
-      final jsonStr = await rootBundle.loadString(template.assetPath);
-      final json = jsonDecode(jsonStr) as Map<String, dynamic>;
-      // 清空URL和名称，让用户填写
-      json['bookSourceUrl'] = '';
-      json['bookSourceName'] = '';
-      final templateSource = BookSource.fromJson(json);
-      _navigateToEditPage(templateSource: templateSource);
+      if (template.isJsFile) {
+        // JS文件模板：进入JS代码编辑器页面
+        final jsCode = template.assetPath.isEmpty
+            ? '' // 空白JS模板
+            : await rootBundle.loadString(template.assetPath);
+        if (!mounted) return;
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => JsSourceEditPage(initialJsCode: jsCode),
+          ),
+        ).then((_) => _loadSources());
+      } else if (template.id == 'json_custom' || template.assetPath.isEmpty) {
+        // 自定义空模板：直接进入空白编辑器
+        _navigateToEditPage();
+      } else {
+        // JSON模板：直接加载JSON创建书源
+        final jsonStr = await rootBundle.loadString(template.assetPath);
+        final json = jsonDecode(jsonStr) as Map<String, dynamic>;
+        // 清空URL和名称，让用户填写
+        json['bookSourceUrl'] = '';
+        json['bookSourceName'] = '';
+        final templateSource = BookSource.fromJson(json);
+        _navigateToEditPage(templateSource: templateSource);
+      }
     } catch (e) {
       // 模板加载失败，直接创建空白书源
       if (mounted) {
@@ -682,6 +844,15 @@ class _BookSourceManagePageState extends State<BookSourceManagePage> {
             ),
             const Divider(),
             ListTile(
+              leading: const Icon(Icons.file_download),
+              title: const Text('导出书源'),
+              onTap: () {
+                Navigator.pop(context);
+                _exportSources();
+              },
+            ),
+            const Divider(),
+            ListTile(
               leading: const Icon(Icons.select_all),
               title: const Text('批量选择'),
               onTap: () {
@@ -808,6 +979,69 @@ class _BookSourceManagePageState extends State<BookSourceManagePage> {
     if (confirmed == true) {
       await StorageService.instance.clearBookSources();
       await _loadSources();
+    }
+  }
+
+  /// 导出所有书源为JSON文件并通过share_plus分享
+  Future<void> _exportSources() async {
+    if (_allSources.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('没有可导出的书源')),
+        );
+      }
+      return;
+    }
+    await _doExport(_allSources);
+  }
+
+  /// 导出已选中的书源
+  Future<void> _exportSelectedSources() async {
+    if (_selectedSourceUrls.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('请先选择要导出的书源')),
+        );
+      }
+      return;
+    }
+    final selectedSources = _allSources
+        .where((s) => _selectedSourceUrls.contains(s.bookSourceUrl))
+        .toList();
+    await _doExport(selectedSources);
+  }
+
+  /// 执行导出：将书源列表序列化为JSON，写入临时文件后通过share_plus分享
+  Future<void> _doExport(List<BookSource> sources) async {
+    try {
+      final jsonList = sources.map((s) => s.toJson()).toList();
+      final jsonStr = const JsonEncoder.withIndent('  ').convert(jsonList);
+
+      // 写入应用临时目录（无需任何权限）
+      final dir = await getTemporaryDirectory();
+      final now = DateTime.now();
+      final fileName =
+          'book_source_${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}.json';
+      final file = File('${dir.path}/$fileName');
+      await file.writeAsString(jsonStr);
+
+      if (!mounted) return;
+      // 通过系统分享面板导出，用户可选择保存到任意位置
+      await Share.shareXFiles(
+        [XFile(file.path)],
+        subject: '导出书源',
+        text: '导出 ${sources.length} 个书源',
+      );
+
+      // 分享完成后清理临时文件
+      if (file.existsSync()) {
+        await file.delete();
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('导出失败: $e')),
+      );
     }
   }
 
@@ -1075,6 +1309,9 @@ class _BookSourceManagePageState extends State<BookSourceManagePage> {
               case 'import_url':
                 _importFromUrl();
                 break;
+              case 'export':
+                _exportSources();
+                break;
               case 'selection':
                 _toggleSelectionMode();
                 break;
@@ -1106,6 +1343,13 @@ class _BookSourceManagePageState extends State<BookSourceManagePage> {
               child: ListTile(
                 leading: Icon(Icons.cloud_download),
                 title: Text('网络导入'),
+              ),
+            ),
+            const PopupMenuItem(
+              value: 'export',
+              child: ListTile(
+                leading: Icon(Icons.file_download),
+                title: Text('导出书源'),
               ),
             ),
             const PopupMenuDivider(),
@@ -1164,6 +1408,9 @@ class _BookSourceManagePageState extends State<BookSourceManagePage> {
               case 'disable':
                 _enableSelected(false);
                 break;
+              case 'export':
+                _exportSelectedSources();
+                break;
               case 'delete':
                 _deleteSelected();
                 break;
@@ -1182,6 +1429,13 @@ class _BookSourceManagePageState extends State<BookSourceManagePage> {
               child: ListTile(
                 leading: Icon(Icons.cancel),
                 title: Text('禁用所选'),
+              ),
+            ),
+            const PopupMenuItem(
+              value: 'export',
+              child: ListTile(
+                leading: Icon(Icons.file_download),
+                title: Text('导出所选'),
               ),
             ),
             const PopupMenuDivider(),

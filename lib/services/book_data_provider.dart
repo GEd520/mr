@@ -83,7 +83,7 @@ class OnlineBookDataProvider implements BookDataProvider {
   Future<List<Chapter>> getChapterList(Book book) async {
     final webBook = await _getWebBook();
     final tocUrl = book.tocUrl ?? book.bookUrl;
-    return webBook.getChapterList(tocUrl);
+    return webBook.getChapterList(tocUrl, book: book);
   }
 
   @override
@@ -93,7 +93,7 @@ class OnlineBookDataProvider implements BookDataProvider {
     }
     final webBook = await _getWebBook();
     if (chapter.url != null) {
-      return webBook.getContent(chapter.url!);
+      return webBook.getContent(chapter.url!, book: book, chapter: chapter);
     }
     return null;
   }

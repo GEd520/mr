@@ -31,11 +31,8 @@ class AnalyzeRule {
   // ===== 书源上下文（借鉴 legado 的 evalJS 绑定）=====
   /// 书源元数据，在 JS 执行时注入 source 变量
   /// 由 WebBook 调用 setSourceInfo() 设置
-  // ignore: unused_field
   Map<String, dynamic>? _sourceInfo;  // 书源元数据
-  // ignore: unused_field
   Map<String, dynamic>? _bookInfo;    // 书籍信息
-  // ignore: unused_field
   Map<String, dynamic>? _chapterInfo; // 章节信息
 
   // 规则缓存
@@ -673,6 +670,23 @@ class AnalyzeRule {
     if (rules.length == 1) {
       final singleRule = rules.first;
 
+      // Handle css: prefix (legado style: after @ split, css: becomes a step)
+      if (singleRule.toLowerCase().startsWith('css:')) {
+        final selector = singleRule.substring(4);
+        try {
+          final elements = root.querySelectorAll(selector)
+              .whereType<dom.Element>()
+              .toList();
+          return elements
+              .map((e) => e.text.trim())
+              .where((e) => e.isNotEmpty)
+              .toList();
+        } catch (e) {
+          debugPrint('CSS selector failed: $selector $e');
+          return [];
+        }
+      }
+
       // 检查是否是提取规则（text, html, 属性等）
       // 如果原始规则以 @ 开头（被 trim 去掉了），说明是属性提取
       final lowerRule = singleRule.toLowerCase();
@@ -732,13 +746,47 @@ class AnalyzeRule {
     // 多步规则：前面的选择元素，最后一步提取内容
     var current = <dom.Element>[root];
     for (var i = 0; i < rules.length - 1; i++) {
+      final stepRule = rules[i];
+      // Handle css: prefix (legado style: @css:selector)
+      if (stepRule.toLowerCase().startsWith('css:')) {
+        final selector = stepRule.substring(4);
+        final next = <dom.Element>[];
+        for (final element in current) {
+          try {
+            next.addAll(element.querySelectorAll(selector).whereType<dom.Element>());
+          } catch (e) {
+            debugPrint('CSS selector failed: $selector $e');
+          }
+        }
+        current = next;
+        if (current.isEmpty) return [];
+        continue;
+      }
       final next = <dom.Element>[];
       for (final element in current) {
         next.addAll(
-            _selectElementsSingle(element, rules[i]).whereType<dom.Element>());
+            _selectElementsSingle(element, stepRule).whereType<dom.Element>());
       }
       current = next;
       if (current.isEmpty) return [];
+    }
+
+    // Handle css: prefix on the last step as well
+    final lastStepRule = rules.last;
+    if (lastStepRule.toLowerCase().startsWith('css:')) {
+      final selector = lastStepRule.substring(4);
+      final next = <dom.Element>[];
+      for (final element in current) {
+        try {
+          next.addAll(element.querySelectorAll(selector).whereType<dom.Element>());
+        } catch (e) {
+          debugPrint('CSS selector failed: $selector $e');
+        }
+      }
+      return next
+          .map((e) => e.text.trim())
+          .where((e) => e.isNotEmpty)
+          .toList();
     }
 
     return _extractLast(current, rules.last);
@@ -746,18 +794,36 @@ class AnalyzeRule {
 
   /// CSS选择器获取最后结果
   List<String> _cssLast(dom.Element root, String rule) {
-    final lastAt = rule.lastIndexOf('@');
+    // Find the last @ that is NOT part of @css: prefix
+    int lastAt = -1;
+    for (int i = rule.length - 1; i >= 0; i--) {
+      if (rule[i] == '@') {
+        // Check if this @ is part of @css:
+        if (i + 4 < rule.length &&
+            rule.substring(i, i + 5).toLowerCase() == '@css:') {
+          // This @ is part of @css: prefix, skip it
+          continue;
+        }
+        lastAt = i;
+        break;
+      }
+    }
 
-    // 如果没有 @，直接选择元素并返回文本
+    // 如果没有 @（或者只有 @css: 中的 @），直接选择元素并返回文本
     if (lastAt < 0) {
+      // If the rule starts with @css:, strip the prefix
+      var selector = rule;
+      if (selector.toLowerCase().startsWith('@css:')) {
+        selector = selector.substring(5).trim();
+      }
       try {
-        final elements = root.querySelectorAll(rule).toList();
+        final elements = root.querySelectorAll(selector).toList();
         return elements
             .map((e) => e.text.trim())
             .where((e) => e.isNotEmpty)
             .toList();
       } catch (e) {
-        debugPrint('CSS selector failed: $rule $e');
+        debugPrint('CSS selector failed: $selector $e');
         return [];
       }
     }
@@ -953,13 +1019,24 @@ class AnalyzeRule {
   /// 注入 java/source/book/chapter/cookie/result/baseUrl 等变量
   dynamic _applyJs(dynamic content, String jsCode) {
     try {
-      // 同步执行 JS（QuickJS 模式）
-      // 注意：同步模式下 java.ajax() 等异步方法只能返回缓存值
+      // 收集规则上下文变量，注入到JS作用域
+      final vars = <String, dynamic>{};
+      vars.addAll(_variableMap);
+      vars.addAll(_variables);
+      // 注入书源/书籍/章节上下文（借鉴 legado 的 evalJS 绑定）
+      if (_sourceInfo != null) vars['source'] = _sourceInfo;
+      if (_bookInfo != null) vars['book'] = _bookInfo;
+      if (_chapterInfo != null) vars['chapter'] = _chapterInfo;
+      if (!vars.containsKey('cookie')) vars['cookie'] = <String, String>{};
+      // Add src variable (legado: src = content, the original HTML/JSON)
+      if (!vars.containsKey('src')) vars['src'] = _content;
+
       return JsEngine.instance.executeSync(
         jsCode,
         content,
         baseUrl: _baseUrl,
         sourceEngine: _sourceEngine,
+        variables: vars,
       );
     } catch (e) {
       AppLogger.instance.logJsError('AnalyzeRule', e.toString());
@@ -971,11 +1048,21 @@ class AnalyzeRule {
   /// 在需要 java.ajax() 等异步操作时使用此方法
   Future<String?> applyJsAsync(dynamic content, String jsCode) async {
     try {
+      // 收集上下文变量
+      final env = <String, dynamic>{
+        'baseUrl': _baseUrl ?? '',
+      };
+      if (_sourceInfo != null) env['source'] = _sourceInfo;
+      if (_bookInfo != null) env['book'] = _bookInfo;
+      if (_chapterInfo != null) env['chapter'] = _chapterInfo;
+      env['cookie'] = <String, String>{};
+
       return await JsEngine.instance.processJsRule(
         content?.toString() ?? '',
         jsCode,
         baseUrl: _baseUrl,
         sourceEngine: _sourceEngine,
+        env: env,
       );
     } catch (e) {
       AppLogger.instance.logJsError('AnalyzeRule', e.toString());
@@ -1276,11 +1363,12 @@ class _SourceRule {
     );
 
     // 解析 ## 分割的正则替换
+    // 借鉴 legado：## 分割需要跳过 {{}} 内的 ##，避免误切内嵌规则
     var replaceRegex = '';
     var replacement = '';
     var replaceFirst = false;
 
-    final sharpIndex = rule.indexOf('##');
+    final sharpIndex = _findSharpSplit(rule);
     if (sharpIndex >= 0) {
       final mainRule = rule.substring(0, sharpIndex);
       final parts = rule.substring(sharpIndex + 2).split('##');
@@ -1299,6 +1387,58 @@ class _SourceRule {
       replaceFirst: replaceFirst,
       putMap: putMap,
     );
+  }
+
+  /// 找到规则中第一个不在 {{}} 内的 ## 位置
+  /// 借鉴 legado：## 分割需要跳过 {{}} 内的 ##，避免误切内嵌规则
+  /// 例如：`《{{@@.bookname@text}}》\n标签：{{@@.tags@a@text##\s##,}}` 中
+  /// 第一个 ## 在 {{}} 内，应该跳过，找到 {{}} 外的 ##
+  static int _findSharpSplit(String rule) {
+    var braceDepth = 0;
+    var inSingleQuote = false;
+    var inDoubleQuote = false;
+
+    for (var i = 0; i < rule.length - 1; i++) {
+      final ch = rule[i];
+
+      // 转义字符跳过
+      if (ch == '\\' && i + 1 < rule.length) {
+        i++;
+        continue;
+      }
+
+      // 引号状态管理
+      if (ch == "'" && !inDoubleQuote) {
+        inSingleQuote = !inSingleQuote;
+        continue;
+      }
+      if (ch == '"' && !inSingleQuote) {
+        inDoubleQuote = !inDoubleQuote;
+        continue;
+      }
+
+      // 引号内不处理
+      if (inSingleQuote || inDoubleQuote) continue;
+
+      // {{}} 深度管理
+      if (ch == '{' && i + 1 < rule.length && rule[i + 1] == '{') {
+        braceDepth++;
+        i++; // 跳过第二个 {
+        continue;
+      }
+      if (ch == '}' && i + 1 < rule.length && rule[i + 1] == '}') {
+        braceDepth = braceDepth > 0 ? braceDepth - 1 : 0;
+        i++; // 跳过第二个 }
+        continue;
+      }
+
+      // 在 {{}} 外且匹配 ## 时返回位置
+      if (braceDepth == 0 && ch == '#' && rule[i + 1] == '#') {
+        return i;
+      }
+    }
+
+    return -1; // 没有找到 {{}} 外的 ##
   }
 }
 
@@ -1410,6 +1550,7 @@ class _RuleAnalyzer {
   }
 
   /// 保留旧方法兼容
+  // ignore: unused_element
   List<String> _splitOutside(String value, String delimiter) {
     return _splitOutsideBalanced(value, delimiter);
   }
@@ -1417,6 +1558,7 @@ class _RuleAnalyzer {
   /// 内嵌规则替换（借鉴 legado 的 innerRule）
   /// 提取 startStr 和 endStr 之间的内容，用 fr 函数替换
   /// 例如 innerRule('{{', '}}', (expr) => evalJS(expr))
+  // ignore: unused_element
   static String innerRule(
     String value,
     String startStr,

@@ -1,7 +1,9 @@
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:hive_flutter/hive_flutter.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'providers/app_provider.dart';
 import 'providers/bookshelf_provider.dart';
 import 'providers/discovery_provider.dart';
@@ -25,7 +27,6 @@ void main() async {
     }
   } catch (e) {
     debugPrint('❌ Storage init error: $e');
-    // 继续运行，但存储功能可能不可用
   }
 
   try {

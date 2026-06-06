@@ -1,5 +1,8 @@
+import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '../bookshelf/bookshelf_page.dart';
 import '../discovery/discovery_page.dart';
 import '../miniprogram/miniprogram_page.dart';
@@ -29,6 +32,22 @@ class _MainPageState extends State<MainPage> {
   void initState() {
     super.initState();
     _loadData();
+    _requestPermissions();
+  }
+
+  /// 在首页请求运行时权限（必须在Activity存在时请求）
+  /// 仅请求通知权限，存储相关权限已通过 share_plus 按需处理，无需启动时请求
+  Future<void> _requestPermissions() async {
+    if (kIsWeb || !Platform.isAndroid) return;
+
+    try {
+      // 仅请求通知权限（Android 13+ 必须显式请求）
+      await [
+        Permission.notification,
+      ].request();
+    } catch (e) {
+      debugPrint('⚠️ 权限请求异常: $e');
+    }
   }
 
   Future<void> _loadData() async {

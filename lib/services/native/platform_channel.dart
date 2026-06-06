@@ -279,6 +279,48 @@ class NativeChannel {
     }
   }
 
+  /// 获取设备信息（SDK版本等）
+  Future<Map<String, dynamic>?> getDeviceInfo() async {
+    try {
+      final result = await _channel.invokeMethod<Map>('getDeviceInfo');
+      if (result == null) return null;
+      return Map<String, dynamic>.from(result);
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  // ===== WebView JS 执行（借鉴 legado 的 BackstageWebView）=====
+
+  /// 在 WebView 中加载 URL 并执行 JS 代码
+  /// 借鉴 legado 的 BackstageWebView.getStrResponse()
+  ///
+  /// [url] 要加载的页面 URL
+  /// [jsCode] 页面加载完成后执行的 JS 代码
+  /// [sourceRegex] 资源嗅探正则（可选，用于嗅探视频/音频 URL）
+  /// [html] 预加载的 HTML（可选，不加载 URL 直接用 HTML）
+  /// [delayTime] JS 执行延迟时间（毫秒，默认 200）
+  Future<String?> executeWebViewJs({
+    required String url,
+    required String jsCode,
+    String? sourceRegex,
+    String? html,
+    int delayTime = 200,
+  }) async {
+    try {
+      final result = await _channel.invokeMethod<String>('executeWebViewJs', {
+        'url': url,
+        'jsCode': jsCode,
+        'sourceRegex': sourceRegex,
+        'html': html,
+        'delayTime': delayTime,
+      });
+      return result;
+    } on PlatformException {
+      return null;
+    }
+  }
+
   // ===== 内置 Node.js 运行时 =====
 
   /// 初始化内置 Node.js（解压二进制 + 脚本）

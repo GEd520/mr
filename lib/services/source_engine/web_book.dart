@@ -11,6 +11,7 @@ import 'analyze_rule.dart';
 import 'analyze_url.dart' as legado_url;
 import 'web_proxy.dart';
 import 'proxy_service.dart';
+import '../native/js_advanced_service.dart';
 import '../native/js_engine.dart';
 import '../native/platform_channel.dart';
 
@@ -296,14 +297,23 @@ class WebBook {
 
   /// 执行 JS 规则并返回字符串结果
   Future<String?> _executeJs(String jsCode,
-      {String? result, String? baseUrl}) async {
+      {String? result, String? baseUrl, Map<String, dynamic>? extraEnv}) async {
     try {
       AppLogger.instance.logJsExecute('分流', jsCode);
+      // 构建完整 env（借鉴 legado 的 evalJS 绑定）
+      final env = <String, dynamic>{
+        'baseUrl': baseUrl ?? source.bookSourceUrl,
+        'source': _sourceToMap(source),
+        'cookie': <String, String>{},
+      };
+      if (extraEnv != null) env.addAll(extraEnv);
+
       final jsResult = await JsEngine.instance.processJsRule(
         result ?? '',
         jsCode,
         baseUrl: baseUrl ?? source.bookSourceUrl,
         sourceEngine: source.engineType,
+        env: env,
       );
       AppLogger.instance.logJsResult('分流', jsResult);
       return jsResult;
@@ -401,6 +411,41 @@ class WebBook {
 
     if (headerStr == null || headerStr.isEmpty) return headers;
 
+    // 借鉴 legado 的 BaseSource.getHeaderMap()：
+    // header 整体支持 @js: 或 <js> 前缀，返回 JSON 格式的 header map
+    // header 值也支持 JS 表达式
+
+    // 先检查 header 整体是否是 JS 代码
+    if (_isJsRule(headerStr)) {
+      try {
+        final jsResult = JsEngine.instance.executeSync(
+          headerStr, null,
+          baseUrl: source.bookSourceUrl,
+          sourceEngine: source.engineType,
+          variables: {
+            'source': _sourceToMap(source),
+            'cookie': <String, String>{},
+          },
+        );
+        if (jsResult != null) {
+          final resultStr = jsResult.toString();
+          try {
+            final decoded = json.decode(resultStr);
+            if (decoded is Map) {
+              decoded.forEach((key, value) {
+                headers[key.toString()] = value.toString();
+              });
+              return headers;
+            }
+          } catch (_) {
+            // JS 返回的不是 JSON，忽略
+          }
+        }
+      } catch (e) {
+        debugPrint('❌ header JS执行失败: $e');
+      }
+    }
+
     // 尝试 JSON 解析
     try {
       final decoded = json.decode(headerStr);
@@ -410,7 +455,12 @@ class WebBook {
           // 如果值包含 JS 表达式，执行它
           if (_isJsRule(val)) {
             final jsResult = JsEngine.instance.executeSync(val, null,
-                baseUrl: source.bookSourceUrl, sourceEngine: source.engineType);
+                baseUrl: source.bookSourceUrl,
+                sourceEngine: source.engineType,
+                variables: {
+                  'source': _sourceToMap(source),
+                  'cookie': <String, String>{},
+                });
             headers[key.toString()] = jsResult?.toString() ?? val;
           } else {
             headers[key.toString()] = val;
@@ -427,7 +477,12 @@ class WebBook {
           var val = parts.sublist(1).join(':').trim();
           if (_isJsRule(val)) {
             final jsResult = JsEngine.instance.executeSync(val, null,
-                baseUrl: source.bookSourceUrl, sourceEngine: source.engineType);
+                baseUrl: source.bookSourceUrl,
+                sourceEngine: source.engineType,
+                variables: {
+                  'source': _sourceToMap(source),
+                  'cookie': <String, String>{},
+                });
             val = jsResult?.toString() ?? val;
           }
           headers[key] = val;
@@ -439,13 +494,18 @@ class WebBook {
   }
 
   /// 加载书源 JS 库（jsLib 字段）
+  /// 借鉴 legado 的 SharedJsScope：jsLib 缓存到局部作用域，不污染全局
   Future<void> _loadJsLib() async {
     final jsLib = source.jsLib;
     if (jsLib == null || jsLib.isEmpty) return;
     try {
-      // jsLib 是一段 JS 代码，注入到引擎中
-      JsEngine.instance.evaluate(jsLib);
-      debugPrint('📚 已加载书源JS库: ${source.bookSourceName}');
+      // 确保引擎已初始化
+      if (!JsEngine.instance.isAvailable) {
+        await JsEngine.instance.init();
+      }
+      // 缓存 jsLib 到书源级局部作用域（不注入全局，避免污染）
+      JsEngine.instance.loadJsLib(source.bookSourceUrl, jsLib);
+      debugPrint('📚 已缓存书源JS库: ${source.bookSourceName}');
     } catch (e) {
       debugPrint('❌ 加载书源JS库失败: $e');
     }
@@ -651,7 +711,9 @@ class WebBook {
       final analyzer = AnalyzeRule()
         ..setContent(html, baseUrl: response.url)
         ..setSourceEngine(source.engineType)
-        ..setSourceInfo(_sourceToMap(source)); // 借鉴 legado：注入 source 上下文
+        ..setSourceInfo(_sourceToMap(source)) // 借鉴 legado：注入 source 上下文
+        ..putVariable('key', keyword)   // 注入搜索关键词
+        ..putVariable('page', page);    // 注入页码
 
       final bookListRule = searchRule.bookList ?? '';
 
@@ -667,12 +729,12 @@ class WebBook {
 
       AppLogger.instance.logParse('搜索列表', actualBookListRule);
 
-      final bookElements = analyzer.getElements(actualBookListRule);
+      var bookElements = analyzer.getElements(actualBookListRule);
       AppLogger.instance.logParseResult('搜索列表', bookElements.length);
 
       // 借鉴 legado：列表反转
       if (reverseList && bookElements.isNotEmpty) {
-        bookElements.toList().reversed.toList();
+        bookElements = bookElements.reversed.toList();
       }
 
       if (bookElements.isEmpty) {
@@ -687,7 +749,9 @@ class WebBook {
         final itemAnalyzer = AnalyzeRule()
           ..setContent(element, baseUrl: response.url)
           ..setSourceEngine(source.engineType)
-          ..setSourceInfo(_sourceToMap(source));
+          ..setSourceInfo(_sourceToMap(source))
+          ..putVariable('key', keyword)
+          ..putVariable('page', page);
 
         var name = itemAnalyzer.getString(searchRule.name ?? '');
         var author = itemAnalyzer.getString(searchRule.author ?? '');
@@ -799,31 +863,36 @@ class WebBook {
       // 使用 AnalyzeRule 引擎解析
       final analyzer = AnalyzeRule()
         ..setContent(html, baseUrl: response.url)
-        ..setSourceEngine(source.engineType);
+        ..setSourceEngine(source.engineType)
+        ..setSourceInfo(_sourceToMap(source))
+        ..putVariable('baseUrl', exploreUrl)
+        ..putVariable('url', exploreUrl)
+        ..putVariable('page', 1);
 
       final results = <Map<String, dynamic>>[];
-      final bookElements = analyzer.getElements(exploreRule?.bookList ?? '');
+      final bookElements = analyzer.getElements(bookListRule);
       for (final element in bookElements) {
         final itemAnalyzer = AnalyzeRule()
           ..setContent(element, baseUrl: response.url)
-          ..setSourceEngine(source.engineType);
-        final name = itemAnalyzer.getString(exploreRule?.name ?? '');
+          ..setSourceEngine(source.engineType)
+          ..setSourceInfo(_sourceToMap(source));
+        final name = itemAnalyzer.getString(useSearchFallback ? (searchRule?.name ?? '') : exploreRule.name);
         if (name == null || name.isEmpty) continue;
         results.add({
           'name': name,
-          'author': itemAnalyzer.getString(exploreRule?.author ?? '') ?? '',
+          'author': itemAnalyzer.getString(useSearchFallback ? (searchRule?.author ?? '') : exploreRule.author) ?? '',
           'coverUrl':
-              itemAnalyzer.getString(exploreRule?.coverUrl ?? '', isUrl: true) ??
+              itemAnalyzer.getString(useSearchFallback ? (searchRule?.coverUrl ?? '') : exploreRule.coverUrl, isUrl: true) ??
                   '',
-          'intro': itemAnalyzer.getString(exploreRule?.intro ?? '') ?? '',
+          'intro': itemAnalyzer.getString(useSearchFallback ? (searchRule?.intro ?? '') : exploreRule.intro) ?? '',
           'bookUrl':
-              itemAnalyzer.getString(exploreRule?.bookUrl ?? '', isUrl: true) ??
+              itemAnalyzer.getString(useSearchFallback ? (searchRule?.bookUrl ?? '') : exploreRule.bookUrl, isUrl: true) ??
                   '',
-          'kind': itemAnalyzer.getString(exploreRule?.kind ?? '') ?? '',
+          'kind': itemAnalyzer.getString(useSearchFallback ? (searchRule?.kind ?? '') : exploreRule.kind) ?? '',
           'lastChapter':
-              itemAnalyzer.getString(exploreRule?.lastChapter ?? '') ?? '',
+              itemAnalyzer.getString(useSearchFallback ? (searchRule?.lastChapter ?? '') : exploreRule.lastChapter) ?? '',
           'wordCount':
-              itemAnalyzer.getString(exploreRule?.wordCount ?? '') ?? '',
+              itemAnalyzer.getString(useSearchFallback ? (searchRule?.wordCount ?? '') : exploreRule.wordCount) ?? '',
           'sourceUrl': source.bookSourceUrl,
           'sourceName': source.bookSourceName,
         });
@@ -861,10 +930,12 @@ class WebBook {
       // 使用 AnalyzeRule 引擎解析
       var analyzer = AnalyzeRule()
         ..setContent(html, baseUrl: response.url)
-        ..setSourceEngine(source.engineType);
+        ..setSourceEngine(source.engineType)
+        ..setSourceInfo(_sourceToMap(source));
+      // 借鉴 legado 的 BookInfo.kt：init 是普通规则（CSS/XPath/JS均可），不是纯JS
+      // legado: val initResult = analyzeRule.getString(ruleBookInfo.init)
       if (bookInfoRule.init != null && bookInfoRule.init!.isNotEmpty) {
-        final initResult = await _executeJs(bookInfoRule.init!,
-            result: html, baseUrl: bookUrl);
+        final initResult = analyzer.getString(bookInfoRule.init!);
         if (initResult != null && initResult.isNotEmpty) {
           html = initResult;
           AppLogger.instance.logJsResult('init', '${initResult.length} chars');
@@ -877,7 +948,8 @@ class WebBook {
       // 重新解析 init 处理后的内容
       analyzer = AnalyzeRule()
         ..setContent(html, baseUrl: bookUrl)
-        ..setSourceEngine(source.engineType);
+        ..setSourceEngine(source.engineType)
+        ..setSourceInfo(_sourceToMap(source));
 
       final name = analyzer.getString(bookInfoRule.name ?? '');
       final author = analyzer.getString(bookInfoRule.author ?? '');
@@ -918,7 +990,7 @@ class WebBook {
   }
 
   /// 获取章节目录
-  Future<List<Chapter>> getChapterList(String tocUrl) async {
+  Future<List<Chapter>> getChapterList(String tocUrl, {Book? book}) async {
     final tocRule = source.ruleToc;
     if (tocRule == null) return [];
 
@@ -955,7 +1027,9 @@ class WebBook {
       // 使用 AnalyzeRule 引擎解析
       final analyzer = AnalyzeRule()
         ..setContent(html, baseUrl: response.url)
-        ..setSourceEngine(source.engineType);
+        ..setSourceEngine(source.engineType)
+        ..setSourceInfo(_sourceToMap(source))
+        ..setBookInfo(book != null ? _bookToMap(book) : null);
 
       final chapterElements = analyzer.getElements(tocRule.chapterList ?? '');
       var chapterNames = <String>[];
@@ -967,7 +1041,9 @@ class WebBook {
       for (final element in chapterElements) {
         final itemAnalyzer = AnalyzeRule()
           ..setContent(element, baseUrl: response.url)
-          ..setSourceEngine(source.engineType);
+          ..setSourceEngine(source.engineType)
+          ..setSourceInfo(_sourceToMap(source))
+          ..setBookInfo(book != null ? _bookToMap(book) : null);
         chapterNames
             .add(itemAnalyzer.getString(tocRule.chapterName ?? '') ?? '');
         chapterUrls.add(itemAnalyzer.getString(tocRule.chapterUrl ?? '') ?? '');
@@ -1034,7 +1110,7 @@ class WebBook {
         final nextUrl = resolveUrl(rawNextUrl, tocUrl);
         if (nextUrl.isNotEmpty && nextUrl != tocUrl) {
           AppLogger.instance.info(LogCategory.parse, '目录下一页: $nextUrl');
-          final nextChapters = await getChapterList(nextUrl);
+          final nextChapters = await getChapterList(nextUrl, book: book);
           chapters.addAll(nextChapters);
         }
       }
@@ -1055,7 +1131,7 @@ class WebBook {
     return !const {'false', 'no', 'not', '0', '0.0'}.contains(normalized);
   }
 
-  Future<String?> getContent(String chapterUrl) async {
+  Future<String?> getContent(String chapterUrl, {Book? book, Chapter? chapter}) async {
     final contentRule = source.ruleContent;
     if (contentRule == null) return null;
 
@@ -1079,10 +1155,32 @@ class WebBook {
       // 保存原始源码
       lastContentHtml = html;
 
+      // If webJs is set, use WebView to render the page
+      if (contentRule.webJs != null && contentRule.webJs!.isNotEmpty) {
+        try {
+          final webJsResult = await JsAdvancedService.instance.executeWebJs(
+            url: response.url,
+            webJs: contentRule.webJs!,
+            source: source,
+            sourceRegex: contentRule.sourceRegex,
+            html: html,
+          );
+          if (webJsResult != null && webJsResult.isNotEmpty) {
+            html = webJsResult;
+            lastContentHtml = html;
+          }
+        } catch (e) {
+          debugPrint('❌ webJs执行失败: $e');
+        }
+      }
+
       // 使用 AnalyzeRule 引擎解析正文
       final analyzer = AnalyzeRule()
         ..setContent(html, baseUrl: response.url)
-        ..setSourceEngine(source.engineType);
+        ..setSourceEngine(source.engineType)
+        ..setSourceInfo(_sourceToMap(source))
+        ..setBookInfo(book != null ? _bookToMap(book) : null)
+        ..setChapterInfo(chapter != null ? _chapterToMap(chapter) : null);
       var content = analyzer.getString(contentRule.content ?? '');
       final subContent = analyzer.getString(contentRule.subContent ?? '');
       if (subContent != null && subContent.isNotEmpty) {
@@ -1090,6 +1188,26 @@ class WebBook {
       }
 
       AppLogger.instance.logParseResult('正文', content != null ? 1 : 0);
+
+      // 执行 replaceRegex（正文替换规则，支持 JS 替换逻辑）
+      if (contentRule.replaceRegex != null &&
+          contentRule.replaceRegex!.isNotEmpty) {
+        content = _applyContentReplace(content, contentRule.replaceRegex!);
+      }
+
+      // 处理 nextContentUrl（正文下一页，支持 JS）
+      if (contentRule.nextContentUrl != null &&
+          contentRule.nextContentUrl!.isNotEmpty) {
+        final nextUrl =
+            analyzer.getString(contentRule.nextContentUrl!, isUrl: true);
+        if (nextUrl != null && nextUrl.isNotEmpty && nextUrl != chapterUrl) {
+          debugPrint('📖 发现正文下一页: $nextUrl');
+          final nextContent = await getContent(nextUrl, book: book, chapter: chapter);
+          if (nextContent != null && nextContent.isNotEmpty) {
+            content = (content ?? '') + '\n' + nextContent;
+          }
+        }
+      }
 
       // 执行 js 脚本（正文加载后执行的 JS）
       if (contentRule.js != null && contentRule.js!.isNotEmpty) {
@@ -1099,12 +1217,6 @@ class WebBook {
           content = jsResult;
           AppLogger.instance.logJsResult('content.js', '${jsResult.length} chars');
         }
-      }
-
-      // 执行 replaceRegex（正文替换规则，支持 JS 替换逻辑）
-      if (contentRule.replaceRegex != null &&
-          contentRule.replaceRegex!.isNotEmpty) {
-        content = _applyContentReplace(content, contentRule.replaceRegex!);
       }
 
       // 执行 callBackJs（内容加载完成后的回调 JS）
@@ -1118,17 +1230,19 @@ class WebBook {
         }
       }
 
-      // 处理 nextContentUrl（正文下一页，支持 JS）
-      if (contentRule.nextContentUrl != null &&
-          contentRule.nextContentUrl!.isNotEmpty) {
-        final nextUrl =
-            analyzer.getString(contentRule.nextContentUrl!, isUrl: true);
-        if (nextUrl != null && nextUrl.isNotEmpty && nextUrl != chapterUrl) {
-          debugPrint('📖 发现正文下一页: $nextUrl');
-          final nextContent = await getContent(nextUrl);
-          if (nextContent != null && nextContent.isNotEmpty) {
-            content = (content ?? '') + '\n' + nextContent;
-          }
+      // Apply imageDecode if set
+      if (contentRule.imageDecode != null && contentRule.imageDecode!.isNotEmpty && content != null) {
+        try {
+          // Find all image URLs in content and decode them
+          final imgPattern = RegExp(r'(https?://[^\s"<>]+\.(?:jpg|jpeg|png|gif|webp))', caseSensitive: false);
+          content = content.replaceAllMapped(imgPattern, (match) {
+            final url = match.group(1)!;
+            // imageDecode will be called per-image by the reader
+            // For now, mark the URL for later processing
+            return url;
+          });
+        } catch (e) {
+          debugPrint('❌ imageDecode处理失败: $e');
         }
       }
 
@@ -1178,15 +1292,26 @@ class WebBook {
       'header': source.header ?? '',
       'loginUrl': source.loginUrl ?? '',
       'loginCheckJs': source.loginCheckJs ?? '',
-      'enabledCookieJar': source.enabledCookieJar ?? false,
+      'enabledCookieJar': source.enabledCookieJar,
       'concurrentRate': source.concurrentRate ?? '',
       'jsLib': source.jsLib ?? '',
       'variable': source.variable ?? '',
     };
   }
 
+  /// 将 Book 转为 Map（用于注入 JS 上下文）
+  Map<String, dynamic> _bookToMap(Book book) {
+    return book.toJson();
+  }
+
+  /// 将 Chapter 转为 Map（用于注入 JS 上下文）
+  Map<String, dynamic> _chapterToMap(Chapter chapter) {
+    return chapter.toJson();
+  }
+
   /// 执行 loginCheckJs 检测（借鉴 legado 的登录检测流程）
   /// 返回 true 表示需要登录，false 表示不需要
+  // ignore: unused_element
   Future<bool> _checkLoginNeeded(String html) async {
     final checkJs = source.loginCheckJs;
     if (checkJs == null || checkJs.isEmpty) return false;
@@ -1275,6 +1400,7 @@ class WebBook {
   }
 
   /// 正文 HTML 格式化（借鉴 legado 的 HtmlFormatter.formatKeepImg）
+  // ignore: unused_element
   static String _formatContent(String content, String? baseUrl) {
     var result = content;
 

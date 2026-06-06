@@ -16,6 +16,7 @@ class ReaderTtsManager {
 
   /// 段落列表
   List<String> _paragraphs = [];
+  // ignore: unused_field
   String _chapterContent = '';
 
   VoidCallback? _onStateChanged;

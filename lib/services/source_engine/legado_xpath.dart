@@ -7,6 +7,7 @@ class LegadoXPath {
   static dynamic read(dynamic input, String xpath, {required bool listMode}) {
     try {
       final document = _toXml(input);
+      // ignore: experimental_member_use
       final sequence = document.xpath(xpath).toList();
       if (listMode) return sequence;
       return sequence
