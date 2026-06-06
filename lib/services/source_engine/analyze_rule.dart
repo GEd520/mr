@@ -416,7 +416,23 @@ class AnalyzeRule {
 
       _executePutRule(rule.putMap);
       final appliedRule = _applyVariables(rule, result);
-      result = _applyRule(result, appliedRule, listMode: true);
+
+      // 借鉴 legado：多步规则中，如果上一步返回元素列表，
+      // 需要对每个元素分别执行规则，然后合并结果
+      if (result is List && appliedRule.mode == RuleMode.default_) {
+        final merged = <dynamic>[];
+        for (final item in result) {
+          final itemResult = _applyRule(item, appliedRule, listMode: true);
+          if (itemResult is List) {
+            merged.addAll(itemResult);
+          } else if (itemResult != null) {
+            merged.add(itemResult);
+          }
+        }
+        result = merged;
+      } else {
+        result = _applyRule(result, appliedRule, listMode: true);
+      }
 
       if (result != null && rule.replaceRegex.isNotEmpty) {
         if (result is List) {
@@ -574,6 +590,18 @@ class AnalyzeRule {
     List<dom.Element> elements;
     var beforeRule = parsed.beforeRule;
 
+    // 处理 css: 前缀（legado 风格，trim() 可能去掉了 @ 前缀）
+    if (beforeRule.toLowerCase().startsWith('css:')) {
+      final selector = beforeRule.substring(4).trim();
+      try {
+        elements = root.querySelectorAll(selector).toList();
+      } catch (e) {
+        debugPrint('CSS选择器失败: $selector $e');
+        elements = [];
+      }
+      return parsed.apply(elements);
+    }
+
     // 处理 legados 特殊语法: #xxx 等同于 id.xxx
     if (beforeRule.startsWith('#') &&
         !beforeRule.contains('[') &&
@@ -589,13 +617,18 @@ class AnalyzeRule {
       final rules = beforeRule.split('.');
       switch (rules.first) {
         case 'class':
-          elements = rules.length > 1
-              ? _withSelf(
-                  root,
-                  root.getElementsByClassName(rules[1]).toList(),
-                  root.classes.contains(rules[1]),
-                )
-              : [];
+          if (rules.length > 1) {
+            // 借鉴 legado：class.xxx.yyy 表示匹配同时包含 xxx 和 yyy 的元素
+            // 用 CSS 选择器 .xxx.yyy 实现多 class 匹配
+            final selector = rules.sublist(1).map((c) => '.$c').join('');
+            elements = _withSelf(
+              root,
+              root.querySelectorAll(selector).toList(),
+              rules.sublist(1).every((c) => root.classes.contains(c)),
+            );
+          } else {
+            elements = [];
+          }
           break;
         case 'tag':
           elements = rules.length > 1
@@ -1262,6 +1295,10 @@ class AnalyzeRule {
   dom.Element? _toElement(dynamic content) {
     if (content is dom.Element) return content;
     if (content is dom.Document) return content.body;
+    // 借鉴 legado：如果 content 是列表，取第一个元素
+    if (content is List && content.isNotEmpty) {
+      return _toElement(content.first);
+    }
     if (content is xml.XmlNode) {
       return html_parser
           .parseFragment(content.toXmlString())
@@ -1687,6 +1724,9 @@ class _ElementSelector {
     this.rangeExpression,
   });
 
+  /// legado 内部规则关键字，这些关键字的 . 分隔是语义分隔
+  static const _legadoKeywords = {'class', 'tag', 'id', 'text', 'children'};
+
   factory _ElementSelector.parse(String rawRule) {
     var rule = rawRule.trim();
     var exclude = false;
@@ -1706,37 +1746,50 @@ class _ElementSelector {
     }
 
     // 支持 .0 或 .!0 或 :0:1:2 格式
+    // 借鉴 legado：只有 legado 内部规则关键字后的 .数字 才是索引选择器
+    // 避免 CSS class 名中的数字被误解析（如 class.coll-g-2 中的 .2）
     final dotMatch = RegExp(r'^(.*)([.!])(-?\d+)(?::(-?\d+))?(?::(-?\d+))?$')
         .firstMatch(rule);
     if (dotMatch != null) {
-      rule = dotMatch.group(1)!.trim();
-      exclude = dotMatch.group(2) == '!';
+      final beforeDot = dotMatch.group(1) ?? '';
+      // 检查 .数字 前的部分是否是 legado 关键字格式
+      // legado 格式：关键字.值.索引，如 class.book-item.0
+      // CSS 格式：选择器.数字，如 .coll-g-2 或 div.col-lg-3
+      // 区分方法：legado 关键字格式的第一个 . 前是已知关键字
+      final firstDotIdx = beforeDot.indexOf('.');
+      final isLegadoIndex = firstDotIdx >= 0 &&
+          _legadoKeywords.contains(beforeDot.substring(0, firstDotIdx));
 
-      final start = int.tryParse(dotMatch.group(3) ?? '');
-      final end = int.tryParse(dotMatch.group(4) ?? '');
-      final step = int.tryParse(dotMatch.group(5) ?? '');
+      if (isLegadoIndex) {
+        rule = beforeDot.trim();
+        exclude = dotMatch.group(2) == '!';
 
-      if (start != null) {
-        if (end != null) {
-          // 范围选择
-          final s = start;
-          final e = end;
-          final st = step ?? 1;
-          if (st > 0) {
-            for (var i = s; i <= e; i += st) {
-              indexes.add(i);
+        final start = int.tryParse(dotMatch.group(3) ?? '');
+        final end = int.tryParse(dotMatch.group(4) ?? '');
+        final step = int.tryParse(dotMatch.group(5) ?? '');
+
+        if (start != null) {
+          if (end != null) {
+            final s = start;
+            final e = end;
+            final st = step ?? 1;
+            if (st > 0) {
+              for (var i = s; i <= e; i += st) {
+                indexes.add(i);
+              }
+            } else {
+              for (var i = s; i >= e; i += st) {
+                indexes.add(i);
+              }
             }
           } else {
-            for (var i = s; i >= e; i += st) {
-              indexes.add(i);
-            }
+            indexes.add(start);
           }
-        } else {
-          indexes.add(start);
         }
-      }
 
-      return _ElementSelector(rule, indexes, exclude);
+        return _ElementSelector(rule, indexes, exclude);
+      }
+      // 不是 legado 索引格式，不解析 .数字，保持原规则
     }
 
     return _ElementSelector(rule, indexes, exclude);
