@@ -219,9 +219,12 @@ class AnalyzeRule {
   List<_SourceRule> _splitSourceRuleCacheString(String ruleStr) {
     if (ruleStr.isEmpty) return [];
 
+    // 缓存键包含 _isJson 状态，避免 JSON/JSoup 模式冲突
+    final cacheKey = '${_isJson ? 'J' : 'H'}$ruleStr';
+
     // 检查缓存
-    if (_stringRuleCache.containsKey(ruleStr)) {
-      return _stringRuleCache[ruleStr]!;
+    if (_stringRuleCache.containsKey(cacheKey)) {
+      return _stringRuleCache[cacheKey]!;
     }
 
     // 限制缓存大小
@@ -230,7 +233,7 @@ class AnalyzeRule {
     }
 
     final rules = _splitSourceRule(ruleStr);
-    _stringRuleCache[ruleStr] = rules;
+    _stringRuleCache[cacheKey] = rules;
     return rules;
   }
 
@@ -721,7 +724,8 @@ class AnalyzeRule {
       }
 
       // 检查是否是提取规则（text, html, 属性等）
-      // 如果原始规则以 @ 开头（被 trim 去掉了），说明是属性提取
+      // 借鉴 legado：只有 @ 后面跟着提取规则名称才是提取规则
+      // @tag.h3 是选择器规则，@text 是提取规则
       final lowerRule = singleRule.toLowerCase();
       final isExtractionRule = lowerRule == 'text' ||
           lowerRule == 'text()' ||
@@ -744,10 +748,7 @@ class AnalyzeRule {
           lowerRule == 'name' ||
           lowerRule == 'value' ||
           lowerRule == 'action' ||
-          lowerRule == 'placeholder' ||
-          singleRule.startsWith('@') ||
-          // 原始规则以 @ 开头（被 trim 去掉了 @），是属性提取
-          rule.startsWith('@');
+          lowerRule == 'placeholder';
 
       if (isExtractionRule) {
         // 直接在根元素上提取

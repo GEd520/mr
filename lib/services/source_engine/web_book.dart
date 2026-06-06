@@ -759,6 +759,12 @@ class WebBook {
       var bookElements = analyzer.getElements(actualBookListRule);
       AppLogger.instance.logParseResult('搜索列表', bookElements.length);
 
+      // 调试：记录元素类型
+      if (bookElements.isNotEmpty) {
+        AppLogger.instance.debug(LogCategory.parse, '搜索列表元素类型',
+          detail: '第一个元素类型: ${bookElements.first.runtimeType}, 总数: ${bookElements.length}');
+      }
+
       // 借鉴 legado：列表反转
       if (reverseList && bookElements.isNotEmpty) {
         bookElements = bookElements.reversed.toList();
@@ -782,6 +788,12 @@ class WebBook {
 
         var name = itemAnalyzer.getString(searchRule.name ?? '');
         var author = itemAnalyzer.getString(searchRule.author ?? '');
+
+        // 调试日志：记录字段提取结果
+        if (name == null || name.isEmpty) {
+          AppLogger.instance.warn(LogCategory.parse, '第${i + 1}个元素书名为空',
+            detail: 'name规则: ${searchRule.name ?? ""}, 元素类型: ${element.runtimeType}, 元素文本: ${element is dom.Element ? (element.text.length > 100 ? "${element.text.substring(0, 100)}..." : element.text) : "$element"}');
+        }
         final coverUrl =
             itemAnalyzer.getString(searchRule.coverUrl ?? '', isUrl: true);
         var intro = itemAnalyzer.getString(searchRule.intro ?? '');
