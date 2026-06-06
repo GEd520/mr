@@ -451,6 +451,19 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     final webBook = _webBook!;
     _addLog('︾开始解析搜索页');
 
+    // 借鉴 legado：调试时输出搜索URL和规则信息
+    final searchRule = _source!.ruleSearch;
+    _addLog('┌搜索URL规则');
+    _addLog('└${_source!.searchUrl ?? "<空>"}');
+    _addLog('┌bookList规则');
+    _addLog('└${searchRule?.bookList ?? "<空>"}');
+    _addLog('┌name规则');
+    _addLog('└${searchRule?.name ?? "<空>"}');
+    _addLog('┌author规则');
+    _addLog('└${searchRule?.author ?? "<空>"}');
+    _addLog('┌bookUrl规则');
+    _addLog('└${searchRule?.bookUrl ?? "<空>"}');
+
     final results = await webBook.searchBook(keyword);
     if (_debugCancelled) return;
 
