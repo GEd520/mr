@@ -443,7 +443,7 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
         }
         await _debugBookInfo(key);
       } else {
-        _addLog('⇒开始搜索关键字:$keyword');
+        _addLog('⇒开始搜索关键字:$key');
         if (_source?.ruleSearch?.bookList != null) {
           _addLog('≡搜索规则: ${_source?.ruleSearch?.bookList}');
         }
@@ -469,8 +469,8 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     final results = await webBook.searchBook(keyword);
     if (_debugCancelled) return;
 
-    // 保存搜索HTML到调试页面的 _webBook 实例
-    _webBook?.lastSearchHtml = webBook.lastSearchHtml;
+    // 同步搜索结果到 _webBook，确保后续步骤（详情/目录/正文）能使用
+    _webBook = webBook;
 
     final searchHtml = webBook.lastSearchHtml ?? '';
     _addLog('≡获取成功', state: 10, sourceHtml: searchHtml);
@@ -520,12 +520,15 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
 
   Future<void> _debugExplore(String exploreUrl) async {
     if (_debugCancelled) return;
-    final webBook = _webBook!;
+    final webBook = WebBook(_source!);
     final realUrl = _extractRealUrl(exploreUrl);
     _addLog('︾开始解析发现页');
 
     final results = await webBook.exploreBook(realUrl);
     if (_debugCancelled) return;
+
+    // 同步到 _webBook，确保后续步骤能使用
+    _webBook = webBook;
 
     final exploreHtml = webBook.lastExploreHtml ?? '';
     _addLog('≡获取成功', state: 15, sourceHtml: exploreHtml);
@@ -1335,8 +1338,6 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
 
   /// 日志查看器 Tab 内容
   final ScrollController _logScrollController = ScrollController();
-
-  get keyword => null;
 
   Widget _buildLogViewerBody() {
     final filteredLogs = _appLogs.where((e) {
