@@ -992,23 +992,45 @@ class _BookSourceEditPageState extends State<BookSourceEditPage>
       itemCount: entities.length,
       itemBuilder: (context, index) {
         final entity = entities[index];
-        return Padding(
-          padding: const EdgeInsets.only(top: 3),
-          child: TextField(
-            controller: TextEditingController(text: entity.value),
-            decoration: InputDecoration(
-              hintText: entity.hint,
-              border: const OutlineInputBorder(),
-              isDense: true,
-              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-            ),
-            maxLines: null,
-            minLines: 1,
-            style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
-            onChanged: (value) {
-              entity.value = value;
-              _hasChanges = true;
-            },
+        final hasValue = entity.value.isNotEmpty;
+        
+        return Container(
+          margin: const EdgeInsets.only(top: 3),
+          decoration: BoxDecoration(
+            border: Border.all(color: Theme.of(context).dividerColor),
+            borderRadius: BorderRadius.circular(4),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (hasValue)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+                  child: Text(
+                    entity.hint,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Theme.of(context).hintColor,
+                    ),
+                  ),
+                ),
+              TextField(
+                controller: TextEditingController(text: entity.value),
+                decoration: InputDecoration(
+                  hintText: hasValue ? null : entity.hint,
+                  border: InputBorder.none,
+                  isDense: true,
+                  contentPadding: EdgeInsets.fromLTRB(12, hasValue ? 4 : 12, 12, 8),
+                ),
+                maxLines: null,
+                minLines: 1,
+                style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+                onChanged: (value) {
+                  entity.value = value;
+                  _hasChanges = true;
+                },
+              ),
+            ],
           ),
         );
       },

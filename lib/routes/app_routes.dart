@@ -18,6 +18,7 @@ import '../pages/player/audio_player_page.dart';
 import '../pages/explore/explore_show_page.dart';
 import '../pages/debug/book_source_debug_page.dart';
 import '../pages/detail/chapter_list_page.dart';
+import '../pages/web/internal_browser_page.dart';
 
 class AppRoutes {
   static const String main = '/';
@@ -37,6 +38,7 @@ class AppRoutes {
   static const String exploreShow = '/explore-show';
   static const String bookSourceDebug = '/book-source-debug';
   static const String chapterList = '/chapter-list';
+  static const String internalBrowser = '/internal-browser';
 
   static Route<dynamic> generateRoute(RouteSettings settings) {
     switch (settings.name) {
@@ -73,8 +75,8 @@ class AppRoutes {
             initialBook: bookData is Book
                 ? bookData
                 : bookData is Map
-                    ? Book.fromJson(Map<String, dynamic>.from(bookData))
-                    : null,
+                ? Book.fromJson(Map<String, dynamic>.from(bookData))
+                : null,
           ),
         );
       case novelReader:
@@ -87,8 +89,8 @@ class AppRoutes {
             initialBook: bookData is Book
                 ? bookData
                 : bookData is Map
-                    ? Book.fromJson(Map<String, dynamic>.from(bookData))
-                    : null,
+                ? Book.fromJson(Map<String, dynamic>.from(bookData))
+                : null,
           ),
         );
       case comicReader:
@@ -146,17 +148,30 @@ class AppRoutes {
             initialBook: bookData is Book
                 ? bookData
                 : bookData is Map
-                    ? Book.fromJson(Map<String, dynamic>.from(bookData))
-                    : null,
+                ? Book.fromJson(Map<String, dynamic>.from(bookData))
+                : null,
+          ),
+        );
+      case internalBrowser:
+        final args = settings.arguments as Map<String, dynamic>?;
+        final rawHeaders = args?['headers'];
+        return MaterialPageRoute(
+          builder: (_) => InternalBrowserPage(
+            url: args?['url'] ?? '',
+            title: args?['title'] ?? '',
+            sourceUrl: args?['sourceUrl'] ?? '',
+            sourceName: args?['sourceName'] ?? '',
+            headers: rawHeaders is Map
+                ? rawHeaders.map(
+                    (key, value) => MapEntry(key.toString(), value.toString()),
+                  )
+                : const {},
           ),
         );
       default:
         return MaterialPageRoute(
-          builder: (_) => Scaffold(
-            body: Center(
-              child: Text('未找到路由: ${settings.name}'),
-            ),
-          ),
+          builder: (_) =>
+              Scaffold(body: Center(child: Text('未找到路由: ${settings.name}'))),
         );
     }
   }
