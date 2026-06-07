@@ -81,6 +81,10 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
   String _sourceName = '';
   BookSource? _bookSource;
 
+  // 预加载设置拖动临时变量
+  final ValueNotifier<double> _preloadSliderValue = ValueNotifier(10.0);
+  bool _isPreloadDragging = false;
+
   final ScrollController _scrollController = ScrollController();
   final GlobalKey<_ComicZoomLayerState> _zoomLayerKey =
       GlobalKey<_ComicZoomLayerState>();
@@ -154,9 +158,12 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
   void dispose() {
     _footerTimer?.cancel();
     _autoPageTimer?.cancel();
+    _sliderThrottleTimer?.cancel();
     _scrollController.dispose();
     _pageNotifier.dispose();
+    _preloadSliderValue.dispose();
     _pageController?.dispose();
+    // 恢复原始亮度
     unawaited(
       NativeChannel.instance.setScreenBrightness(_originalScreenBrightness),
     );
@@ -174,6 +181,15 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
       await prefs.setBool(_scaleDefaultFixedKey, true);
     }
     if (!mounted) return;
+
+    // 获取当前亮度作为原始亮度
+    try {
+      _originalScreenBrightness =
+          await NativeChannel.instance.getScreenBrightness();
+    } catch (_) {
+      _originalScreenBrightness = 0.5;
+    }
+
     setState(() {
       _readMode = MangaReadMode
           .values[modeIndex.clamp(0, MangaReadMode.values.length - 1)];
@@ -181,13 +197,17 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
       _hideChapterTitle = prefs.getBool(_titleKey) ?? false;
       _hideFooter = prefs.getBool(_footerKey) ?? false;
       _preloadCount = (prefs.getInt(_preloadKey) ?? 10).clamp(0, 30);
+      _preloadSliderValue.value = _preloadCount.toDouble();
       _screenBrightness = prefs.getDouble(_brightnessKey) ?? -1;
       _einkMode = prefs.getBool(_einkKey) ?? false;
       _grayscaleImages = prefs.getBool(_grayscaleKey) ?? false;
       _eyeCareMode = prefs.getBool(_eyeCareKey) ?? false;
       _keepScreenOn = prefs.getBool(_keepScreenOnKey) ?? false;
     });
-    await NativeChannel.instance.setScreenBrightness(_screenBrightness);
+    // 设置亮度
+    if (_screenBrightness >= 0) {
+      unawaited(NativeChannel.instance.setScreenBrightness(_screenBrightness));
+    }
     if (_keepScreenOn) {
       WakelockPlus.enable();
     }
@@ -422,11 +442,12 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
   }
 
   void _jumpToCurrentPage() {
+    // 滚动模式不需要跳转，保持当前滚动位置
     if (_readMode == MangaReadMode.scroll) {
-      if (_scrollController.hasClients) {
-        _scrollController.jumpTo(0);
-      }
-    } else if (_pageController?.hasClients == true) {
+      return;
+    }
+    // 非滚动模式：跳转到当前页面
+    if (_pageController?.hasClients == true) {
       _pageController!.jumpToPage(_horizontalPageForImage(_currentPageIndex));
     }
   }
@@ -449,14 +470,12 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
       return;
     }
     final position = _scrollController.position;
-    final total = position.maxScrollExtent + position.viewportDimension;
-    if (total <= 0) return;
-    final page =
-        ((position.pixels + position.viewportDimension * 0.45) /
-                total *
-                _images.length)
-            .floor()
-            .clamp(0, _images.length - 1);
+    final maxScroll = position.maxScrollExtent;
+    if (maxScroll <= 0) return;
+
+    // 计算当前页码：按滚动位置占总滚动距离的比例
+    final ratio = position.pixels / maxScroll;
+    final page = (ratio * (_images.length - 1)).round().clamp(0, _images.length - 1);
     if (page != _currentPageIndex) {
       _currentPageIndex = page;
       _pageNotifier.value = page;
@@ -630,7 +649,6 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
           SliverToBoxAdapter(
             child: _buildChapterEdge('已读完 ${_chapter?.title ?? ''}'),
           ),
-        SliverToBoxAdapter(child: _buildChapterNavigation()),
       ],
     );
   }
@@ -816,44 +834,6 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
     );
   }
 
-  Widget _buildChapterNavigation() {
-    final buttonStyle = FilledButton.styleFrom(
-      backgroundColor: _menuForeground,
-      foregroundColor: _menuBackground,
-      disabledBackgroundColor: _menuForeground,
-      disabledForegroundColor: _menuBackground,
-      padding: const EdgeInsets.symmetric(vertical: 13),
-      textStyle: const TextStyle(fontWeight: FontWeight.w600),
-    );
-    return SafeArea(
-      top: false,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 36),
-        child: Row(
-          children: [
-            Expanded(
-              child: FilledButton.icon(
-                onPressed: _hasPreviousChapter ? _previousChapter : null,
-                icon: const Icon(Icons.chevron_left),
-                label: const Text('上一章'),
-                style: buttonStyle,
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: FilledButton.icon(
-                onPressed: _hasNextChapter ? _nextChapter : null,
-                icon: const Icon(Icons.chevron_right),
-                label: const Text('下一章'),
-                style: buttonStyle,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   Widget _buildInfoFooter() {
     final chapterPosition = _chapters.indexWhere(
       (chapter) => chapter.index == _currentChapterIndex,
@@ -901,6 +881,44 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
         },
       ),
     );
+  }
+
+  Timer? _sliderThrottleTimer;
+  int _lastSliderJumpIndex = -1;
+
+  void _onSliderChanged(double value) {
+    setState(() {
+      _sliderPageIndex = value;
+      _isSliderDragging = true;
+    });
+
+    // 实时跳转到对应位置（节流处理）
+    final targetIndex = value.round().clamp(0, _images.length - 1);
+    if (targetIndex != _lastSliderJumpIndex) {
+      _lastSliderJumpIndex = targetIndex;
+      _jumpToSliderPosition(targetIndex);
+    }
+  }
+
+  void _jumpToSliderPosition(int targetIndex) {
+    if (_images.isEmpty) return;
+
+    if (_readMode != MangaReadMode.scroll) {
+      // 横向/日漫模式：直接跳转到对应页面
+      _pageController?.jumpToPage(_horizontalPageForImage(targetIndex));
+    } else {
+      // 滚动模式：基于总滚动距离按比例计算位置
+      if (!_scrollController.hasClients) return;
+      final maxScroll = _scrollController.position.maxScrollExtent;
+      if (maxScroll <= 0) return;
+
+      // 计算目标位置：按图片索引占总图片数的比例
+      final ratio = _images.length > 1
+          ? targetIndex / (_images.length - 1)
+          : 0.0;
+      final targetPosition = (maxScroll * ratio).clamp(0.0, maxScroll);
+      _scrollController.jumpTo(targetPosition);
+    }
   }
 
   Widget _buildMenu() {
@@ -1220,18 +1238,12 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
                           max: _images.length > 1
                               ? (_images.length - 1).toDouble()
                               : 1,
-                          onChanged: _images.isEmpty
-                              ? null
-                              : (value) {
-                                  setState(() {
-                                    _sliderPageIndex = value;
-                                    _isSliderDragging = true;
-                                  });
-                                },
+                          onChanged: _images.isEmpty ? null : _onSliderChanged,
                           onChangeEnd: (value) {
                             setState(() {
                               _isSliderDragging = false;
                             });
+                            _lastSliderJumpIndex = -1;
                             _goToPage(value.round());
                           },
                         ),
@@ -1503,20 +1515,28 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
     if (_readMode != MangaReadMode.scroll) {
       _pageController?.jumpToPage(_horizontalPageForImage(target));
     } else {
-      // 滚动模式：使用 Scrollable.ensureVisible 定位到目标图片
-      if (target < _imageKeys.length) {
-        final key = _imageKeys[target];
-        final currentContext = key.currentContext;
-        if (currentContext != null) {
-          Scrollable.ensureVisible(
-            currentContext,
-            duration: const Duration(milliseconds: 300),
-            curve: Curves.easeOut,
-            alignment: 0.0, // 滚动到顶部
-          );
-        }
-      }
+      // 滚动模式：先估算位置快速跳转，再精确定位
+      _scrollToImageIndex(target);
     }
+  }
+
+  void _scrollToImageIndex(int targetIndex) {
+    if (!_scrollController.hasClients || _images.isEmpty) return;
+
+    final maxScroll = _scrollController.position.maxScrollExtent;
+    if (maxScroll <= 0) return;
+
+    // 计算目标位置：按图片索引占总图片数的比例
+    final ratio = _images.length > 1
+        ? targetIndex / (_images.length - 1)
+        : 0.0;
+    final targetPosition = (maxScroll * ratio).clamp(0.0, maxScroll);
+
+    _scrollController.animateTo(
+      targetPosition,
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeOut,
+    );
   }
 
   void _toggleAutoPage() {
@@ -1683,21 +1703,48 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
     final resumeAutoPaging = _isAutoPaging;
     _autoPageTimer?.cancel();
     setState(() => _showMenu = false);
+
+    // 节流相关变量
+    int lastNativeCallTime = 0;
+    Timer? throttleTimer;
+    double? pendingValue;
+
+    void callNativeThrottled(double value) {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      // 每 30ms 最多调用一次原生方法
+      if (now - lastNativeCallTime >= 30) {
+        lastNativeCallTime = now;
+        NativeChannel.instance.setScreenBrightness(value);
+        pendingValue = null;
+      } else {
+        pendingValue = value;
+        throttleTimer?.cancel();
+        throttleTimer = Timer(const Duration(milliseconds: 30), () {
+          if (pendingValue != null) {
+            NativeChannel.instance.setScreenBrightness(pendingValue!);
+            pendingValue = null;
+          }
+        });
+      }
+    }
+
     showModalBottomSheet(
       context: context,
       backgroundColor: _menuBackground,
       builder: (context) => StatefulBuilder(
         builder: (context, setSheetState) {
-          // 滑动过程中实时更新亮度（不保存）
+          // 滑动过程中实时更新亮度（节流调用原生方法）
           void updateBrightnessImmediate(double value) {
             setState(() => _screenBrightness = value);
             setSheetState(() {});
-            // 不等待，直接设置屏幕亮度
-            NativeChannel.instance.setScreenBrightness(value);
+            callNativeThrottled(value);
           }
 
           // 滑动结束时保存设置
           Future<void> saveBrightness(double value) async {
+            throttleTimer?.cancel();
+            // 确保最后的值被设置
+            await NativeChannel.instance.setScreenBrightness(value);
             final prefs = await SharedPreferences.getInstance();
             await prefs.setDouble(_brightnessKey, value);
           }
@@ -1767,8 +1814,6 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
                           value: sliderValue.clamp(0.01, 1.0),
                           min: 0.01,
                           max: 1,
-                          divisions: 99,
-                          label: '${(sliderValue * 100).round()}%',
                           onChanged: followsSystem
                               ? null
                               : updateBrightnessImmediate,
@@ -1835,6 +1880,7 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
         },
       ),
     ).whenComplete(() {
+      throttleTimer?.cancel();
       if (resumeAutoPaging && mounted && _isAutoPaging) {
         _startAutoPageTimer();
       }
@@ -2072,21 +2118,43 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
                           style: TextStyle(color: _menuForeground),
                         ),
                       ),
-                      Text(
-                        '$_preloadCount 张',
-                        style: TextStyle(
-                          color: _menuForeground.withValues(alpha: 0.7),
-                        ),
+                      ValueListenableBuilder<double>(
+                        valueListenable: _preloadSliderValue,
+                        builder: (context, value, _) {
+                          final displayValue = _isPreloadDragging
+                              ? value.round()
+                              : _preloadCount;
+                          return Text(
+                            '$displayValue 张',
+                            style: TextStyle(
+                              color: _menuForeground.withValues(alpha: 0.7),
+                            ),
+                          );
+                        },
                       ),
                     ],
                   ),
-                  Slider(
-                    value: _preloadCount.toDouble(),
-                    min: 0,
-                    max: 30,
-                    divisions: 30,
-                    onChanged: (value) =>
-                        update(() => _preloadCount = value.round()),
+                  ValueListenableBuilder<double>(
+                    valueListenable: _preloadSliderValue,
+                    builder: (context, value, _) {
+                      return Slider(
+                        value: _isPreloadDragging ? value : _preloadCount.toDouble(),
+                        min: 0,
+                        max: 30,
+                        divisions: 30,
+                        onChanged: (newValue) {
+                          _isPreloadDragging = true;
+                          _preloadSliderValue.value = newValue;
+                        },
+                        onChangeEnd: (newValue) {
+                          setState(() {
+                            _preloadCount = newValue.round();
+                            _isPreloadDragging = false;
+                          });
+                          unawaited(_saveSettings());
+                        },
+                      );
+                    },
                   ),
                 ],
               ),
@@ -2095,8 +2163,11 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
         },
       ),
     ).whenComplete(() {
-      setState(_resetControllers);
-      WidgetsBinding.instance.addPostFrameCallback((_) => _jumpToCurrentPage());
+      // 只在非滚动模式下才重置控制器和跳转
+      if (_readMode != MangaReadMode.scroll) {
+        setState(_resetControllers);
+        WidgetsBinding.instance.addPostFrameCallback((_) => _jumpToCurrentPage());
+      }
       if (resumeAutoPaging && mounted && _isAutoPaging) {
         _startAutoPageTimer();
       }

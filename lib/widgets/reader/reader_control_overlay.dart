@@ -3,7 +3,7 @@ import 'package:flutter/services.dart';
 
 /// 阅读器增强版控制面板
 /// 复刻 legado_flutter 的 ReaderControlOverlay 设计
-/// 优化：拖拽进度条时禁止背景点击关闭，拖拽时显示章节预览
+/// 优化：拖拽进度条时禁止背景点击关闭
 class ReaderControlOverlay extends StatefulWidget {
   final String bookName;
   final String chapterTitle;
@@ -264,71 +264,48 @@ class _ReaderControlOverlayState extends State<ReaderControlOverlay> {
         .clamp(0.0, maxChClamped)
         .toDouble();
 
-    // 拖拽时显示预览章节号
-    final displayChapter = _isSliderDragging
-        ? (_dragValue + 1).round()
-        : (widget.sliderValue + 1).round();
-
-    return Column(
-      mainAxisSize: MainAxisSize.min,
+    return Row(
       children: [
-        // 拖拽时显示章节预览
-        if (_isSliderDragging)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 4),
-            child: Text(
-              '$displayChapter / ${widget.totalChapters}',
-              style: TextStyle(
-                color: cs.primary,
-                fontSize: 13,
-                fontWeight: FontWeight.w500,
-              ),
+        _buildLabelBtn('上一章', cs, widget.hasPrev ? widget.onPrevChapter : null),
+        Expanded(
+          child: SliderTheme(
+            data: SliderThemeData(
+              trackHeight: 4,
+              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8),
+              overlayShape: const RoundSliderOverlayShape(overlayRadius: 16),
+              activeTrackColor: cs.primary,
+              inactiveTrackColor: cs.surfaceContainerHighest,
+              thumbColor: cs.primary,
+              overlayColor: cs.primary.withAlpha(0x20),
+            ),
+            child: Slider(
+              value: cur,
+              min: 0,
+              max: maxChClamped > 0 ? maxChClamped : 1,
+              onChanged: (value) {
+                setState(() {
+                  _dragValue = value;
+                });
+                widget.onSliderChanged(value);
+              },
+              onChangeStart: (value) {
+                setState(() {
+                  _isSliderDragging = true;
+                  _dragValue = value;
+                });
+                widget.onSliderChangeStart?.call();
+              },
+              onChangeEnd: (v) {
+                setState(() {
+                  _isSliderDragging = false;
+                });
+                final idx = v.round().clamp(0, widget.totalChapters - 1);
+                widget.onSliderChangeEnd(idx);
+              },
             ),
           ),
-        Row(
-          children: [
-            _buildLabelBtn('上一章', cs, widget.hasPrev ? widget.onPrevChapter : null),
-            Expanded(
-              child: SliderTheme(
-                data: SliderThemeData(
-                  trackHeight: 4,
-                  thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8),
-                  overlayShape: const RoundSliderOverlayShape(overlayRadius: 16),
-                  activeTrackColor: cs.primary,
-                  inactiveTrackColor: cs.surfaceContainerHighest,
-                  thumbColor: cs.primary,
-                  overlayColor: cs.primary.withAlpha(0x20),
-                ),
-                child: Slider(
-                  value: cur,
-                  min: 0,
-                  max: maxChClamped > 0 ? maxChClamped : 1,
-                  onChanged: (value) {
-                    setState(() {
-                      _dragValue = value;
-                    });
-                    widget.onSliderChanged(value);
-                  },
-                  onChangeStart: (value) {
-                    setState(() {
-                      _isSliderDragging = true;
-                      _dragValue = value;
-                    });
-                    widget.onSliderChangeStart?.call();
-                  },
-                  onChangeEnd: (v) {
-                    setState(() {
-                      _isSliderDragging = false;
-                    });
-                    final idx = v.round().clamp(0, widget.totalChapters - 1);
-                    widget.onSliderChangeEnd(idx);
-                  },
-                ),
-              ),
-            ),
-            _buildLabelBtn('下一章', cs, widget.hasNext ? widget.onNextChapter : null),
-          ],
         ),
+        _buildLabelBtn('下一章', cs, widget.hasNext ? widget.onNextChapter : null),
       ],
     );
   }
