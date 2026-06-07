@@ -83,6 +83,16 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
   String _sourceName = '';
   BookSource? _bookSource;
 
+  // 卷轴模式：预加载前后章节
+  List<String> _prevImages = [];
+  List<String> _nextImages = [];
+  int? _prevChapterIndex;
+  int? _nextChapterIndex;
+  bool _isLoadingPrev = false;
+  bool _isLoadingNext = false;
+  bool _isChapterSwitching = false;
+  double _curChapterStartOffset = 0; // 当前章起始偏移（缓存值）
+
   // 预加载设置拖动临时变量
   final ValueNotifier<double> _preloadSliderValue = ValueNotifier(10.0);
   bool _isPreloadDragging = false;
@@ -277,6 +287,14 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
       _isLoading = true;
       _error = null;
       _showMenu = false;
+      _prevImages = [];
+      _prevChapterIndex = null;
+      _nextImages = [];
+      _nextChapterIndex = null;
+      _isChapterSwitching = false;
+      _curChapterStartOffset = 0;
+      _currentChapterStartKey = GlobalKey();
+      _nextChapterStartKey = GlobalKey();
     });
     _resetZoom();
 
@@ -466,8 +484,10 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
   }
 
   void _jumpToCurrentPage() {
-    // 滚动模式不需要跳转，保持当前滚动位置
+    // 滚动模式不需要跳转（初始加载时从顶部开始）
     if (_readMode == MangaReadMode.scroll) {
+      // 触发预加载前后章节
+      _preloadAdjacentChapters();
       return;
     }
     // 非滚动模式：跳转到当前页面
@@ -493,18 +513,31 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
         _images.isEmpty) {
       return;
     }
-    final position = _scrollController.position;
-    final maxScroll = position.maxScrollExtent;
-    if (maxScroll <= 0) return;
 
-    // 计算当前页码：按滚动位置占总滚动距离的比例
-    final ratio = position.pixels / maxScroll;
-    final page = (ratio * (_images.length - 1)).round().clamp(0, _images.length - 1);
-    if (page != _currentPageIndex) {
-      _currentPageIndex = page;
-      _pageNotifier.value = page;
-      _scheduleProgressSave();
+    // 更新当前章起始偏移缓存
+    _updateCurChapterStartOffset();
+
+    // 计算当前章内的页码
+    final position = _scrollController.position;
+    final curOffset = position.pixels - _curChapterStartOffset;
+    final totalImages =
+        _prevImages.length + _images.length + _nextImages.length;
+    final curProportion =
+        totalImages > 0 ? _images.length / totalImages : 1.0;
+    final estimatedCurHeight = position.maxScrollExtent * curProportion;
+    if (estimatedCurHeight > 0) {
+      final ratio = (curOffset / estimatedCurHeight).clamp(0.0, 1.0);
+      final page =
+          (ratio * (_images.length - 1)).round().clamp(0, _images.length - 1);
+      if (page != _currentPageIndex) {
+        _currentPageIndex = page;
+        _pageNotifier.value = page;
+        _scheduleProgressSave();
+      }
     }
+
+    // 检测章节边界
+    _checkChapterBoundary();
   }
 
   void _scheduleProgressSave() {
@@ -643,38 +676,375 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
     );
   }
 
+  // 当前章起始位置 key，用于滚动定位
+  GlobalKey _currentChapterStartKey = GlobalKey();
+  GlobalKey _nextChapterStartKey = GlobalKey();
+
+  /// 扁平列表数据模型：上一章 + 当前章 + 下一章
+  /// 每个条目: (chapterIndex, imageUrlOrNull, titleTextOrNull)
+  static const _kEdgeHeight = 96.0;
+
+  List<(int, String?, String?)> _buildFlatItems() {
+    final items = <(int, String?, String?)>[];
+
+    // 上一章
+    if (_prevImages.isNotEmpty && _prevChapterIndex != null) {
+      if (!_hideChapterTitle) {
+        final ch = _chapters.where((c) => c.index == _prevChapterIndex).firstOrNull;
+        items.add((_prevChapterIndex!, null, '阅读 ${ch?.title ?? ''}'));
+      }
+      for (final url in _prevImages) {
+        items.add((_prevChapterIndex!, url, null));
+      }
+    }
+
+    // 当前章标题（带 key，用于定位）
+    if (!_hideChapterTitle) {
+      items.add((_currentChapterIndex, null, '阅读 ${_chapter?.title ?? ''}'));
+    }
+    // 当前章图片
+    for (final url in _images) {
+      items.add((_currentChapterIndex, url, null));
+    }
+
+    // 下一章
+    if (_nextImages.isNotEmpty && _nextChapterIndex != null) {
+      if (!_hideChapterTitle) {
+        final ch = _chapters.where((c) => c.index == _nextChapterIndex).firstOrNull;
+        items.add((_nextChapterIndex!, null, '阅读 ${ch?.title ?? ''}'));
+      }
+      for (final url in _nextImages) {
+        items.add((_nextChapterIndex!, url, null));
+      }
+    }
+
+    // 底部：最后一章显示"已读完"，否则显示加载指示器
+    if (_nextImages.isEmpty && _prevImages.isEmpty) {
+      if (!_hideChapterTitle) {
+        items.add((_currentChapterIndex, null, '已读完 ${_chapter?.title ?? ''}'));
+      }
+    }
+
+    return items;
+  }
+
+  /// 当前章标题在扁平列表中的索引
+  int _getCurChapterStartIndex() {
+    int index = 0;
+    if (_prevImages.isNotEmpty && _prevChapterIndex != null) {
+      if (!_hideChapterTitle) index += 1;
+      index += _prevImages.length;
+    }
+    if (!_hideChapterTitle) return index;
+    return index;
+  }
+
+  /// 下一章标题在扁平列表中的索引
+  int _getNextChapterStartIndex() {
+    int index = _getCurChapterStartIndex();
+    if (!_hideChapterTitle) index += 1; // 当前章标题
+    index += _images.length; // 当前章图片
+    return index;
+  }
+
   Widget _buildScrollReader() {
+    final items = _buildFlatItems();
+    final curStartIndex = _getCurChapterStartIndex();
+    final nextStartIndex = _getNextChapterStartIndex();
+
     return CustomScrollView(
       controller: _scrollController,
       scrollCacheExtent: ScrollCacheExtent.pixels(
         MediaQuery.sizeOf(context).height * 1.25,
       ),
       slivers: [
-        if (!_hideChapterTitle)
-          SliverToBoxAdapter(
-            child: _buildChapterEdge('阅读 ${_chapter?.title ?? ''}'),
-          ),
         SliverList.builder(
-          itemCount: _images.length,
-          itemBuilder: (context, index) => RepaintBoundary(
-            key: _imageKeys.isNotEmpty && index < _imageKeys.length
-                ? _imageKeys[index]
-                : null,
-            child: _buildImage(
-              _images[index],
-              fit: BoxFit.fitWidth,
-              minHeight: index == _images.length - 1
-                  ? MediaQuery.sizeOf(context).height * 0.66
-                  : 0,
-            ),
-          ),
+          itemCount: items.length,
+          itemBuilder: (context, index) {
+            final (chapterIndex, imageUrl, titleText) = items[index];
+
+            // 章节边界 key：当前章起始 & 下一章起始
+            Key? itemKey;
+            if (index == curStartIndex) {
+              itemKey = _currentChapterStartKey;
+            } else if (_nextImages.isNotEmpty && index == nextStartIndex) {
+              itemKey = _nextChapterStartKey;
+            }
+
+            Widget child;
+
+            // 标题
+            if (titleText != null) {
+              child = SizedBox(
+                height: _kEdgeHeight,
+                child: Center(
+                  child: Text(titleText,
+                      style: TextStyle(
+                          color: _readerForeground,
+                          fontWeight: FontWeight.w600)),
+                ),
+              );
+            }
+            // 图片
+            else if (imageUrl != null) {
+              final isLast = index == items.length - 1;
+              child = RepaintBoundary(
+                child: _buildImage(
+                  imageUrl,
+                  fit: BoxFit.fitWidth,
+                  minHeight: isLast
+                      ? MediaQuery.sizeOf(context).height * 0.66
+                      : 0,
+                ),
+              );
+            } else {
+              child = const SizedBox.shrink();
+            }
+
+            if (itemKey != null) {
+              return KeyedSubtree(key: itemKey, child: child);
+            }
+            return child;
+          },
         ),
-        if (!_hideChapterTitle)
-          SliverToBoxAdapter(
-            child: _buildChapterEdge('已读完 ${_chapter?.title ?? ''}'),
-          ),
       ],
     );
+  }
+
+  /// 更新当前章起始偏移缓存
+  void _updateCurChapterStartOffset() {
+    final context = _currentChapterStartKey.currentContext;
+    if (context != null && _scrollController.hasClients) {
+      final renderBox = context.findRenderObject() as RenderBox;
+      final keyY = renderBox.localToGlobal(Offset.zero).dy;
+      _curChapterStartOffset = _scrollController.offset + keyY;
+    }
+  }
+
+  /// 检测是否跨越了章节边界
+  /// 原版逻辑：findCenterViewPosition() → 比较 chapterIndex
+  /// 这里用章节边界 key 的屏幕位置判断
+  void _checkChapterBoundary() {
+    if (_isChapterSwitching || _isLoading) return;
+    if (!_scrollController.hasClients) return;
+
+    final viewportCenter = MediaQuery.sizeOf(context).height / 2;
+    final position = _scrollController.position;
+
+    // 检测是否滚到了下一章
+    if (_nextImages.isNotEmpty && _nextChapterIndex != null) {
+      final nextContext = _nextChapterStartKey.currentContext;
+      if (nextContext != null) {
+        final renderBox = nextContext.findRenderObject() as RenderBox;
+        final nextStartY = renderBox.localToGlobal(Offset.zero).dy;
+        if (nextStartY <= viewportCenter) {
+          _moveToNextChapter();
+          return;
+        }
+      } else if (position.pixels >= position.maxScrollExtent - 50) {
+        // key 不可用但已滚到底部，也触发跳章
+        _moveToNextChapter();
+        return;
+      }
+    }
+
+    // 检测是否滚到了上一章
+    if (_prevImages.isNotEmpty && _prevChapterIndex != null) {
+      final curContext = _currentChapterStartKey.currentContext;
+      if (curContext != null) {
+        final renderBox = curContext.findRenderObject() as RenderBox;
+        final curStartY = renderBox.localToGlobal(Offset.zero).dy;
+        if (curStartY > viewportCenter) {
+          _moveToPrevChapter();
+          return;
+        }
+      } else if (position.pixels <= 50) {
+        // key 不可用但已滚到顶部，也触发跳章
+        _moveToPrevChapter();
+        return;
+      }
+    }
+  }
+
+  /// 跳到下一章（原版 moveToNextChapter）
+  /// 逻辑：prev=cur, cur=next, next=null
+  void _moveToNextChapter() {
+    if (_nextImages.isEmpty || _nextChapterIndex == null || _isChapterSwitching) return;
+    _isChapterSwitching = true;
+
+    // 保存当前滚动位置
+    final savedOffset = _scrollController.hasClients ? _scrollController.offset : 0.0;
+    // 使用缓存的当前章起始偏移（= 旧 prev 区域高度）
+    final oldPrevHeight = _curChapterStartOffset;
+
+    final oldChapterIndex = _currentChapterIndex;
+    final oldImages = List<String>.from(_images);
+
+    setState(() {
+      _currentChapterIndex = _nextChapterIndex!;
+      _prevImages = oldImages;
+      _prevChapterIndex = oldChapterIndex;
+      _images = _nextImages;
+      _nextImages = [];
+      _nextChapterIndex = null;
+      _currentPageIndex = 0;
+      _pageNotifier.value = 0;
+      // 重建 key，避免 Duplicate GlobalKey
+      _currentChapterStartKey = GlobalKey();
+      _nextChapterStartKey = GlobalKey();
+      _curChapterStartOffset = 0;
+    });
+
+    _imageKeys.clear();
+    _imageKeys.addAll(List.generate(_images.length, (_) => GlobalKey()));
+    _saveProgress();
+
+    // 切换后：旧 prev 区域被移除，新 prev = 旧 cur
+    // 用户看到的内容不变，新滚动位置 = 旧位置 - 旧prev高度
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients) {
+        final newOffset = (savedOffset - oldPrevHeight)
+            .clamp(0.0, _scrollController.position.maxScrollExtent);
+        _scrollController.jumpTo(newOffset);
+      }
+      _isChapterSwitching = false;
+      _preloadAdjacentChapters();
+    });
+  }
+
+  /// 跳到上一章（原版 moveToPrevChapter）
+  /// 逻辑：next=cur, cur=prev, prev=null
+  void _moveToPrevChapter() {
+    if (_prevImages.isEmpty || _prevChapterIndex == null || _isChapterSwitching) return;
+    _isChapterSwitching = true;
+
+    // 保存当前滚动位置
+    final savedOffset = _scrollController.hasClients ? _scrollController.offset : 0.0;
+
+    final oldChapterIndex = _currentChapterIndex;
+    final oldImages = List<String>.from(_images);
+
+    setState(() {
+      _currentChapterIndex = _prevChapterIndex!;
+      _nextImages = oldImages;
+      _nextChapterIndex = oldChapterIndex;
+      _images = _prevImages;
+      _prevImages = [];
+      _prevChapterIndex = null;
+      _currentPageIndex = _images.length - 1;
+      _pageNotifier.value = _currentPageIndex;
+      // 重建 key
+      _currentChapterStartKey = GlobalKey();
+      _nextChapterStartKey = GlobalKey();
+      _curChapterStartOffset = 0;
+    });
+
+    _imageKeys.clear();
+    _imageKeys.addAll(List.generate(_images.length, (_) => GlobalKey()));
+    _saveProgress();
+
+    // 切换后：旧 prev 变成当前章（从 offset 0 开始）
+    // 用户在旧 prev 区域内，offset 不变
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients) {
+        _scrollController
+            .jumpTo(savedOffset.clamp(0.0, _scrollController.position.maxScrollExtent));
+      }
+      _isChapterSwitching = false;
+      _preloadAdjacentChapters();
+    });
+  }
+
+  /// 获取当前章起始位置在滚动内容中的偏移量
+  double _getCurChapterStartOffset() {
+    final context = _currentChapterStartKey.currentContext;
+    if (context == null || !_scrollController.hasClients) return 0.0;
+    final renderBox = context.findRenderObject() as RenderBox;
+    final keyY = renderBox.localToGlobal(Offset.zero).dy;
+    return _scrollController.offset + keyY;
+  }
+
+  /// 预加载前后章节
+  Future<void> _preloadAdjacentChapters() async {
+    if (_book == null || _dataProvider == null || _chapters.isEmpty) return;
+
+    final position = _chapters.indexWhere((c) => c.index == _currentChapterIndex);
+
+    // 预加载上一章
+    if (position > 0 && _prevChapterIndex != _chapters[position - 1].index) {
+      _isLoadingPrev = true;
+      final prevChapter = _chapters[position - 1];
+      _loadChapterImages(prevChapter).then((images) {
+        if (!mounted || images.isEmpty) return;
+        // 保存当前滚动位置
+        final savedOffset = _scrollController.hasClients ? _scrollController.offset : 0.0;
+
+        setState(() {
+          _prevImages = images;
+          _prevChapterIndex = prevChapter.index;
+          _isLoadingPrev = false;
+          // 重建 nextChapterStartKey（因为列表结构变了）
+          _nextChapterStartKey = GlobalKey();
+        });
+
+        // 关键：上一章图片添加后，当前章的位置下移了
+        // 需要调整滚动位置，保持用户看到的内容不变
+        if (_readMode == MangaReadMode.scroll && _scrollController.hasClients) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!_scrollController.hasClients) return;
+            final newPrevHeight = _getCurChapterStartOffset();
+            _scrollController.jumpTo(
+                (savedOffset + newPrevHeight)
+                    .clamp(0.0, _scrollController.position.maxScrollExtent));
+            // 更新缓存
+            _curChapterStartOffset = newPrevHeight;
+          });
+        }
+      });
+    }
+
+    // 预加载下一章
+    if (position >= 0 && position < _chapters.length - 1 && _nextChapterIndex != _chapters[position + 1].index) {
+      _isLoadingNext = true;
+      final nextChapter = _chapters[position + 1];
+      _loadChapterImages(nextChapter).then((images) {
+        if (!mounted || images.isEmpty) return;
+        setState(() {
+          _nextImages = images;
+          _nextChapterIndex = nextChapter.index;
+          _isLoadingNext = false;
+          // 重建 nextChapterStartKey
+          _nextChapterStartKey = GlobalKey();
+        });
+      });
+    }
+  }
+
+  /// 加载章节图片列表
+  Future<List<String>> _loadChapterImages(Chapter chapter) async {
+    if (_book == null || _dataProvider == null) return [];
+
+    try {
+      List<String> images;
+      if (_book!.originType == BookOriginType.online) {
+        final cachedImages = await ChapterCacheService.instance.readComicChapterContent(_book!, chapter);
+        if (cachedImages != null && cachedImages.isNotEmpty) {
+          images = cachedImages;
+        } else {
+          final content = await _dataProvider!.getContent(_book!, chapter);
+          images = _extractImageUrls(content ?? '', baseUrl: chapter.url ?? _book!.bookUrl);
+          if (images.isNotEmpty) {
+            unawaited(ChapterCacheService.instance.saveComicChapterContent(_book!, chapter, images));
+          }
+        }
+      } else {
+        final content = await _dataProvider!.getContent(_book!, chapter);
+        images = _extractImageUrls(content ?? '', baseUrl: chapter.url ?? _book!.bookUrl);
+      }
+      return images;
+    } catch (e) {
+      return [];
+    }
   }
 
   Widget _buildHorizontalReader() {
@@ -931,16 +1301,21 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
       // 横向/日漫模式：直接跳转到对应页面
       _pageController?.jumpToPage(_horizontalPageForImage(targetIndex));
     } else {
-      // 滚动模式：基于总滚动距离按比例计算位置
+      // 滚动模式：基于当前章在扁平列表中的位置计算
       if (!_scrollController.hasClients) return;
-      final maxScroll = _scrollController.position.maxScrollExtent;
-      if (maxScroll <= 0) return;
+      final curStartOffset = _curChapterStartOffset;
+      final totalImages =
+          _prevImages.length + _images.length + _nextImages.length;
+      final curProportion =
+          totalImages > 0 ? _images.length / totalImages : 1.0;
+      final estimatedCurHeight =
+          _scrollController.position.maxScrollExtent * curProportion;
 
-      // 计算目标位置：按图片索引占总图片数的比例
       final ratio = _images.length > 1
           ? targetIndex / (_images.length - 1)
           : 0.0;
-      final targetPosition = (maxScroll * ratio).clamp(0.0, maxScroll);
+      final targetPosition = (curStartOffset + estimatedCurHeight * ratio)
+          .clamp(0.0, _scrollController.position.maxScrollExtent);
       _scrollController.jumpTo(targetPosition);
     }
   }
@@ -1547,14 +1922,19 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
   void _scrollToImageIndex(int targetIndex) {
     if (!_scrollController.hasClients || _images.isEmpty) return;
 
-    final maxScroll = _scrollController.position.maxScrollExtent;
-    if (maxScroll <= 0) return;
+    final curStartOffset = _curChapterStartOffset;
+    final totalImages =
+        _prevImages.length + _images.length + _nextImages.length;
+    final curProportion =
+        totalImages > 0 ? _images.length / totalImages : 1.0;
+    final estimatedCurHeight =
+        _scrollController.position.maxScrollExtent * curProportion;
 
-    // 计算目标位置：按图片索引占总图片数的比例
     final ratio = _images.length > 1
         ? targetIndex / (_images.length - 1)
         : 0.0;
-    final targetPosition = (maxScroll * ratio).clamp(0.0, maxScroll);
+    final targetPosition = (curStartOffset + estimatedCurHeight * ratio)
+        .clamp(0.0, _scrollController.position.maxScrollExtent);
 
     _scrollController.animateTo(
       targetPosition,
