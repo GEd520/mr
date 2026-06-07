@@ -40,6 +40,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
   Book? _book;
   List<Chapter> _chapters = [];
   BookDataProvider? _dataProvider;
+  double _sliderValue = 0; // 滑动进度条的实时值
 
   String? _prevContent;
   String? _nextContent;
@@ -80,6 +81,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
   void initState() {
     super.initState();
     _currentChapterIndex = widget.chapterIndex;
+    _sliderValue = widget.chapterIndex.toDouble();
 
     _menuAnimController = AnimationController(
       vsync: this,
@@ -244,6 +246,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
 
     setState(() {
       _isLoading = true;
+      _sliderValue = _currentChapterIndex.toDouble();
     });
 
     final chapter = _currentChapterIndex < _chapters.length
@@ -534,7 +537,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
                 hasNext: _currentChapterIndex < _totalChapters - 1,
                 isAutoScroll: false,
                 isNightMode: provider.isNightMode,
-                sliderValue: _currentChapterIndex.toDouble(),
+                sliderValue: _sliderValue,
                 onBack: () => Navigator.pop(context),
                 onChangeSource: () {},
                 onRefresh: () {
@@ -567,7 +570,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
                 onShowSettings: _showEnhancedSettings,
                 onSliderChanged: (value) {
                   setState(() {
-                    _currentChapterIndex = value.round();
+                    _sliderValue = value;
                   });
                 },
                 onSliderChangeEnd: (value) {
@@ -1488,25 +1491,36 @@ class _NovelReaderPageState extends State<NovelReaderPage>
   }
 
   Widget _buildProgressSlider() {
+    final maxCh = (_totalChapters - 1).clamp(0, 999999).toDouble();
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16),
       child: Row(
         children: [
           Text(
-            '${_currentChapterIndex + 1}',
+            '${(_sliderValue + 1).round()}',
             style: const TextStyle(fontSize: 12),
           ),
           Expanded(
-            child: Slider(
-              value: _totalChapters > 0 ? _currentChapterIndex.toDouble() : 0,
-              min: 0,
-              max: (_totalChapters - 1).clamp(0, 999999).toDouble(),
-              onChanged: (value) {
-                setState(() {
-                  _currentChapterIndex = value.toInt();
-                });
-                _loadChapterContent();
-              },
+            child: SliderTheme(
+              data: SliderThemeData(
+                trackHeight: 4,
+                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8),
+                overlayShape: const RoundSliderOverlayShape(overlayRadius: 16),
+              ),
+              child: Slider(
+                value: _totalChapters > 0 ? _sliderValue.clamp(0.0, maxCh) : 0,
+                min: 0,
+                max: maxCh > 0 ? maxCh : 1,
+                onChanged: (value) {
+                  setState(() {
+                    _sliderValue = value;
+                  });
+                },
+                onChangeEnd: (value) {
+                  _currentChapterIndex = value.round();
+                  _loadChapterContent();
+                },
+              ),
             ),
           ),
           Text(

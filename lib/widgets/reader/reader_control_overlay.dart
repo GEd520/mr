@@ -260,16 +260,17 @@ class ReaderControlOverlay extends StatelessWidget {
           child: SliderTheme(
             data: SliderThemeData(
               trackHeight: 4,
-              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
+              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8),
+              overlayShape: const RoundSliderOverlayShape(overlayRadius: 16),
               activeTrackColor: cs.primary,
               inactiveTrackColor: cs.surfaceContainerHighest,
               thumbColor: cs.primary,
+              overlayColor: cs.primary.withAlpha(0x20),
             ),
             child: Slider(
               value: cur,
               min: 0,
-              max: maxChClamped,
-              divisions: totalChapters > 1 ? totalChapters - 1 : 1,
+              max: maxChClamped > 0 ? maxChClamped : 1,
               onChanged: onSliderChanged,
               onChangeEnd: (v) {
                 final idx = v.round().clamp(0, totalChapters - 1);
@@ -321,7 +322,7 @@ class ReaderControlOverlay extends StatelessWidget {
         child: Text(
           label,
           style: TextStyle(
-            color: onTap != null ? cs.onSurfaceVariant : cs.onSurfaceVariant.withAlpha(0x40),
+            color: onTap != null ? cs.onSurface : cs.onSurface.withAlpha(0x40),
             fontSize: 12,
           ),
         ),

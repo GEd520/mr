@@ -44,6 +44,8 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
   static const _footerKey = 'hideMangaFooter';
   static const _preloadKey = 'mangaPreloadCount';
   static const _brightnessKey = 'mangaScreenBrightness';
+  static const _einkKey = 'mangaEinkMode';
+  static const _grayscaleKey = 'mangaGrayscale';
 
   Book? _book;
   BookDataProvider? _dataProvider;
@@ -64,6 +66,9 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
   double _screenBrightness = -1;
   double _originalScreenBrightness = -1;
   int _preloadCount = 10;
+  bool _einkMode = false;
+  bool _grayscaleImages = false;
+  final List<String> _imageLoadLog = [];
   Map<String, String> _imageHeaders = const {};
   final Map<String, Map<String, String>> _imageOptionHeaders = {};
   String _sourceName = '';
@@ -87,14 +92,26 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
 
   bool get _isDarkMode => Theme.of(context).brightness == Brightness.dark;
 
-  Color get _readerBackground =>
-      _isDarkMode ? const Color(0xFF101010) : const Color(0xFFF5F5F5);
+  Color get _readerBackground {
+    if (_einkMode) {
+      return _isDarkMode ? Colors.black : Colors.white;
+    }
+    return _isDarkMode ? const Color(0xFF101010) : const Color(0xFFF5F5F5);
+  }
 
-  Color get _readerForeground =>
-      _isDarkMode ? Colors.white : const Color(0xFF202020);
+  Color get _readerForeground {
+    if (_einkMode) {
+      return _isDarkMode ? Colors.white : Colors.black;
+    }
+    return _isDarkMode ? Colors.white : const Color(0xFF202020);
+  }
 
-  Color get _readerSecondary =>
-      _isDarkMode ? Colors.white70 : const Color(0xFF5F6368);
+  Color get _readerSecondary {
+    if (_einkMode) {
+      return _isDarkMode ? Colors.white70 : Colors.black54;
+    }
+    return _isDarkMode ? Colors.white70 : const Color(0xFF5F6368);
+  }
 
   Color get _menuBackground => _isDarkMode
       ? const Color(0xFF1A1A1A)
@@ -156,6 +173,8 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
       _hideFooter = prefs.getBool(_footerKey) ?? false;
       _preloadCount = (prefs.getInt(_preloadKey) ?? 10).clamp(0, 30);
       _screenBrightness = prefs.getDouble(_brightnessKey) ?? -1;
+      _einkMode = prefs.getBool(_einkKey) ?? false;
+      _grayscaleImages = prefs.getBool(_grayscaleKey) ?? false;
     });
     await NativeChannel.instance.setScreenBrightness(_screenBrightness);
   }
@@ -169,6 +188,8 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
       prefs.setBool(_footerKey, _hideFooter),
       prefs.setInt(_preloadKey, _preloadCount),
       prefs.setDouble(_brightnessKey, _screenBrightness),
+      prefs.setBool(_einkKey, _einkMode),
+      prefs.setBool(_grayscaleKey, _grayscaleImages),
     ]);
   }
 
@@ -657,6 +678,17 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
         fadeOutDuration: Duration.zero,
         progressIndicatorBuilder: (context, _, progress) {
           final value = progress.progress;
+          final now = DateTime.now();
+          final timeStr = '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
+          if (value != null && _imageLoadLog.length < 500) {
+            final existingLog = _imageLoadLog.lastWhere(
+              (l) => l.contains(url.substring(0, url.length.clamp(0, 50))),
+              orElse: () => '',
+            );
+            if (existingLog.isEmpty) {
+              _imageLoadLog.add('[$timeStr] 开始加载: ${url.substring(0, url.length.clamp(0, 80))}...');
+            }
+          }
           return Container(
             constraints: BoxConstraints(
               minHeight: minHeight > 0
@@ -684,14 +716,35 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
             ),
           );
         },
-        errorWidget: (_, __, ___) => _buildImageError(),
+        errorWidget: (_, error, ___) {
+          final now = DateTime.now();
+          final timeStr = '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
+          if (_imageLoadLog.length < 500) {
+            _imageLoadLog.add('[$timeStr] 加载失败: ${url.substring(0, url.length.clamp(0, 80))} - ${error.toString().substring(0, error.toString().length.clamp(0, 50))}');
+          }
+          return _buildImageError();
+        },
       );
     }
 
-    final child = ConstrainedBox(
+    Widget child = ConstrainedBox(
       constraints: BoxConstraints(minHeight: minHeight),
       child: image,
     );
+
+    // 灰度滤镜
+    if (_grayscaleImages) {
+      child = ColorFiltered(
+        colorFilter: const ColorFilter.matrix(<double>[
+          0.2126, 0.7152, 0.0722, 0, 0,
+          0.2126, 0.7152, 0.0722, 0, 0,
+          0.2126, 0.7152, 0.0722, 0, 0,
+          0, 0, 0, 1, 0,
+        ]),
+        child: child,
+      );
+    }
+
     return child;
   }
 
@@ -882,21 +935,45 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
                         tooltip: '更多',
                         onSelected: (value) {
                           switch (value) {
-                            case 'auto':
-                              _toggleAutoPage();
+                            case 'footer':
+                              _showFooterConfig();
                               break;
-                            case 'brightness':
-                              _showBrightnessSheet();
+                            case 'eink':
+                              _toggleEinkMode();
                               break;
-                            case 'settings':
-                              _showQuickSettings();
+                            case 'grayscale':
+                              _toggleGrayscale();
+                              break;
+                            case 'log':
+                              _showImageLoadLog();
                               break;
                           }
                         },
-                        itemBuilder: (context) => const [
-                          PopupMenuItem(value: 'auto', child: Text('自动翻页')),
-                          PopupMenuItem(value: 'brightness', child: Text('亮度')),
-                          PopupMenuItem(value: 'settings', child: Text('设置')),
+                        itemBuilder: (context) => [
+                          const PopupMenuItem(value: 'footer', child: Text('页脚配置')),
+                          PopupMenuItem(
+                            value: 'eink',
+                            child: Row(
+                              children: [
+                                const Text('墨水屏'),
+                                const Spacer(),
+                                if (_einkMode)
+                                  Icon(Icons.check, color: Theme.of(context).colorScheme.primary, size: 20),
+                              ],
+                            ),
+                          ),
+                          PopupMenuItem(
+                            value: 'grayscale',
+                            child: Row(
+                              children: [
+                                const Text('图片灰色'),
+                                const Spacer(),
+                                if (_grayscaleImages)
+                                  Icon(Icons.check, color: Theme.of(context).colorScheme.primary, size: 20),
+                              ],
+                            ),
+                          ),
+                          const PopupMenuItem(value: 'log', child: Text('日志')),
                         ],
                       ),
                     ],
@@ -1047,6 +1124,10 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
                         onPressed: _hasPreviousChapter
                             ? _previousChapter
                             : null,
+                        style: TextButton.styleFrom(
+                          foregroundColor: _menuForeground,
+                          disabledForegroundColor: _menuForeground,
+                        ),
                         child: const Text('上一章'),
                       ),
                       Expanded(
@@ -1068,6 +1149,10 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
                       ),
                       TextButton(
                         onPressed: _hasNextChapter ? _nextChapter : null,
+                        style: TextButton.styleFrom(
+                          foregroundColor: _menuForeground,
+                          disabledForegroundColor: _menuForeground,
+                        ),
                         child: const Text('下一章'),
                       ),
                     ],
@@ -1584,6 +1669,138 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
     });
   }
 
+  void _showFooterConfig() {
+    setState(() => _showMenu = false);
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: _menuBackground,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setSheetState) {
+          return SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '页脚配置',
+                    style: TextStyle(
+                      color: _menuForeground,
+                      fontSize: 18,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  SwitchListTile(
+                    value: !_hideFooter,
+                    contentPadding: EdgeInsets.zero,
+                    title: Text(
+                      '显示底部进度',
+                      style: TextStyle(color: _menuForeground),
+                    ),
+                    onChanged: (value) {
+                      setState(() => _hideFooter = !value);
+                      setSheetState(() {});
+                      unawaited(_saveSettings());
+                    },
+                  ),
+                  SwitchListTile(
+                    value: !_hideChapterTitle,
+                    contentPadding: EdgeInsets.zero,
+                    title: Text(
+                      '显示章节首尾提示',
+                      style: TextStyle(color: _menuForeground),
+                    ),
+                    onChanged: (value) {
+                      setState(() => _hideChapterTitle = !value);
+                      setSheetState(() {});
+                      unawaited(_saveSettings());
+                    },
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  void _toggleEinkMode() {
+    setState(() => _einkMode = !_einkMode);
+    unawaited(_saveSettings());
+  }
+
+  void _toggleGrayscale() {
+    setState(() => _grayscaleImages = !_grayscaleImages);
+    unawaited(_saveSettings());
+  }
+
+  void _showImageLoadLog() {
+    setState(() => _showMenu = false);
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: _menuBackground,
+      isScrollControlled: true,
+      builder: (context) => SafeArea(
+        child: SizedBox(
+          height: MediaQuery.sizeOf(context).height * 0.6,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Row(
+                  children: [
+                    Text(
+                      '图片加载日志',
+                      style: TextStyle(
+                        color: _menuForeground,
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const Spacer(),
+                    TextButton(
+                      onPressed: () {
+                        setState(() => _imageLoadLog.clear());
+                        Navigator.pop(context);
+                      },
+                      child: const Text('清空'),
+                    ),
+                  ],
+                ),
+              ),
+              Divider(height: 1, color: _menuForeground.withValues(alpha: 0.12)),
+              Expanded(
+                child: _imageLoadLog.isEmpty
+                    ? Center(
+                        child: Text(
+                          '暂无日志',
+                          style: TextStyle(color: _menuForeground.withValues(alpha: 0.6)),
+                        ),
+                      )
+                    : ListView.builder(
+                        itemCount: _imageLoadLog.length,
+                        itemBuilder: (context, index) {
+                          final log = _imageLoadLog[_imageLoadLog.length - 1 - index];
+                          return ListTile(
+                            dense: true,
+                            title: Text(
+                              log,
+                              style: TextStyle(color: _menuForeground, fontSize: 12),
+                            ),
+                          );
+                        },
+                      ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   void _showQuickSettings() {
     final resumeAutoPaging = _isAutoPaging;
     _autoPageTimer?.cancel();
@@ -1890,11 +2107,11 @@ class _ComicZoomLayerState extends State<_ComicZoomLayer>
   }
 
   void _onPointerDown(PointerDownEvent event) {
-    if (!widget.enabled) return;
     if (_pointers.isEmpty) {
       _tapDownPosition = event.localPosition;
       _tapMoved = false;
     }
+    if (!widget.enabled) return;
     _pointers[event.pointer] = event.localPosition;
     if (_pointers.length == 2) {
       _beginPinch();
@@ -1947,7 +2164,25 @@ class _ComicZoomLayerState extends State<_ComicZoomLayer>
   }
 
   void _onPointerEnd(PointerEvent event, {required bool allowFling}) {
-    if (!widget.enabled) return;
+    // 当缩放禁用时，仍然处理点击事件
+    if (!widget.enabled) {
+      // 处理点击事件
+      if (_pointers.isEmpty &&
+          !_tapMoved &&
+          _tapDownPosition != null &&
+          allowFling) {
+        widget.onTapUp(
+          TapUpDetails(
+            kind: event.kind,
+            localPosition: event.localPosition,
+            globalPosition: event.localPosition,
+          ),
+        );
+      }
+      _tapDownPosition = null;
+      _tapMoved = false;
+      return;
+    }
     final isTap =
         allowFling &&
         _pointers.length == 1 &&
