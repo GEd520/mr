@@ -2865,7 +2865,6 @@ class _ChapterListPanel extends StatefulWidget {
 class _ChapterListPanelState extends State<_ChapterListPanel> {
   int _currentTab = 0;
   bool _showSearch = false;
-  final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
   Set<String> _cachedFiles = {};
   List<Bookmark> _bookmarks = [];
@@ -2884,12 +2883,6 @@ class _ChapterListPanelState extends State<_ChapterListPanel> {
     _loadCacheInfo();
     _loadBookmarks();
     _loadPrefs();
-  }
-
-  @override
-  void dispose() {
-    _searchController.dispose();
-    super.dispose();
   }
 
   Future<void> _loadPrefs() async {
@@ -2971,65 +2964,63 @@ class _ChapterListPanelState extends State<_ChapterListPanel> {
       children: [
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Row(
-            children: [
-              _buildTab(0, '目录 (${widget.chapters.length})', fg),
-              const SizedBox(width: 16),
-              _buildTab(1, '书签 (${_bookmarks.length})', fg),
-              const Spacer(),
-              IconButton(
-                icon: Icon(_showSearch ? Icons.close : Icons.search, color: fg),
-                onPressed: () => setState(() {
-                  _showSearch = !_showSearch;
-                  if (!_showSearch) {
-                    _searchController.clear();
-                    _searchQuery = '';
-                  }
-                }),
-              ),
-              PopupMenuButton<String>(
-                icon: Icon(Icons.more_vert, color: fg),
-                tooltip: '更多',
-                onSelected: _handleMenuAction,
-                itemBuilder: _currentTab == 0
-                    ? (context) => [
-                          _menuItem('reverse', '反转目录', _isReversed, fg),
-                          _menuItem('use_replace', '使用替换', _useReplace, fg),
-                          _menuItem('word_count', '加载字数', _showWordCount, fg),
-                          _menuItem('fold_volume', '卷名折叠', _foldVolume, fg),
-                        ]
-                    : (context) => [
-                          const PopupMenuItem(
-                            value: 'export',
-                            child: Text('导出'),
-                          ),
-                          const PopupMenuItem(
-                            value: 'export_md',
-                            child: Text('导出(MD)'),
-                          ),
-                          const PopupMenuDivider(),
-                          _menuItem('bm_search_chapter', '搜索章节名', _searchChapterName, fg),
-                          _menuItem('bm_search_text', '搜索书文', _searchBookText, fg),
-                          _menuItem('bm_search_note', '搜索备注', _searchContent, fg),
-                        ],
-              ),
-            ],
-          ),
+          child: _showSearch
+              ? Row(
+                  children: [
+                    Expanded(
+                      child: _SearchInput(
+                        foregroundColor: fg,
+                        onSearch: (query) => setState(() => _searchQuery = query),
+                      ),
+                    ),
+                    IconButton(
+                      icon: Icon(Icons.close, color: fg),
+                      onPressed: () => setState(() {
+                        _showSearch = false;
+                        _searchQuery = '';
+                      }),
+                    ),
+                  ],
+                )
+              : Row(
+                  children: [
+                    _buildTab(0, '目录 (${widget.chapters.length})', fg),
+                    const SizedBox(width: 16),
+                    _buildTab(1, '书签 (${_bookmarks.length})', fg),
+                    const Spacer(),
+                    IconButton(
+                      icon: Icon(Icons.search, color: fg),
+                      onPressed: () => setState(() => _showSearch = true),
+                    ),
+                    PopupMenuButton<String>(
+                      icon: Icon(Icons.more_vert, color: fg),
+                      tooltip: '更多',
+                      onSelected: _handleMenuAction,
+                      itemBuilder: _currentTab == 0
+                          ? (context) => [
+                                _menuItem('reverse', '反转目录', _isReversed, fg),
+                                _menuItem('use_replace', '使用替换', _useReplace, fg),
+                                _menuItem('word_count', '加载字数', _showWordCount, fg),
+                                _menuItem('fold_volume', '卷名折叠', _foldVolume, fg),
+                              ]
+                          : (context) => [
+                                const PopupMenuItem(
+                                  value: 'export',
+                                  child: Text('导出'),
+                                ),
+                                const PopupMenuItem(
+                                  value: 'export_md',
+                                  child: Text('导出(MD)'),
+                                ),
+                                const PopupMenuDivider(),
+                                _menuItem('bm_search_chapter', '搜索章节名', _searchChapterName, fg),
+                                _menuItem('bm_search_text', '搜索书文', _searchBookText, fg),
+                                _menuItem('bm_search_note', '搜索备注', _searchContent, fg),
+                              ],
+                    ),
+                  ],
+                ),
         ),
-        if (_showSearch)
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: TextField(
-              controller: _searchController,
-              style: TextStyle(color: fg),
-              decoration: InputDecoration(
-                hintText: '搜索...',
-                hintStyle: TextStyle(color: fg.withValues(alpha: 0.5)),
-                border: InputBorder.none,
-              ),
-              onChanged: (v) => setState(() => _searchQuery = v),
-            ),
-          ),
         Divider(height: 1, color: fg.withValues(alpha: 0.12)),
         SizedBox(
           height: MediaQuery.of(context).size.height * 0.5,
@@ -3047,7 +3038,29 @@ class _ChapterListPanelState extends State<_ChapterListPanel> {
       child: Row(
         children: [
           Expanded(child: Text(label)),
-          if (checked) Icon(Icons.check, size: 20, color: fg),
+          Container(
+            width: 18,
+            height: 18,
+            decoration: BoxDecoration(
+              border: Border.all(
+                color: checked
+                    ? Theme.of(context).colorScheme.primary
+                    : fg.withValues(alpha: 0.5),
+                width: 1.5,
+              ),
+              borderRadius: BorderRadius.circular(3),
+              color: checked
+                  ? Theme.of(context).colorScheme.primary
+                  : Colors.transparent,
+            ),
+            child: checked
+                ? Icon(
+                    Icons.check,
+                    size: 14,
+                    color: Theme.of(context).colorScheme.onPrimary,
+                  )
+                : null,
+          ),
         ],
       ),
     );
@@ -3117,45 +3130,72 @@ class _ChapterListPanelState extends State<_ChapterListPanel> {
         final isSelected = chapter.index == widget.currentChapterIndex;
         final fileName = ChapterCacheService.instance.getChapterFileName(chapter, suffix: 'cb');
         final isCached = !isOnline || _cachedFiles.contains(fileName);
+        final hasTag = chapter.tag != null && chapter.tag!.isNotEmpty;
+        final hasWordCount = _showWordCount && chapter.wordCount != null && chapter.wordCount! > 0;
+        final showSubtitle = hasTag || hasWordCount;
 
-        return ListTile(
-          selected: isSelected,
-          selectedTileColor: fg.withValues(alpha: 0.1),
-          title: Row(
-            children: [
-              Expanded(
-                child: Text(
-                  chapter.title,
-                  style: TextStyle(
-                    color: isSelected ? fg : fg.withValues(alpha: 0.8),
-                    fontWeight: isSelected ? FontWeight.bold : null,
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              if (_showWordCount && chapter.wordCount != null && chapter.wordCount! > 0)
-                Padding(
-                  padding: const EdgeInsets.only(right: 4),
-                  child: Text(
-                    '${(chapter.wordCount! / 10000).toStringAsFixed(1)}万',
-                    style: TextStyle(color: fg.withValues(alpha: 0.5), fontSize: 12),
-                  ),
-                ),
-              if (chapter.isVip && !chapter.isPay)
-                Padding(
-                  padding: const EdgeInsets.only(left: 4),
-                  child: Icon(Icons.lock, size: 16, color: Colors.red.shade400),
-                ),
-              if (!isCached)
-                Padding(
-                  padding: const EdgeInsets.only(left: 4),
-                  child: Icon(Icons.cloud_outlined, size: 16, color: fg.withValues(alpha: 0.5)),
-                ),
-            ],
-          ),
-          trailing: isSelected ? Icon(Icons.check, color: fg) : null,
+        return InkWell(
           onTap: () => widget.onChapterSelected(chapter.index),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            child: Row(
+              children: [
+                if (chapter.isVip && !chapter.isPay)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: Icon(Icons.lock_outline, size: 18, color: fg.withValues(alpha: 0.6)),
+                  ),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        chapter.title,
+                        style: TextStyle(
+                          color: isSelected ? fg : fg.withValues(alpha: 0.85),
+                          fontWeight: isSelected ? FontWeight.bold : null,
+                          fontSize: 15,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      if (showSubtitle)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Row(
+                            children: [
+                              if (hasTag)
+                                Text(
+                                  chapter.tag!,
+                                  style: TextStyle(
+                                    color: fg.withValues(alpha: 0.5),
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              if (hasTag && hasWordCount)
+                                const SizedBox(width: 8),
+                              if (hasWordCount)
+                                Text(
+                                  '${(chapter.wordCount! / 10000).toStringAsFixed(1)}万',
+                                  style: TextStyle(
+                                    color: fg.withValues(alpha: 0.5),
+                                    fontSize: 12,
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                if (isSelected)
+                  Icon(Icons.check, size: 18, color: fg)
+                else if (!isCached)
+                  Icon(Icons.cloud_outlined, size: 18, color: fg.withValues(alpha: 0.4)),
+              ],
+            ),
+          ),
         );
       },
     );
@@ -3294,5 +3334,57 @@ class _ChapterListPanelState extends State<_ChapterListPanel> {
 
   String _formatTime(DateTime time) {
     return '${time.month}/${time.day} ${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
+  }
+}
+
+class _SearchInput extends StatefulWidget {
+  final Color foregroundColor;
+  final ValueChanged<String> onSearch;
+
+  const _SearchInput({
+    required this.foregroundColor,
+    required this.onSearch,
+  });
+
+  @override
+  State<_SearchInput> createState() => _SearchInputState();
+}
+
+class _SearchInputState extends State<_SearchInput> {
+  final TextEditingController _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final fg = widget.foregroundColor;
+    return Container(
+      decoration: BoxDecoration(
+        border: Border.all(
+          color: fg.withValues(alpha: 0.3),
+          width: 1,
+        ),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: TextField(
+        controller: _controller,
+        style: TextStyle(color: fg),
+        decoration: InputDecoration(
+          hintText: '搜索...',
+          hintStyle: TextStyle(color: fg.withValues(alpha: 0.5)),
+          border: InputBorder.none,
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 12,
+            vertical: 10,
+          ),
+          isDense: true,
+        ),
+        onChanged: widget.onSearch,
+      ),
+    );
   }
 }
