@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -284,39 +285,68 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
       return;
     }
 
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final bgColor = isDark ? Colors.grey[900] : Colors.white;
+    final textColor = isDark ? Colors.grey[200] : Colors.grey[800];
+    final appBarBgColor = isDark ? Colors.grey[850] : const Color(0xFFF5F5F5);
+    final appBarFgColor = isDark ? Colors.white : Colors.black87;
+
     showDialog(
       context: context,
       builder: (ctx) => Dialog(
+        backgroundColor: bgColor,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
         child: Column(
           children: [
-            AppBar(
-              title: Text(title),
-              leading: IconButton(
-                icon: const Icon(Icons.close),
-                onPressed: () => Navigator.pop(ctx),
+            // 自定义标题栏
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: appBarBgColor,
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
               ),
-              actions: [
-                IconButton(
-                  icon: const Icon(Icons.copy),
-                  tooltip: '复制',
-                  onPressed: () {
-                    Clipboard.setData(ClipboardData(text: source));
-                    Navigator.pop(ctx);
-                    setState(() {
-                      _debugLogs.add('≡已复制源码');
-                    });
-                  },
-                ),
-              ],
+              child: Row(
+                children: [
+                  IconButton(
+                    icon: Icon(Icons.close, color: appBarFgColor),
+                    onPressed: () => Navigator.pop(ctx),
+                  ),
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w500,
+                        color: appBarFgColor,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    icon: Icon(Icons.copy, color: appBarFgColor),
+                    tooltip: '复制',
+                    onPressed: () {
+                      Clipboard.setData(ClipboardData(text: source));
+                      Navigator.pop(ctx);
+                      setState(() {
+                        _debugLogs.add('≡已复制源码');
+                      });
+                    },
+                  ),
+                ],
+              ),
             ),
+            const Divider(height: 1),
+            // 源码内容
             Expanded(
               child: SingleChildScrollView(
                 padding: const EdgeInsets.all(12),
                 child: SelectableText(
                   source,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 12,
                     fontFamily: 'monospace',
+                    color: textColor,
                   ),
                 ),
               ),
@@ -329,8 +359,11 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: isDark ? null : Colors.white,
       appBar: _buildAppBar(context),
       body: _currentTab == 0 ? _buildDebugBody() : _buildLogViewerBody(),
       bottomNavigationBar: BottomNavigationBar(
@@ -357,13 +390,19 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
 
   PreferredSizeWidget _buildAppBar(BuildContext context) {
     final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final textColor = isDark ? Colors.white : Colors.black87;
+    final bgColor = isDark ? null : Colors.white;
+    final searchBgColor = isDark ? Colors.grey[800] : const Color(0xFFF1F1F1);
+    final hintColor = isDark ? Colors.grey[400] : Colors.black38;
+    
     return AppBar(
-      backgroundColor: Colors.white,
-      surfaceTintColor: Colors.white,
+      backgroundColor: bgColor,
+      surfaceTintColor: bgColor,
       elevation: 0,
       leading: IconButton(
         icon: const Icon(Icons.arrow_back_ios_new_rounded),
-        color: Colors.black87,
+        color: textColor,
         onPressed: () => Navigator.of(context).maybePop(),
       ),
       titleSpacing: 0,
@@ -383,19 +422,19 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
               }
             },
             onSubmitted: _submitDebug,
-            style: theme.textTheme.bodyMedium?.copyWith(color: Colors.black87),
+            style: theme.textTheme.bodyMedium?.copyWith(color: textColor),
             decoration: InputDecoration(
               hintText: '搜索书名、作者',
               hintStyle: theme.textTheme.bodyMedium?.copyWith(
-                color: Colors.black38,
+                color: hintColor,
               ),
-              prefixIcon: const Icon(Icons.search, size: 18),
+              prefixIcon: Icon(Icons.search, size: 18, color: textColor.withOpacity(0.6)),
               suffixIcon: IconButton(
-                icon: const Icon(Icons.chevron_right_rounded, size: 20),
+                icon: Icon(Icons.chevron_right_rounded, size: 20, color: textColor.withOpacity(0.6)),
                 onPressed: () => _submitDebug(),
               ),
               filled: true,
-              fillColor: const Color(0xFFF1F1F1),
+              fillColor: searchBgColor,
               contentPadding: const EdgeInsets.symmetric(horizontal: 12),
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(18),
@@ -407,7 +446,7 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
               ),
               focusedBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(18),
-                borderSide: const BorderSide(color: Color(0xFFB8D5FF)),
+                borderSide: BorderSide(color: isDark ? Colors.blue[300]! : const Color(0xFFB8D5FF)),
               ),
             ),
           ),
@@ -415,16 +454,13 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
       ),
       actions: [
         IconButton(
-          tooltip: '清空输入',
-          onPressed: () {
-            _searchController.clear();
-          },
-          icon: const Icon(Icons.crop_free_rounded),
-          color: Colors.black87,
+          tooltip: '扫描二维码',
+          onPressed: _scanQrCode,
+          icon: const Icon(Icons.qr_code_scanner),
+          color: textColor,
         ),
         PopupMenuButton<String>(
-          icon: const Icon(Icons.more_vert),
-          color: Colors.white,
+          icon: Icon(Icons.more_vert, color: textColor),
           tooltip: '更多选项',
           offset: const Offset(0, 48),
           onSelected: (value) {
@@ -453,36 +489,36 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
                 break;
             }
           },
-          itemBuilder: (context) => const [
+          itemBuilder: (context) => [
             PopupMenuItem(
               value: 'search_src',
-              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              child: Text('搜索源码'),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: Text('搜索源码', style: TextStyle(color: textColor)),
             ),
             PopupMenuItem(
               value: 'book_src',
-              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              child: Text('详情源码'),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: Text('详情源码', style: TextStyle(color: textColor)),
             ),
             PopupMenuItem(
               value: 'toc_src',
-              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              child: Text('目录源码'),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: Text('目录源码', style: TextStyle(color: textColor)),
             ),
             PopupMenuItem(
               value: 'content_src',
-              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              child: Text('正文源码'),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: Text('正文源码', style: TextStyle(color: textColor)),
             ),
             PopupMenuItem(
               value: 'refresh_explore',
-              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              child: Text('刷新发现'),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: Text('刷新发现', style: TextStyle(color: textColor)),
             ),
             PopupMenuItem(
               value: 'help',
-              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              child: Text('帮助'),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: Text('帮助', style: TextStyle(color: textColor)),
             ),
           ],
         ),
@@ -491,6 +527,9 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
   }
 
   Widget _buildDebugBody() {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final hintColor = isDark ? Colors.grey[500] : const Color(0xFF9A9A9A);
+    
     return Stack(
       children: [
         if (!_showHelp)
@@ -503,11 +542,11 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
               children: _debugLogs.isEmpty
                   ? [
                       const SizedBox(height: 120),
-                      const Text(
+                      Text(
                         '等待调试结果...',
                         style: TextStyle(
                           fontSize: 16,
-                          color: Color(0xFF9A9A9A),
+                          color: hintColor,
                         ),
                       ),
                     ]
@@ -529,9 +568,9 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
                 margin: const EdgeInsets.only(top: 8),
                 width: 36,
                 height: 36,
-                child: const CircularProgressIndicator(
+                child: CircularProgressIndicator(
                   strokeWidth: 2.5,
-                  color: Color(0xFF1976D2),
+                  color: isDark ? Colors.lightBlue[300] : const Color(0xFF1976D2),
                 ),
               ),
             ),
@@ -541,9 +580,11 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
   }
 
   Widget _buildHelpPanel() {
-    const labelStyle = TextStyle(
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final labelColor = isDark ? Colors.grey[400] : Colors.black54;
+    final labelStyle = TextStyle(
       fontSize: 13,
-      color: Colors.black54,
+      color: labelColor,
       height: 1.25,
     );
 
@@ -552,7 +593,7 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('调试搜索>>输入关键字，如：', style: labelStyle),
+          Text('调试搜索>>输入关键字，如：', style: labelStyle),
           const SizedBox(height: 8),
           Wrap(
             spacing: 10,
@@ -577,7 +618,7 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
             ],
           ),
           const SizedBox(height: 14),
-          const Text('调试发现>>输入发现URL，如：', style: labelStyle),
+          Text('调试发现>>输入发现URL，如：', style: labelStyle),
           const SizedBox(height: 8),
           _buildExampleChip(
             _textFx,
@@ -589,7 +630,7 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
             },
           ),
           const SizedBox(height: 14),
-          const Text('调试详情页>>输入详情页URL，如：', style: labelStyle),
+          Text('调试详情页>>输入详情页URL，如：', style: labelStyle),
           const SizedBox(height: 8),
           _buildExampleChip(
             _textInfo,
@@ -603,7 +644,7 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
             },
           ),
           const SizedBox(height: 14),
-          const Text('调试目录页>>输入目录页URL，如：', style: labelStyle),
+          Text('调试目录页>>输入目录页URL，如：', style: labelStyle),
           const SizedBox(height: 8),
           _buildExampleChip(
             _textToc,
@@ -612,7 +653,7 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
             onTap: () => _submitPrefixed('++'),
           ),
           const SizedBox(height: 14),
-          const Text('调试正文页>>输入正文页URL，如：', style: labelStyle),
+          Text('调试正文页>>输入正文页URL，如：', style: labelStyle),
           const SizedBox(height: 8),
           _buildExampleChip(
             _textContent,
@@ -646,6 +687,10 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
     bool fullWidth = false,
     VoidCallback? onTap,
   }) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final chipBgColor = isDark ? Colors.grey[800] : const Color(0xFFD9D9D9);
+    final chipTextColor = isDark ? Colors.grey[200] : Colors.black87;
+    
     final width = fullWidth ? double.infinity : null;
     return GestureDetector(
       onTap: onTap ?? () => _fillExample(value),
@@ -653,15 +698,15 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
         width: width,
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         decoration: BoxDecoration(
-          color: const Color(0xFFD9D9D9),
+          color: chipBgColor,
           borderRadius: BorderRadius.circular(16),
         ),
         child: Text(
           label,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
-          style: const TextStyle(
-            color: Colors.black87,
+          style: TextStyle(
+            color: chipTextColor,
             fontSize: 13,
             height: 1.15,
           ),
@@ -671,44 +716,50 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
   }
 
   Widget _buildLogLine(String line) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    
     // 解析时间戳（格式: [00:00.000] 消息内容）
     final match = RegExp(r'^\[(\d{2}:\d{2}\.\d{3})\]\s*(.*)$').firstMatch(line);
     final stamp = match?.group(1);
     final body = match?.group(2) ?? line;
 
-    Color bodyColor = const Color(0xFF444444);
+    // 默认颜色根据主题调整
+    Color bodyColor = isDark ? Colors.grey[300]! : const Color(0xFF444444);
     FontWeight bodyWeight = FontWeight.w400;
 
-    // 根据特殊字符设置颜色
+    // 根据特殊字符设置颜色（深色模式下使用更亮的颜色）
     if (body.startsWith('︾')) {
-      bodyColor = const Color(0xFF1976D2);
+      bodyColor = isDark ? Colors.lightBlue[300]! : const Color(0xFF1976D2);
       bodyWeight = FontWeight.w500;
     } else if (body.startsWith('︽')) {
-      bodyColor = const Color(0xFF2E7D32);
+      bodyColor = isDark ? Colors.green[300]! : const Color(0xFF2E7D32);
       bodyWeight = FontWeight.w600;
     } else if (body.startsWith('⇒')) {
-      bodyColor = const Color(0xFF0277BD);
+      bodyColor = isDark ? Colors.lightBlue[200]! : const Color(0xFF0277BD);
       bodyWeight = FontWeight.w400;
     } else if (body.startsWith('≡')) {
-      bodyColor = const Color(0xFF616161);
+      bodyColor = isDark ? Colors.grey[400]! : const Color(0xFF616161);
       bodyWeight = FontWeight.w400;
     } else if (body.startsWith('┌')) {
-      bodyColor = const Color(0xFF1565C0);
+      bodyColor = isDark ? Colors.blue[200]! : const Color(0xFF1565C0);
       bodyWeight = FontWeight.w500;
     } else if (body.startsWith('└') && !body.startsWith('└\n')) {
       // 正文内容以 └\n 开头，使用默认颜色
-      bodyColor = const Color(0xFF333333);
+      bodyColor = isDark ? Colors.grey[300]! : const Color(0xFF333333);
       bodyWeight = FontWeight.w400;
     } else if (body.startsWith('◇')) {
-      bodyColor = const Color(0xFF6A1B9A);
+      bodyColor = isDark ? Colors.purple[200]! : const Color(0xFF6A1B9A);
       bodyWeight = FontWeight.w500;
     } else if (body.contains('错误') || body.contains('失败')) {
-      bodyColor = const Color(0xFFD32F2F);
+      bodyColor = isDark ? Colors.red[300]! : const Color(0xFFD32F2F);
       bodyWeight = FontWeight.w600;
     } else if (body.contains('完成') || body.contains('成功')) {
-      bodyColor = const Color(0xFF2E7D32);
+      bodyColor = isDark ? Colors.green[300]! : const Color(0xFF2E7D32);
       bodyWeight = FontWeight.w500;
     }
+
+    // URL 颜色
+    final urlColor = isDark ? Colors.lightBlue[200]! : const Color(0xFF1565C0);
 
     // 解析 URL，用 WORD JOINER 阻止 URL 内断行
     // 只匹配 URL 有效字符，排除中文标点和常见结束符
@@ -729,11 +780,11 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
       spans.add(
         TextSpan(
           text: _protectUrl(url),
-          style: const TextStyle(
-            color: Color(0xFF1565C0),
+          style: TextStyle(
+            color: urlColor,
             fontWeight: FontWeight.w500,
             decoration: TextDecoration.underline,
-            decorationColor: Color(0xFF1565C0),
+            decorationColor: urlColor,
             decorationThickness: 1.5,
           ),
           recognizer: TapGestureRecognizer()..onTap = () => _onUrlTap(url),
@@ -750,22 +801,26 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
       );
     }
 
+    // 时间戳颜色
+    final stampColor = isDark ? Colors.grey[500] : const Color(0xFFAAAAAA);
+    final defaultTextColor = isDark ? Colors.grey[300] : const Color(0xFF555555);
+
     return GestureDetector(
       onTap: () => _showDebugLogDetail(line, body),
       child: Padding(
         padding: const EdgeInsets.only(bottom: 4),
         child: SelectableText.rich(
           TextSpan(
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 14,
               height: 1.35,
-              color: Color(0xFF555555),
+              color: defaultTextColor,
             ),
             children: [
               if (stamp != null)
                 TextSpan(
                   text: '[$stamp] ',
-                  style: const TextStyle(color: Color(0xFFAAAAAA), fontSize: 13),
+                  style: TextStyle(color: stampColor, fontSize: 13),
                 ),
               ...spans,
             ],
@@ -785,6 +840,9 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
   }
 
   void _showDebugLogDetail(String fullLine, String body) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final textColor = isDark ? Colors.grey[200] : Colors.grey[800];
+
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -796,10 +854,11 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
             children: [
               SelectableText(
                 body,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 14,
                   fontFamily: 'monospace',
                   height: 1.5,
+                  color: textColor,
                 ),
               ),
             ],
@@ -829,6 +888,25 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
     final uri = Uri.tryParse(url);
     if (uri == null) return;
     await launchUrl(uri, mode: LaunchMode.externalApplication);
+  }
+
+  /// 扫描二维码
+  void _scanQrCode() async {
+    final result = await Navigator.push<String>(
+      context,
+      MaterialPageRoute(
+        builder: (ctx) => const _QrScannerPage(),
+      ),
+    );
+    
+    if (result != null && result.isNotEmpty && mounted) {
+      // 将扫描结果填入搜索框
+      _searchController.text = result;
+      _searchController.selection = TextSelection.collapsed(offset: result.length);
+      setState(() {
+        _showHelp = true;
+      });
+    }
   }
 
   void _showHelpDialog() {
@@ -866,6 +944,11 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
   final ScrollController _logScrollController = ScrollController();
 
   Widget _buildLogViewerBody() {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final filterBarColor = isDark ? Colors.grey[850] : const Color(0xFFF5F5F5);
+    final statsBarColor = isDark ? Colors.grey[900] : const Color(0xFFFAFAFA);
+    
     final filteredLogs = _appLogs.where((e) {
       if (e.level.index < _logFilterLevel.index) {
         return false;
@@ -881,7 +964,7 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
         // 过滤器栏
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-          color: const Color(0xFFF5F5F5),
+          color: filterBarColor,
           child: SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             child: Row(
@@ -916,21 +999,21 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
         // 日志统计
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-          color: const Color(0xFFFAFAFA),
+          color: statsBarColor,
           child: Row(
             children: [
               Text(
                 '共 ${filteredLogs.length} 条日志',
-                style: const TextStyle(fontSize: 12, color: Colors.grey),
+                style: TextStyle(fontSize: 12, color: isDark ? Colors.grey[400] : Colors.grey),
               ),
               const Spacer(),
               IconButton(
-                icon: const Icon(Icons.file_download_outlined, size: 18),
+                icon: Icon(Icons.file_download_outlined, size: 18, color: isDark ? Colors.grey[400] : null),
                 tooltip: '导出日志',
                 onPressed: () => _exportLogs(),
               ),
               IconButton(
-                icon: const Icon(Icons.delete_outline, size: 18),
+                icon: Icon(Icons.delete_outline, size: 18, color: isDark ? Colors.grey[400] : null),
                 tooltip: '清空日志',
                 onPressed: () {
                   AppLogger.instance.clear();
@@ -943,8 +1026,8 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
         // 日志列表
         Expanded(
           child: filteredLogs.isEmpty
-              ? const Center(
-                  child: Text('暂无日志', style: TextStyle(color: Colors.grey)),
+              ? Center(
+                  child: Text('暂无日志', style: TextStyle(color: isDark ? Colors.grey[500] : Colors.grey)),
                 )
               : ListView.builder(
                   controller: _logScrollController,
@@ -961,23 +1044,25 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
   }
 
   Widget _buildFilterChip(String label, bool selected, VoidCallback onTap) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    
     return GestureDetector(
       onTap: onTap,
       child: Container(
         margin: const EdgeInsets.only(right: 6),
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
         decoration: BoxDecoration(
-          color: selected ? const Color(0xFF1976D2) : Colors.white,
+          color: selected ? const Color(0xFF1976D2) : (isDark ? Colors.grey[800] : Colors.white),
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
-            color: selected ? const Color(0xFF1976D2) : Colors.grey.shade300,
+            color: selected ? const Color(0xFF1976D2) : (isDark ? Colors.grey[700]! : Colors.grey.shade300),
           ),
         ),
         child: Text(
           label,
           style: TextStyle(
             fontSize: 11,
-            color: selected ? Colors.white : Colors.black54,
+            color: selected ? Colors.white : (isDark ? Colors.grey[400] : Colors.black54),
           ),
         ),
       ),
@@ -985,20 +1070,28 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
   }
 
   Widget _buildAppLogEntry(LogEntry entry) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    
     Color bgColor;
     switch (entry.level) {
       case LogLevel.error:
-        bgColor = const Color(0xFFFFEBEE);
+        bgColor = isDark ? Colors.red[900]!.withOpacity(0.3) : const Color(0xFFFFEBEE);
         break;
       case LogLevel.warning:
-        bgColor = const Color(0xFFFFF8E1);
+        bgColor = isDark ? Colors.orange[900]!.withOpacity(0.3) : const Color(0xFFFFF8E1);
         break;
       case LogLevel.info:
-        bgColor = const Color(0xFFE8F5E9);
+        bgColor = isDark ? Colors.green[900]!.withOpacity(0.3) : const Color(0xFFE8F5E9);
         break;
       default:
         bgColor = Colors.transparent;
     }
+
+    final textColor = isDark ? Colors.grey[200] : const Color(0xFF333333);
+    final detailColor = isDark ? Colors.grey[400] : const Color(0xFF666666);
+    final timeColor = isDark ? Colors.grey[500] : Colors.grey;
+    final categoryBgColor = isDark ? Colors.grey[700] : const Color(0xFFE0E0E0);
+    final categoryTextColor = isDark ? Colors.grey[300] : Colors.black54;
 
     return GestureDetector(
       onTap: () => _showLogDetailDialog(entry),
@@ -1018,9 +1111,9 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
                 const SizedBox(width: 4),
                 Text(
                   '${entry.time.hour.toString().padLeft(2, '0')}:${entry.time.minute.toString().padLeft(2, '0')}:${entry.time.second.toString().padLeft(2, '0')}',
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 10,
-                    color: Colors.grey,
+                    color: timeColor,
                     fontFamily: 'monospace',
                   ),
                 ),
@@ -1028,19 +1121,19 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
                   decoration: BoxDecoration(
-                    color: const Color(0xFFE0E0E0),
+                    color: categoryBgColor,
                     borderRadius: BorderRadius.circular(3),
                   ),
                   child: Text(
                     entry.category.label,
-                    style: const TextStyle(fontSize: 9, color: Colors.black54),
+                    style: TextStyle(fontSize: 9, color: categoryTextColor),
                   ),
                 ),
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(
                     entry.message,
-                    style: const TextStyle(fontSize: 12, color: Color(0xFF333333)),
+                    style: TextStyle(fontSize: 12, color: textColor),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -1052,9 +1145,9 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
                 padding: const EdgeInsets.only(left: 24, top: 2),
                 child: Text(
                   entry.detail!,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 11,
-                    color: Color(0xFF666666),
+                    color: detailColor,
                     fontFamily: 'monospace',
                   ),
                   maxLines: 3,
@@ -1068,6 +1161,9 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
   }
 
   void _showLogDetailDialog(LogEntry entry) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final textColor = isDark ? Colors.grey[200] : null;
+
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -1090,14 +1186,14 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
               const Text('消息:', style: TextStyle(fontWeight: FontWeight.bold)),
               SelectableText(
                 entry.message,
-                style: const TextStyle(fontFamily: 'monospace'),
+                style: TextStyle(fontFamily: 'monospace', color: textColor),
               ),
               if (entry.detail != null && entry.detail!.isNotEmpty) ...[
                 const SizedBox(height: 8),
                 const Text('详情:', style: TextStyle(fontWeight: FontWeight.bold)),
                 SelectableText(
                   entry.detail!,
-                  style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                  style: TextStyle(fontFamily: 'monospace', fontSize: 12, color: textColor),
                 ),
               ],
             ],
@@ -1162,4 +1258,136 @@ class _ExploreKindItem {
   final String url;
 
   const _ExploreKindItem(this.title, this.url);
+}
+
+/// 二维码扫描页面
+class _QrScannerPage extends StatefulWidget {
+  const _QrScannerPage();
+
+  @override
+  State<_QrScannerPage> createState() => _QrScannerPageState();
+}
+
+class _QrScannerPageState extends State<_QrScannerPage> {
+  final MobileScannerController _controller = MobileScannerController(
+    detectionSpeed: DetectionSpeed.normal,
+    facing: CameraFacing.back,
+  );
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back_ios_new_rounded, color: Colors.white),
+          onPressed: () => Navigator.pop(context),
+        ),
+        title: const Text('扫描二维码', style: TextStyle(color: Colors.white)),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.flash_off, color: Colors.white),
+            tooltip: '闪光灯',
+            onPressed: () => _controller.toggleTorch(),
+          ),
+          IconButton(
+            icon: const Icon(Icons.cameraswitch, color: Colors.white),
+            tooltip: '切换摄像头',
+            onPressed: () => _controller.switchCamera(),
+          ),
+        ],
+      ),
+      body: Stack(
+        children: [
+          MobileScanner(
+            controller: _controller,
+            onDetect: (capture) {
+              final barcodes = capture.barcodes;
+              for (final barcode in barcodes) {
+                final value = barcode.rawValue;
+                if (value != null && value.isNotEmpty) {
+                  _controller.stop();
+                  Navigator.pop(context, value);
+                  return;
+                }
+              }
+            },
+          ),
+          // 扫描框
+          Center(
+            child: Container(
+              width: 250,
+              height: 250,
+              decoration: BoxDecoration(
+                border: Border.all(color: Colors.white54, width: 2),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: const CustomPaint(
+                painter: _ScanCornerPainter(),
+              ),
+            ),
+          ),
+          // 提示文字
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 100,
+            child: Text(
+              '将二维码放入框内自动扫描',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.white.withOpacity(0.8),
+                fontSize: 14,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 扫描框四角装饰
+class _ScanCornerPainter extends CustomPainter {
+  const _ScanCornerPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = const Color(0xFF1976D2)
+      ..strokeWidth = 3
+      ..style = PaintingStyle.stroke;
+
+    const cornerLength = 25.0;
+
+    // 左上角
+    canvas.drawLine(const Offset(0, cornerLength), Offset.zero, paint);
+    canvas.drawLine(Offset.zero, const Offset(cornerLength, 0), paint);
+
+    // 右上角
+    canvas.drawLine(Offset(size.width - cornerLength, 0), Offset(size.width, 0), paint);
+    canvas.drawLine(Offset(size.width, 0), Offset(size.width, cornerLength), paint);
+
+    // 左下角
+    canvas.drawLine(Offset(0, size.height - cornerLength), Offset(0, size.height), paint);
+    canvas.drawLine(Offset(0, size.height), Offset(cornerLength, size.height), paint);
+
+    // 右下角
+    canvas.drawLine(Offset(size.width - cornerLength, size.height), Offset(size.width, size.height), paint);
+    canvas.drawLine(Offset(size.width, size.height - cornerLength), Offset(size.width, size.height), paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
