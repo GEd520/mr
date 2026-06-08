@@ -47,7 +47,7 @@ class _ExploreKindItem {
 /// 书源调试页
 class BookSourceDebugPage extends StatefulWidget {
   final String? sourceUrl;
-  final BookSource? source;  // 直接传入书源对象，无需保存即可调试
+  final BookSource? source; // 直接传入书源对象，无需保存即可调试
 
   const BookSourceDebugPage({super.key, this.sourceUrl, this.source});
 
@@ -140,7 +140,11 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
       _source = widget.source;
       _webBook = WebBook(_source!);
       debugPrint('✅ 使用传入的书源对象: ${_source!.bookSourceName}');
-      AppLogger.instance.info(LogCategory.parse, '使用传入的书源对象', detail: _source!.bookSourceName);
+      AppLogger.instance.info(
+        LogCategory.parse,
+        '使用传入的书源对象',
+        detail: _source!.bookSourceName,
+      );
       _afterSourceLoaded();
       return;
     }
@@ -162,23 +166,34 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
 
     // 确保 StorageService 已初始化
     if (!StorageService.instance.isInitialized) {
-      AppLogger.instance.warn(LogCategory.storage, 'StorageService 未初始化，尝试初始化...');
+      AppLogger.instance.warn(
+        LogCategory.storage,
+        'StorageService 未初始化，尝试初始化...',
+      );
       try {
         await StorageService.instance.init();
       } catch (e) {
-        AppLogger.instance.error(LogCategory.storage, 'StorageService 初始化失败', detail: e.toString());
+        AppLogger.instance.error(
+          LogCategory.storage,
+          'StorageService 初始化失败',
+          detail: e.toString(),
+        );
       }
     }
 
     final data = StorageService.instance.getBookSource(sourceUrl);
     debugPrint('书源数据: ${data != null ? "找到" : "未找到"}');
-    AppLogger.instance.info(LogCategory.storage, '书源查询结果', detail: data != null ? '找到' : '未找到 (sourceUrl: $sourceUrl)');
+    AppLogger.instance.info(
+      LogCategory.storage,
+      '书源查询结果',
+      detail: data != null ? '找到' : '未找到 (sourceUrl: $sourceUrl)',
+    );
 
     if (data == null) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('未找到书源: $sourceUrl')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('未找到书源: $sourceUrl')));
       }
       return;
     }
@@ -190,9 +205,9 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     } catch (e) {
       debugPrint('书源解析失败: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('书源解析失败: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('书源解析失败: $e')));
       }
       return;
     }
@@ -202,7 +217,6 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
 
   /// 书源加载后的初始化（解析发现分类等）
   void _afterSourceLoaded() {
-
     final searchKey = _source?.ruleSearch?.checkKeyWord;
     if (searchKey != null && searchKey.isNotEmpty) {
       _searchController.text = searchKey;
@@ -256,10 +270,12 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
         if (decoded is List) {
           return decoded
               .whereType<Map>()
-              .map((e) => _ExploreKindItem(
-                    '${e['title'] ?? ''}'.trim(),
-                    '${e['url'] ?? ''}'.trim(),
-                  ))
+              .map(
+                (e) => _ExploreKindItem(
+                  '${e['title'] ?? ''}'.trim(),
+                  '${e['url'] ?? ''}'.trim(),
+                ),
+              )
               .where((e) => e.title.isNotEmpty && e.url.isNotEmpty)
               .toList(growable: false);
         }
@@ -300,11 +316,16 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
   /// [message] 日志消息
   /// [state] 状态码：-1错误，0警告，1正常，10搜索源码，20详情源码，30目录源码，40正文源码，1000完成
   /// [sourceHtml] 源码内容（用于保存）
-  void _addLog(String message, {int state = 1, String? sourceHtml}) {
+  void _addLog(
+    String message, {
+    int state = 1,
+    String? sourceHtml,
+    bool splitLines = true,
+  }) {
     if (_debugCancelled && state > 0 && state != 1000) return;
 
     final stamp = _formatStamp(_debugWatch.elapsed);
-    final lines = message.split('\n');
+    final lines = splitLines ? message.split('\n') : <String>[message];
 
     // 根据state保存源码
     if (sourceHtml != null && sourceHtml.isNotEmpty) {
@@ -331,11 +352,6 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
         _debugLogs.add('[$stamp] $line');
       }
     });
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !_scrollController.hasClients) return;
-      _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
-    });
   }
 
   bool _looksLikeUrl(String value) {
@@ -356,6 +372,13 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     return trimmed;
   }
 
+  String _makeUrlBreakable(String url) {
+    return url.replaceAllMapped(
+      RegExp(r'([/?&#=])'),
+      (match) => '${match.group(1)}\u200B',
+    );
+  }
+
   Future<void> _submitDebug([String? value]) async {
     final text = (value ?? _searchController.text).trim();
     if (text.isEmpty) return;
@@ -365,10 +388,7 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     final source = _source;
     if (source == null || webBook == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('未获取到书源'),
-          duration: Duration(seconds: 2),
-        ),
+        const SnackBar(content: Text('未获取到书源'), duration: Duration(seconds: 2)),
       );
       return;
     }
@@ -386,8 +406,9 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     final query = _searchController.text.trim();
     if (query.isEmpty || query.length <= 2) {
       _searchController.text = prefix;
-      _searchController.selection =
-          TextSelection.collapsed(offset: prefix.length);
+      _searchController.selection = TextSelection.collapsed(
+        offset: prefix.length,
+      );
       await _submitDebug(prefix);
       return;
     }
@@ -416,7 +437,6 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     }
 
     try {
-      _addLog('≡当前书源: ${_source?.bookSourceName} (v${_source?.lastUpdateTime ?? '0'})');
       if (key.startsWith('++')) {
         _addLog('⇒开始访问目录页:${_extractRealUrl(key)}');
         if (_source?.ruleToc?.chapterList != null) {
@@ -443,8 +463,6 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
         }
         await _debugBookInfo(key);
       } else {
-        _addLog('⇒开始搜索关键字:$key');
-
         await _debugSearch(key);
       }
     } catch (e) {
@@ -471,7 +489,13 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     _webBook = webBook;
 
     final searchHtml = webBook.lastSearchHtml ?? '';
-    _addLog('≡获取成功', state: 10, sourceHtml: searchHtml);
+    final searchUrl = webBook.lastSearchUrl ?? '';
+    // 显示搜索链接（参考原版 legado）
+    _addLog(
+      '≡获取成功:${searchUrl.isNotEmpty ? searchUrl : ""}',
+      state: 10,
+      sourceHtml: searchHtml,
+    );
 
     _addLog('┌获取书籍列表');
     _addLog('└列表大小:${results.length}');
@@ -498,7 +522,11 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     _addLog(lastChapter.isNotEmpty ? '└$lastChapter' : '└<空>');
     _addLog('┌获取简介');
     final intro = '${item['intro'] ?? ''}'.trim();
-    _addLog(intro.isNotEmpty ? '└${intro.length > 100 ? '${intro.substring(0, 100)}...' : intro}' : '└<空>');
+    _addLog(
+      intro.isNotEmpty
+          ? '└${intro.length > 100 ? '${intro.substring(0, 100)}...' : intro}'
+          : '└<空>',
+    );
     _addLog('┌获取封面链接');
     _addLog('└${item['coverUrl'] ?? ''}');
     _addLog('┌获取详情页链接');
@@ -529,7 +557,13 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     _webBook = webBook;
 
     final exploreHtml = webBook.lastExploreHtml ?? '';
-    _addLog('≡获取成功', state: 15, sourceHtml: exploreHtml);
+    final exploreResultUrl = webBook.lastExploreUrl ?? '';
+    // 显示发现链接（参考原版 legado）
+    _addLog(
+      '≡获取成功:${exploreResultUrl.isNotEmpty ? exploreResultUrl : ""}',
+      state: 15,
+      sourceHtml: exploreHtml,
+    );
 
     _addLog('┌获取书籍列表');
     _addLog('└列表大小:${results.length}');
@@ -550,7 +584,11 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     _addLog(kind.isNotEmpty ? '└$kind' : '└<空>');
     _addLog('┌获取简介');
     final intro = '${item['intro'] ?? ''}'.trim();
-    _addLog(intro.isNotEmpty ? '└${intro.length > 100 ? '${intro.substring(0, 100)}...' : intro}' : '└<空>');
+    _addLog(
+      intro.isNotEmpty
+          ? '└${intro.length > 100 ? '${intro.substring(0, 100)}...' : intro}'
+          : '└<空>',
+    );
     _addLog('┌获取封面链接');
     _addLog('└${item['coverUrl'] ?? ''}');
     _addLog('┌获取详情页链接');
@@ -577,7 +615,7 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     if (_debugCancelled) return;
 
     final bookHtml = webBook.lastBookInfoHtml ?? '';
-    _addLog('≡获取成功', state: 20, sourceHtml: bookHtml);
+    _addLog('≡获取成功:$bookUrl', state: 20, sourceHtml: bookHtml);
 
     if (book == null) {
       _addLog('≡详情页解析失败', state: -1);
@@ -600,7 +638,11 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     _addLog(lastChapter.isNotEmpty ? '└$lastChapter' : '└<空>');
     _addLog('┌获取简介');
     final intro = book.intro.trim();
-    _addLog(intro.isNotEmpty ? '└${intro.length > 200 ? '${intro.substring(0, 200)}...' : intro}' : '└<空>');
+    _addLog(
+      intro.isNotEmpty
+          ? '└${intro.length > 200 ? '${intro.substring(0, 200)}...' : intro}'
+          : '└<空>',
+    );
     _addLog('┌获取封面链接');
     _addLog('└${book.coverUrl}');
     _addLog('┌获取目录链接');
@@ -609,8 +651,9 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     _addLog('︽详情页解析完成');
 
     final tocUrl = book.tocUrl?.trim();
-    final effectiveTocUrl =
-        (tocUrl != null && tocUrl.isNotEmpty) ? tocUrl : bookUrl;
+    final effectiveTocUrl = (tocUrl != null && tocUrl.isNotEmpty)
+        ? tocUrl
+        : bookUrl;
 
     if (tocUrl != null && tocUrl.isNotEmpty) {
       // 有目录链接，继续解析目录
@@ -626,11 +669,14 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     final realUrl = _extractRealUrl(tocUrl);
     _addLog('︾开始解析目录页');
 
-    final List<Chapter> chapters = await webBook.getChapterList(realUrl, book: book);
+    final List<Chapter> chapters = await webBook.getChapterList(
+      realUrl,
+      book: book,
+    );
     if (_debugCancelled) return;
 
     final tocHtml = webBook.lastTocHtml ?? '';
-    _addLog('≡获取成功', state: 30, sourceHtml: tocHtml);
+    _addLog('≡获取成功:$realUrl', state: 30, sourceHtml: tocHtml);
 
     _addLog('┌获取目录列表');
     _addLog('└列表大小:${chapters.length}');
@@ -648,7 +694,9 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
         .where((chapter) => !chapter.isVolume)
         .toList();
     // 如果全部是卷名，则不过滤
-    final effectiveChapters = contentChapters.isNotEmpty ? contentChapters : chapters;
+    final effectiveChapters = contentChapters.isNotEmpty
+        ? contentChapters
+        : chapters;
     if (effectiveChapters.isEmpty) {
       _addLog('≡没有正文章节', state: -1);
       return;
@@ -678,17 +726,25 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     }
   }
 
-  Future<void> _debugContent(String chapterUrl, {Book? book, Chapter? chapter}) async {
+  Future<void> _debugContent(
+    String chapterUrl, {
+    Book? book,
+    Chapter? chapter,
+  }) async {
     if (_debugCancelled) return;
     final webBook = _webBook!;
     final realUrl = _extractRealUrl(chapterUrl);
     _addLog('︾开始解析正文页');
 
-    final String? content = await webBook.getContent(realUrl, book: book, chapter: chapter);
+    final String? content = await webBook.getContent(
+      realUrl,
+      book: book,
+      chapter: chapter,
+    );
     if (_debugCancelled) return;
 
     final contentHtml = webBook.lastContentHtml ?? '';
-    _addLog('≡获取成功', state: 40, sourceHtml: contentHtml);
+    _addLog('≡获取成功:$realUrl', state: 40, sourceHtml: contentHtml);
 
     if (content == null) {
       _addLog('≡正文解析失败: 返回null', state: -1);
@@ -702,8 +758,10 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     }
 
     // Legado格式：┌获取章节名称/└结果/┌获取正文内容/└内容
+    _addLog('┌获取章节名称');
+    _addLog('└${chapter?.title ?? ""}');
     _addLog('┌获取正文内容');
-    _addLog('└\n$trimmedContent');
+    _addLog('└\n$trimmedContent', splitLines: false);
     _addLog('︽正文页解析完成');
     _addLog('≡解析完成', state: 1000);
   }
@@ -832,9 +890,9 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
       ),
       titleSpacing: 0,
       title: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 10),
+        padding: const EdgeInsets.symmetric(vertical: 8),
         child: SizedBox(
-          height: 44,
+          height: 36,
           child: TextField(
             controller: _searchController,
             focusNode: _searchFocusNode,
@@ -847,32 +905,30 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
               }
             },
             onSubmitted: _submitDebug,
-            style: theme.textTheme.bodyLarge?.copyWith(
-              color: Colors.black87,
-            ),
+            style: theme.textTheme.bodyMedium?.copyWith(color: Colors.black87),
             decoration: InputDecoration(
               hintText: '搜索书名、作者',
-              hintStyle: theme.textTheme.bodyLarge?.copyWith(
+              hintStyle: theme.textTheme.bodyMedium?.copyWith(
                 color: Colors.black38,
               ),
-              prefixIcon: const Icon(Icons.search, size: 20),
+              prefixIcon: const Icon(Icons.search, size: 18),
               suffixIcon: IconButton(
-                icon: const Icon(Icons.chevron_right_rounded),
+                icon: const Icon(Icons.chevron_right_rounded, size: 20),
                 onPressed: () => _submitDebug(),
               ),
               filled: true,
               fillColor: const Color(0xFFF1F1F1),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 12),
               border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(24),
+                borderRadius: BorderRadius.circular(18),
                 borderSide: BorderSide.none,
               ),
               enabledBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(24),
+                borderRadius: BorderRadius.circular(18),
                 borderSide: BorderSide.none,
               ),
               focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(24),
+                borderRadius: BorderRadius.circular(18),
                 borderSide: const BorderSide(color: Color(0xFFB8D5FF)),
               ),
             ),
@@ -931,17 +987,21 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     );
   }
 
-  Widget _buildExampleChip(String label, String value,
-      {bool fullWidth = false, VoidCallback? onTap}) {
+  Widget _buildExampleChip(
+    String label,
+    String value, {
+    bool fullWidth = false,
+    VoidCallback? onTap,
+  }) {
     final width = fullWidth ? double.infinity : null;
     return GestureDetector(
       onTap: onTap ?? () => _fillExample(value),
       child: Container(
         width: width,
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         decoration: BoxDecoration(
           color: const Color(0xFFD9D9D9),
-          borderRadius: BorderRadius.circular(22),
+          borderRadius: BorderRadius.circular(16),
         ),
         child: Text(
           label,
@@ -949,7 +1009,7 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
           overflow: TextOverflow.ellipsis,
           style: const TextStyle(
             color: Colors.black87,
-            fontSize: 14,
+            fontSize: 13,
             height: 1.15,
           ),
         ),
@@ -959,7 +1019,7 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
 
   Widget _buildHelpPanel() {
     const labelStyle = TextStyle(
-      fontSize: 14,
+      fontSize: 13,
       color: Colors.black54,
       height: 1.25,
     );
@@ -978,12 +1038,18 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
               _buildExampleChip(
                 _textMy,
                 _textMy,
-                onTap: () => _submitDebug(_textMy),
+                onTap: () {
+                  _searchController.text = _textMy;
+                  _submitDebug(_textMy);
+                },
               ),
               _buildExampleChip(
                 _textXt,
                 _textXt,
-                onTap: () => _submitDebug(_textXt),
+                onTap: () {
+                  _searchController.text = _textXt;
+                  _submitDebug(_textXt);
+                },
               ),
             ],
           ),
@@ -994,7 +1060,10 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
             _textFx,
             _textFx,
             fullWidth: true,
-            onTap: () => _submitDebug(_textFx),
+            onTap: () {
+              _searchController.text = _textFx;
+              _submitDebug(_textFx);
+            },
           ),
           const SizedBox(height: 14),
           const Text('调试详情页>>输入详情页URL，如：', style: labelStyle),
@@ -1003,11 +1072,12 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
             _textInfo,
             _textInfo,
             fullWidth: true,
-            onTap: () => _submitDebug(
-              _searchController.text.trim().isNotEmpty
+            onTap: () {
+              final url = _searchController.text.trim().isNotEmpty
                   ? _searchController.text.trim()
-                  : _textInfo,
-            ),
+                  : _textInfo;
+              _submitDebug(url);
+            },
           ),
           const SizedBox(height: 14),
           const Text('调试目录页>>输入目录页URL，如：', style: labelStyle),
@@ -1082,60 +1152,63 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     for (final urlMatch in urlPattern.allMatches(body)) {
       // 添加URL前的文本
       if (urlMatch.start > lastEnd) {
-        spans.add(TextSpan(
-          text: body.substring(lastEnd, urlMatch.start),
-          style: TextStyle(color: bodyColor, fontWeight: bodyWeight),
-        ));
+        spans.add(
+          TextSpan(
+            text: body.substring(lastEnd, urlMatch.start),
+            style: TextStyle(color: bodyColor, fontWeight: bodyWeight),
+          ),
+        );
       }
       // 添加可点击的URL
-      spans.add(TextSpan(
-        text: urlMatch.group(0),
-        style: const TextStyle(
-          color: Color(0xFF1565C0),
-          fontWeight: FontWeight.w500,
-          decoration: TextDecoration.underline,
+      final url = urlMatch.group(0)!;
+      spans.add(
+        TextSpan(
+          text: _makeUrlBreakable(url),
+          style: const TextStyle(
+            color: Color(0xFF1565C0),
+            fontWeight: FontWeight.w500,
+            decoration: TextDecoration.underline,
+          ),
+          recognizer: TapGestureRecognizer()..onTap = () => _onUrlTap(url),
         ),
-        recognizer: TapGestureRecognizer()
-          ..onTap = () => _onUrlTap(urlMatch.group(0)!),
-      ));
+      );
       lastEnd = urlMatch.end;
     }
     // 添加剩余文本
     if (lastEnd < body.length) {
-      spans.add(TextSpan(
-        text: body.substring(lastEnd),
-        style: TextStyle(color: bodyColor, fontWeight: bodyWeight),
-      ));
+      spans.add(
+        TextSpan(
+          text: body.substring(lastEnd),
+          style: TextStyle(color: bodyColor, fontWeight: bodyWeight),
+        ),
+      );
     }
 
     return GestureDetector(
       onTap: () => _showDebugLogDetail(line, body),
       child: Padding(
-      padding: const EdgeInsets.only(bottom: 4),
-      child: SelectableText.rich(
-        TextSpan(
-          style: const TextStyle(
-            fontSize: 14,
-            height: 1.35,
-            color: Color(0xFF555555),
-          ),
-          children: [
-            TextSpan(
-              text: '[$stamp] ',
-              style: const TextStyle(
-                color: Color(0xFF8F8F8F),
-                fontSize: 13,
-              ),
+        padding: const EdgeInsets.only(bottom: 4),
+        child: SelectableText.rich(
+          TextSpan(
+            style: const TextStyle(
+              fontSize: 14,
+              height: 1.35,
+              color: Color(0xFF555555),
             ),
-            ...spans,
-          ],
+            children: [
+              TextSpan(
+                text: '[$stamp] ',
+                style: const TextStyle(color: Color(0xFF8F8F8F), fontSize: 13),
+              ),
+              ...spans,
+            ],
+          ),
+          contextMenuBuilder: (context, editableTextState) {
+            return AdaptiveTextSelectionToolbar.editableText(
+              editableTextState: editableTextState,
+            );
+          },
         ),
-        contextMenuBuilder: (context, editableTextState) {
-          return AdaptiveTextSelectionToolbar.editableText(
-            editableTextState: editableTextState,
-          );
-        },
-      ),
       ),
     );
   }
@@ -1191,7 +1264,8 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
       // 写入应用临时目录（无需任何权限）
       final dir = await getTemporaryDirectory();
       final now = DateTime.now();
-      final fileName = 'APP_${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}.txt';
+      final fileName =
+          'APP_${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}.txt';
       final file = File('${dir.path}/$fileName');
       await file.writeAsString(text);
 
@@ -1212,9 +1286,9 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     } catch (e) {
       _addLog('≡导出日志失败: $e', state: -1);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('导出失败: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('导出失败: $e')));
       }
     }
   }
@@ -1370,21 +1444,30 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
                 _buildFilterChip('全部', _logFilterLevel == LogLevel.verbose, () {
                   setState(() => _logFilterLevel = LogLevel.verbose);
                 }),
-                _buildFilterChip('Debug', _logFilterLevel == LogLevel.debug,
-                    () {
-                  setState(() => _logFilterLevel = LogLevel.debug);
-                }),
+                _buildFilterChip(
+                  'Debug',
+                  _logFilterLevel == LogLevel.debug,
+                  () {
+                    setState(() => _logFilterLevel = LogLevel.debug);
+                  },
+                ),
                 _buildFilterChip('Info', _logFilterLevel == LogLevel.info, () {
                   setState(() => _logFilterLevel = LogLevel.info);
                 }),
-                _buildFilterChip('Warn', _logFilterLevel == LogLevel.warning,
-                    () {
-                  setState(() => _logFilterLevel = LogLevel.warning);
-                }),
-                _buildFilterChip('Error', _logFilterLevel == LogLevel.error,
-                    () {
-                  setState(() => _logFilterLevel = LogLevel.error);
-                }),
+                _buildFilterChip(
+                  'Warn',
+                  _logFilterLevel == LogLevel.warning,
+                  () {
+                    setState(() => _logFilterLevel = LogLevel.warning);
+                  },
+                ),
+                _buildFilterChip(
+                  'Error',
+                  _logFilterLevel == LogLevel.error,
+                  () {
+                    setState(() => _logFilterLevel = LogLevel.error);
+                  },
+                ),
                 const SizedBox(width: 8),
                 // 分类过滤
                 _buildFilterChip('全部类别', _logFilterCategory == null, () {
@@ -1404,8 +1487,10 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
           color: const Color(0xFFFAFAFA),
           child: Row(
             children: [
-              Text('共 ${filteredLogs.length} 条日志',
-                  style: const TextStyle(fontSize: 12, color: Colors.grey)),
+              Text(
+                '共 ${filteredLogs.length} 条日志',
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
+              ),
               const Spacer(),
               IconButton(
                 icon: const Icon(Icons.file_download_outlined, size: 18),
@@ -1431,8 +1516,10 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
                 )
               : ListView.builder(
                   controller: _logScrollController,
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 8,
+                  ),
                   itemCount: filteredLogs.length,
                   itemBuilder: (context, index) {
                     final entry = filteredLogs[index];
@@ -1487,64 +1574,72 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
     return GestureDetector(
       onTap: () => _showLogDetailDialog(entry),
       child: Container(
-      margin: const EdgeInsets.only(bottom: 2),
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: bgColor,
-        borderRadius: BorderRadius.circular(4),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Text(entry.levelIcon, style: const TextStyle(fontSize: 12)),
-              const SizedBox(width: 4),
-              Text(
-                '${entry.time.hour.toString().padLeft(2, '0')}:${entry.time.minute.toString().padLeft(2, '0')}:${entry.time.second.toString().padLeft(2, '0')}',
-                style: const TextStyle(
-                    fontSize: 10, color: Colors.grey, fontFamily: 'monospace'),
-              ),
-              const SizedBox(width: 6),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFE0E0E0),
-                  borderRadius: BorderRadius.circular(3),
+        margin: const EdgeInsets.only(bottom: 2),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: bgColor,
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Text(entry.levelIcon, style: const TextStyle(fontSize: 12)),
+                const SizedBox(width: 4),
+                Text(
+                  '${entry.time.hour.toString().padLeft(2, '0')}:${entry.time.minute.toString().padLeft(2, '0')}:${entry.time.second.toString().padLeft(2, '0')}',
+                  style: const TextStyle(
+                    fontSize: 10,
+                    color: Colors.grey,
+                    fontFamily: 'monospace',
+                  ),
                 ),
-                child: Text(
-                  entry.category.label,
-                  style: const TextStyle(fontSize: 9, color: Colors.black54),
+                const SizedBox(width: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 4,
+                    vertical: 1,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE0E0E0),
+                    borderRadius: BorderRadius.circular(3),
+                  ),
+                  child: Text(
+                    entry.category.label,
+                    style: const TextStyle(fontSize: 9, color: Colors.black54),
+                  ),
                 ),
-              ),
-              const SizedBox(width: 6),
-              Expanded(
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    entry.message,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: Color(0xFF333333),
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+            if (entry.detail != null && entry.detail!.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(left: 24, top: 2),
                 child: Text(
-                  entry.message,
-                  style:
-                      const TextStyle(fontSize: 12, color: Color(0xFF333333)),
-                  maxLines: 1,
+                  entry.detail!,
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: Color(0xFF666666),
+                    fontFamily: 'monospace',
+                  ),
+                  maxLines: 3,
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
-            ],
-          ),
-          if (entry.detail != null && entry.detail!.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(left: 24, top: 2),
-              child: Text(
-                entry.detail!,
-                style: const TextStyle(
-                  fontSize: 11,
-                  color: Color(0xFF666666),
-                  fontFamily: 'monospace',
-                ),
-                maxLines: 3,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-        ],
-      ),
+          ],
+        ),
       ),
     );
   }
@@ -1570,18 +1665,29 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage> {
               Text('级别: ${entry.level.name}'),
               const SizedBox(height: 8),
               const Text('消息:', style: TextStyle(fontWeight: FontWeight.bold)),
-              SelectableText(entry.message, style: const TextStyle(fontFamily: 'monospace')),
+              SelectableText(
+                entry.message,
+                style: const TextStyle(fontFamily: 'monospace'),
+              ),
               if (entry.detail != null && entry.detail!.isNotEmpty) ...[
                 const SizedBox(height: 8),
-                const Text('详情:', style: TextStyle(fontWeight: FontWeight.bold)),
-                SelectableText(entry.detail!, style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
+                const Text(
+                  '详情:',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                SelectableText(
+                  entry.detail!,
+                  style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                ),
               ],
             ],
           ),
         ),
         actions: [
           TextButton(
-            onPressed: () => Clipboard.setData(ClipboardData(text: '${entry.message}\n${entry.detail ?? ''}')),
+            onPressed: () => Clipboard.setData(
+              ClipboardData(text: '${entry.message}\n${entry.detail ?? ''}'),
+            ),
             child: const Text('复制'),
           ),
           TextButton(

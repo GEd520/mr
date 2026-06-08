@@ -272,7 +272,9 @@ class WebBook {
 
   // 缓存最近的响应源码
   String? lastSearchHtml;
+  String? lastSearchUrl;  // 搜索链接
   String? lastExploreHtml;
+  String? lastExploreUrl;  // 发现链接
   String? lastBookInfoHtml;
   String? lastTocHtml;
   String? lastContentHtml;
@@ -704,6 +706,7 @@ class WebBook {
       final html = response.body;
 
       lastSearchHtml = html;
+      lastSearchUrl = parsed.url;  // 保存搜索链接
 
       AppLogger.instance
           .info(LogCategory.network, '搜索响应: ${html.length} chars');
@@ -907,6 +910,7 @@ class WebBook {
       final html = response.body;
 
       lastExploreHtml = html;
+      lastExploreUrl = parsed.url;  // 保存发现链接
 
       AppLogger.instance.info(LogCategory.network,
           '发现响应: ${html.length} chars, 状态码: ${response.statusCode}');
