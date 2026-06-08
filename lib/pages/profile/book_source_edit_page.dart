@@ -355,6 +355,7 @@ class _BookSourceEditPageState extends State<BookSourceEditPage>
               setState(() {
                 _source = newSource;
                 _initEntities();
+                _updateAllControllers();
                 _hasChanges = true;
               });
               return true;
@@ -402,6 +403,7 @@ class _BookSourceEditPageState extends State<BookSourceEditPage>
                 setState(() {
                   _source = newSource;
                   _initEntities();
+                  _updateAllControllers();
                   _hasChanges = true;
                 });
                 Navigator.pop(context);
@@ -436,6 +438,7 @@ class _BookSourceEditPageState extends State<BookSourceEditPage>
         setState(() {
           _source = newSource;
           _initEntities();
+          _updateAllControllers();
           _hasChanges = true;
         });
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1029,6 +1032,52 @@ class _BookSourceEditPageState extends State<BookSourceEditPage>
       _controllers[key] = TextEditingController(text: initialValue);
     }
     return _controllers[key]!;
+  }
+
+  /// 更新所有 controller 的值（用于粘贴源等场景）
+  void _updateAllControllers() {
+    // 基本信息
+    for (final entity in _baseEntities) {
+      final key = 'base_${entity.key}';
+      if (_controllers.containsKey(key)) {
+        _controllers[key]!.text = entity.value;
+      }
+    }
+    // 搜索规则
+    for (final entity in _searchEntities) {
+      final key = 'search_${entity.key}';
+      if (_controllers.containsKey(key)) {
+        _controllers[key]!.text = entity.value;
+      }
+    }
+    // 发现规则
+    for (final entity in _exploreEntities) {
+      final key = 'explore_${entity.key}';
+      if (_controllers.containsKey(key)) {
+        _controllers[key]!.text = entity.value;
+      }
+    }
+    // 详情规则
+    for (final entity in _infoEntities) {
+      final key = 'info_${entity.key}';
+      if (_controllers.containsKey(key)) {
+        _controllers[key]!.text = entity.value;
+      }
+    }
+    // 目录规则
+    for (final entity in _tocEntities) {
+      final key = 'toc_${entity.key}';
+      if (_controllers.containsKey(key)) {
+        _controllers[key]!.text = entity.value;
+      }
+    }
+    // 正文规则
+    for (final entity in _contentEntities) {
+      final key = 'content_${entity.key}';
+      if (_controllers.containsKey(key)) {
+        _controllers[key]!.text = entity.value;
+      }
+    }
   }
 
   void _showHelp() {
