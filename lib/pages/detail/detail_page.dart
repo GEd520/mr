@@ -1049,24 +1049,82 @@ class _DetailPageState extends State<DetailPage> {
   }
 
   Widget _buildChapterItem(Chapter chapter) {
-    return ListTile(
-      dense: true,
-      leading: chapter.isVip
-          ? Icon(Icons.lock,
-              size: 16, color: Theme.of(context).colorScheme.primary)
-          : null,
-      title: Text(
-        chapter.title,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: const TextStyle(fontSize: 14),
-      ),
-      trailing: chapter.isCached
-          ? Icon(Icons.download_done,
-              size: 16, color: Theme.of(context).colorScheme.primary)
-          : null,
+    final fg = Theme.of(context).colorScheme.onSurface;
+    final isOnline = _book!.originType == BookOriginType.online;
+    final isSelected = chapter.index == _book!.durChapterIndex;
+    final isCached = chapter.isCached || !isOnline;
+    final hasTag = chapter.tag != null && chapter.tag!.isNotEmpty;
+    final hasWordCount = chapter.wordCount != null && chapter.wordCount! > 0;
+    final showSubtitle = hasTag || hasWordCount;
+
+    return InkWell(
       onTap: () => _openChapter(chapter),
       onLongPress: () => _openFullChapterList(),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        child: Row(
+          children: [
+            // VIP锁定图标
+            if (chapter.isVip && !chapter.isPay)
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: Icon(Icons.lock_outline, size: 18, color: fg.withValues(alpha: 0.6)),
+              ),
+            // 章节信息
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // 章节名称
+                  Text(
+                    chapter.title,
+                    style: TextStyle(
+                      color: isSelected ? fg : fg.withValues(alpha: 0.85),
+                      fontWeight: isSelected ? FontWeight.bold : null,
+                      fontSize: 15,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  // 副标题（tag、字数）
+                  if (showSubtitle)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Row(
+                        children: [
+                          if (hasTag)
+                            Text(
+                              chapter.tag!,
+                              style: TextStyle(
+                                color: fg.withValues(alpha: 0.5),
+                                fontSize: 12,
+                              ),
+                            ),
+                          if (hasTag && hasWordCount)
+                            const SizedBox(width: 8),
+                          if (hasWordCount)
+                            Text(
+                              '${(chapter.wordCount! / 10000).toStringAsFixed(1)}万',
+                              style: TextStyle(
+                                color: fg.withValues(alpha: 0.5),
+                                fontSize: 12,
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            // 右侧图标
+            if (isSelected)
+              Icon(Icons.check, size: 18, color: fg)
+            else if (!isCached)
+              Icon(Icons.cloud_outlined, size: 18, color: fg.withValues(alpha: 0.4)),
+          ],
+        ),
+      ),
     );
   }
 

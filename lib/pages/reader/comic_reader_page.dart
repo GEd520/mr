@@ -2968,9 +2968,24 @@ class _ChapterListPanelState extends State<_ChapterListPanel> {
               ? Row(
                   children: [
                     Expanded(
-                      child: _SearchInput(
-                        foregroundColor: fg,
-                        onSearch: (query) => setState(() => _searchQuery = query),
+                      child: TextField(
+                        autofocus: true,
+                        style: TextStyle(color: fg),
+                        decoration: InputDecoration(
+                          hintText: '搜索...',
+                          hintStyle: TextStyle(color: fg.withValues(alpha: 0.5)),
+                          isDense: true,
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8),
+                            borderSide: BorderSide(color: fg.withValues(alpha: 0.3)),
+                          ),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8),
+                            borderSide: BorderSide(color: fg.withValues(alpha: 0.3)),
+                          ),
+                        ),
+                        onChanged: (query) => setState(() => _searchQuery = query),
                       ),
                     ),
                     IconButton(
@@ -2984,17 +2999,21 @@ class _ChapterListPanelState extends State<_ChapterListPanel> {
                 )
               : Row(
                   children: [
-                    _buildTab(0, '目录 (${widget.chapters.length})', fg),
-                    const SizedBox(width: 16),
-                    _buildTab(1, '书签 (${_bookmarks.length})', fg),
+                    _buildTab(0, '目录', fg),
+                    const SizedBox(width: 24),
+                    _buildTab(1, '书签', fg),
                     const Spacer(),
                     IconButton(
-                      icon: Icon(Icons.search, color: fg),
+                      icon: Icon(Icons.search, color: fg, size: 22),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
                       onPressed: () => setState(() => _showSearch = true),
                     ),
                     PopupMenuButton<String>(
-                      icon: Icon(Icons.more_vert, color: fg),
+                      icon: Icon(Icons.more_vert, color: fg, size: 22),
                       tooltip: '更多',
+                      offset: const Offset(0, 48),
+                      padding: EdgeInsets.zero,
                       onSelected: _handleMenuAction,
                       itemBuilder: _currentTab == 0
                           ? (context) => [
@@ -3012,7 +3031,6 @@ class _ChapterListPanelState extends State<_ChapterListPanel> {
                                   value: 'export_md',
                                   child: Text('导出(MD)'),
                                 ),
-                                const PopupMenuDivider(),
                                 _menuItem('bm_search_chapter', '搜索章节名', _searchChapterName, fg),
                                 _menuItem('bm_search_text', '搜索书文', _searchBookText, fg),
                                 _menuItem('bm_search_note', '搜索备注', _searchContent, fg),
@@ -3021,12 +3039,15 @@ class _ChapterListPanelState extends State<_ChapterListPanel> {
                   ],
                 ),
         ),
-        Divider(height: 1, color: fg.withValues(alpha: 0.12)),
         SizedBox(
           height: MediaQuery.of(context).size.height * 0.5,
-          child: _currentTab == 0
-              ? _buildChapterList(fg, isOnline)
-              : _buildBookmarkList(fg),
+          child: PageView(
+            onPageChanged: (index) => setState(() => _currentTab = index),
+            children: [
+              _buildChapterList(fg, isOnline),
+              _buildBookmarkList(fg),
+            ],
+          ),
         ),
       ],
     );
@@ -3077,16 +3098,19 @@ class _ChapterListPanelState extends State<_ChapterListPanel> {
             text,
             style: TextStyle(
               color: selected ? fg : fg.withValues(alpha: 0.5),
-              fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+              fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+              fontSize: 20,
             ),
           ),
-          if (selected)
-            Container(
-              margin: const EdgeInsets.only(top: 4),
-              width: 24,
-              height: 2,
-              color: fg,
+          const SizedBox(height: 4),
+          Container(
+            width: 28,
+            height: 3,
+            decoration: BoxDecoration(
+              color: selected ? Theme.of(context).colorScheme.primary : Colors.transparent,
+              borderRadius: BorderRadius.circular(2),
             ),
+          ),
         ],
       ),
     );
@@ -3094,110 +3118,112 @@ class _ChapterListPanelState extends State<_ChapterListPanel> {
 
   Widget _buildChapterList(Color fg, bool isOnline) {
     final display = _buildDisplayChapters(_filteredChapters);
-    return ListView.builder(
-      itemCount: display.length,
-      itemBuilder: (context, index) {
-        final chapter = display[index];
-        if (chapter.isVolume) {
-          final isExpanded = _expandedVolumes.contains(chapter.index);
+    return Scrollbar(
+      child: ListView.builder(
+        itemCount: display.length,
+        itemBuilder: (context, index) {
+          final chapter = display[index];
+          if (chapter.isVolume) {
+            final isExpanded = _expandedVolumes.contains(chapter.index);
+            return InkWell(
+              onTap: () => setState(() {
+                if (isExpanded) {
+                  _expandedVolumes.remove(chapter.index);
+                } else {
+                  _expandedVolumes.add(chapter.index);
+                }
+              }),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                color: fg.withValues(alpha: 0.06),
+                child: Row(
+                  children: [
+                    Icon(isExpanded ? Icons.keyboard_arrow_down : Icons.chevron_right,
+                        color: fg, size: 20),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(chapter.title,
+                          style: TextStyle(color: fg, fontWeight: FontWeight.bold),
+                          maxLines: 1, overflow: TextOverflow.ellipsis),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }
+
+          final isSelected = chapter.index == widget.currentChapterIndex;
+          final fileName = ChapterCacheService.instance.getChapterFileName(chapter, suffix: 'cb');
+          final isCached = !isOnline || _cachedFiles.contains(fileName);
+          final hasTag = chapter.tag != null && chapter.tag!.isNotEmpty;
+          final hasWordCount = _showWordCount && chapter.wordCount != null && chapter.wordCount! > 0;
+          final showSubtitle = hasTag || hasWordCount;
+
           return InkWell(
-            onTap: () => setState(() {
-              if (isExpanded) {
-                _expandedVolumes.remove(chapter.index);
-              } else {
-                _expandedVolumes.add(chapter.index);
-              }
-            }),
-            child: Container(
+            onTap: () => widget.onChapterSelected(chapter.index),
+            child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              color: fg.withValues(alpha: 0.06),
               child: Row(
                 children: [
-                  Icon(isExpanded ? Icons.keyboard_arrow_down : Icons.chevron_right,
-                      color: fg, size: 20),
-                  const SizedBox(width: 4),
+                  if (chapter.isVip && !chapter.isPay)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: Icon(Icons.lock_outline, size: 18, color: fg.withValues(alpha: 0.6)),
+                    ),
                   Expanded(
-                    child: Text(chapter.title,
-                        style: TextStyle(color: fg, fontWeight: FontWeight.bold),
-                        maxLines: 1, overflow: TextOverflow.ellipsis),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          chapter.title,
+                          style: TextStyle(
+                            color: isSelected ? fg : fg.withValues(alpha: 0.85),
+                            fontWeight: isSelected ? FontWeight.bold : null,
+                            fontSize: 15,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        if (showSubtitle)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 2),
+                            child: Row(
+                              children: [
+                                if (hasTag)
+                                  Text(
+                                    chapter.tag!,
+                                    style: TextStyle(
+                                      color: fg.withValues(alpha: 0.5),
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                if (hasTag && hasWordCount)
+                                  const SizedBox(width: 8),
+                                if (hasWordCount)
+                                  Text(
+                                    '${(chapter.wordCount! / 10000).toStringAsFixed(1)}万',
+                                    style: TextStyle(
+                                      color: fg.withValues(alpha: 0.5),
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                      ],
+                    ),
                   ),
+                  const SizedBox(width: 8),
+                  if (isSelected)
+                    Icon(Icons.check, size: 18, color: fg)
+                  else if (!isCached)
+                    Icon(Icons.cloud_outlined, size: 18, color: fg.withValues(alpha: 0.4)),
                 ],
               ),
             ),
           );
-        }
-
-        final isSelected = chapter.index == widget.currentChapterIndex;
-        final fileName = ChapterCacheService.instance.getChapterFileName(chapter, suffix: 'cb');
-        final isCached = !isOnline || _cachedFiles.contains(fileName);
-        final hasTag = chapter.tag != null && chapter.tag!.isNotEmpty;
-        final hasWordCount = _showWordCount && chapter.wordCount != null && chapter.wordCount! > 0;
-        final showSubtitle = hasTag || hasWordCount;
-
-        return InkWell(
-          onTap: () => widget.onChapterSelected(chapter.index),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-            child: Row(
-              children: [
-                if (chapter.isVip && !chapter.isPay)
-                  Padding(
-                    padding: const EdgeInsets.only(right: 8),
-                    child: Icon(Icons.lock_outline, size: 18, color: fg.withValues(alpha: 0.6)),
-                  ),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        chapter.title,
-                        style: TextStyle(
-                          color: isSelected ? fg : fg.withValues(alpha: 0.85),
-                          fontWeight: isSelected ? FontWeight.bold : null,
-                          fontSize: 15,
-                        ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      if (showSubtitle)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 2),
-                          child: Row(
-                            children: [
-                              if (hasTag)
-                                Text(
-                                  chapter.tag!,
-                                  style: TextStyle(
-                                    color: fg.withValues(alpha: 0.5),
-                                    fontSize: 12,
-                                  ),
-                                ),
-                              if (hasTag && hasWordCount)
-                                const SizedBox(width: 8),
-                              if (hasWordCount)
-                                Text(
-                                  '${(chapter.wordCount! / 10000).toStringAsFixed(1)}万',
-                                  style: TextStyle(
-                                    color: fg.withValues(alpha: 0.5),
-                                    fontSize: 12,
-                                  ),
-                                ),
-                            ],
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 8),
-                if (isSelected)
-                  Icon(Icons.check, size: 18, color: fg)
-                else if (!isCached)
-                  Icon(Icons.cloud_outlined, size: 18, color: fg.withValues(alpha: 0.4)),
-              ],
-            ),
-          ),
-        );
-      },
+        },
+      ),
     );
   }
 
@@ -3209,29 +3235,31 @@ class _ChapterListPanelState extends State<_ChapterListPanel> {
     if (list.isEmpty) {
       return Center(child: Text('没有匹配的书签', style: TextStyle(color: fg.withValues(alpha: 0.5))));
     }
-    return ListView.builder(
-      itemCount: list.length,
-      itemBuilder: (context, index) {
-        final bookmark = list[index];
-        return ListTile(
-          title: Text(bookmark.chapterTitle, style: TextStyle(color: fg)),
-          subtitle: Text(
-            bookmark.note?.isNotEmpty == true ? bookmark.note! : bookmark.content,
-            style: TextStyle(color: fg.withValues(alpha: 0.6)),
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-          ),
-          trailing: Text(
-            _formatTime(bookmark.createdAt),
-            style: TextStyle(color: fg.withValues(alpha: 0.5), fontSize: 12),
-          ),
-          onTap: () {
-            Navigator.pop(context);
-            widget.onChapterSelected(bookmark.chapterIndex);
-          },
-          onLongPress: () => _deleteBookmark(bookmark),
-        );
-      },
+    return Scrollbar(
+      child: ListView.builder(
+        itemCount: list.length,
+        itemBuilder: (context, index) {
+          final bookmark = list[index];
+          return ListTile(
+            title: Text(bookmark.chapterTitle, style: TextStyle(color: fg)),
+            subtitle: Text(
+              bookmark.note?.isNotEmpty == true ? bookmark.note! : bookmark.content,
+              style: TextStyle(color: fg.withValues(alpha: 0.6)),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+            trailing: Text(
+              _formatTime(bookmark.createdAt),
+              style: TextStyle(color: fg.withValues(alpha: 0.5), fontSize: 12),
+            ),
+            onTap: () {
+              Navigator.pop(context);
+              widget.onChapterSelected(bookmark.chapterIndex);
+            },
+            onLongPress: () => _deleteBookmark(bookmark),
+          );
+        },
+      ),
     );
   }
 
@@ -3334,57 +3362,5 @@ class _ChapterListPanelState extends State<_ChapterListPanel> {
 
   String _formatTime(DateTime time) {
     return '${time.month}/${time.day} ${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
-  }
-}
-
-class _SearchInput extends StatefulWidget {
-  final Color foregroundColor;
-  final ValueChanged<String> onSearch;
-
-  const _SearchInput({
-    required this.foregroundColor,
-    required this.onSearch,
-  });
-
-  @override
-  State<_SearchInput> createState() => _SearchInputState();
-}
-
-class _SearchInputState extends State<_SearchInput> {
-  final TextEditingController _controller = TextEditingController();
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final fg = widget.foregroundColor;
-    return Container(
-      decoration: BoxDecoration(
-        border: Border.all(
-          color: fg.withValues(alpha: 0.3),
-          width: 1,
-        ),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: TextField(
-        controller: _controller,
-        style: TextStyle(color: fg),
-        decoration: InputDecoration(
-          hintText: '搜索...',
-          hintStyle: TextStyle(color: fg.withValues(alpha: 0.5)),
-          border: InputBorder.none,
-          contentPadding: const EdgeInsets.symmetric(
-            horizontal: 12,
-            vertical: 10,
-          ),
-          isDense: true,
-        ),
-        onChanged: widget.onSearch,
-      ),
-    );
   }
 }
