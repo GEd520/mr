@@ -2865,7 +2865,6 @@ class _ChapterListPanel extends StatefulWidget {
 class _ChapterListPanelState extends State<_ChapterListPanel> {
   int _currentTab = 0;
   bool _showSearch = false;
-  final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
   Set<String> _cachedFiles = {};
   List<Bookmark> _bookmarks = [];
@@ -2877,6 +2876,7 @@ class _ChapterListPanelState extends State<_ChapterListPanel> {
   bool _searchBookText = true;
   bool _searchContent = true;
   final Set<int> _expandedVolumes = {};
+  final ScrollController _scrollController = ScrollController();
 
   @override
   void initState() {
@@ -2884,12 +2884,33 @@ class _ChapterListPanelState extends State<_ChapterListPanel> {
     _loadCacheInfo();
     _loadBookmarks();
     _loadPrefs();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollToCurrentChapter();
+    });
   }
 
   @override
   void dispose() {
-    _searchController.dispose();
+    _scrollController.dispose();
     super.dispose();
+  }
+
+  void _scrollToCurrentChapter() {
+    if (!_scrollController.hasClients) return;
+    if (widget.currentChapterIndex <= 0) return;
+
+    // 找到当前章节在列表中的位置
+    final display = _buildDisplayChapters(_filteredChapters);
+    final targetIndex = display.indexWhere((ch) => ch.index == widget.currentChapterIndex);
+    if (targetIndex < 0) return;
+
+    // 估算位置 - 每个item大约48高度
+    final estimatedOffset = targetIndex * 48.0;
+    _scrollController.animateTo(
+      estimatedOffset.clamp(0.0, _scrollController.position.maxScrollExtent),
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeOut,
+    );
   }
 
   Future<void> _loadPrefs() async {
@@ -2971,71 +2992,90 @@ class _ChapterListPanelState extends State<_ChapterListPanel> {
       children: [
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Row(
-            children: [
-              _buildTab(0, '目录 (${widget.chapters.length})', fg),
-              const SizedBox(width: 16),
-              _buildTab(1, '书签 (${_bookmarks.length})', fg),
-              const Spacer(),
-              IconButton(
-                icon: Icon(_showSearch ? Icons.close : Icons.search, color: fg),
-                onPressed: () => setState(() {
-                  _showSearch = !_showSearch;
-                  if (!_showSearch) {
-                    _searchController.clear();
-                    _searchQuery = '';
-                  }
-                }),
-              ),
-              PopupMenuButton<String>(
-                icon: Icon(Icons.more_vert, color: fg),
-                tooltip: '更多',
-                onSelected: _handleMenuAction,
-                itemBuilder: _currentTab == 0
-                    ? (context) => [
-                          _menuItem('reverse', '反转目录', _isReversed, fg),
-                          _menuItem('use_replace', '使用替换', _useReplace, fg),
-                          _menuItem('word_count', '加载字数', _showWordCount, fg),
-                          _menuItem('fold_volume', '卷名折叠', _foldVolume, fg),
-                        ]
-                    : (context) => [
-                          const PopupMenuItem(
-                            value: 'export',
-                            child: Text('导出'),
+          child: _showSearch
+              ? Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        autofocus: true,
+                        style: TextStyle(color: fg),
+                        decoration: InputDecoration(
+                          hintText: '搜索...',
+                          hintStyle: TextStyle(color: fg.withValues(alpha: 0.5)),
+                          isDense: true,
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8),
+                            borderSide: BorderSide(color: fg.withValues(alpha: 0.3)),
                           ),
-                          const PopupMenuItem(
-                            value: 'export_md',
-                            child: Text('导出(MD)'),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8),
+                            borderSide: BorderSide(color: fg.withValues(alpha: 0.3)),
                           ),
-                          const PopupMenuDivider(),
-                          _menuItem('bm_search_chapter', '搜索章节名', _searchChapterName, fg),
-                          _menuItem('bm_search_text', '搜索书文', _searchBookText, fg),
-                          _menuItem('bm_search_note', '搜索备注', _searchContent, fg),
-                        ],
-              ),
-            ],
-          ),
+                        ),
+                        onChanged: (query) => setState(() => _searchQuery = query),
+                      ),
+                    ),
+                    IconButton(
+                      icon: Icon(Icons.close, color: fg),
+                      onPressed: () => setState(() {
+                        _showSearch = false;
+                        _searchQuery = '';
+                      }),
+                    ),
+                  ],
+                )
+              : Row(
+                  children: [
+                    _buildTab(0, '目录', fg),
+                    const SizedBox(width: 24),
+                    _buildTab(1, '书签', fg),
+                    const Spacer(),
+                    IconButton(
+                      icon: Icon(Icons.search, color: fg, size: 22),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
+                      onPressed: () => setState(() => _showSearch = true),
+                    ),
+                    PopupMenuButton<String>(
+                      icon: Icon(Icons.more_vert, color: fg, size: 22),
+                      tooltip: '更多',
+                      offset: const Offset(0, 48),
+                      padding: EdgeInsets.zero,
+                      onSelected: _handleMenuAction,
+                      itemBuilder: _currentTab == 0
+                          ? (context) => [
+                                _menuItem('reverse', '反转目录', _isReversed, fg),
+                                _menuItem('use_replace', '使用替换', _useReplace, fg),
+                                _menuItem('word_count', '加载字数', _showWordCount, fg),
+                                _menuItem('fold_volume', '卷名折叠', _foldVolume, fg),
+                              ]
+                          : (context) => [
+                                const PopupMenuItem(
+                                  value: 'export',
+                                  child: Text('导出'),
+                                ),
+                                const PopupMenuItem(
+                                  value: 'export_md',
+                                  child: Text('导出(MD)'),
+                                ),
+                                _menuItem('bm_search_chapter', '搜索章节名', _searchChapterName, fg),
+                                _menuItem('bm_search_text', '搜索书文', _searchBookText, fg),
+                                _menuItem('bm_search_note', '搜索备注', _searchContent, fg),
+                              ],
+                    ),
+                  ],
+                ),
         ),
-        if (_showSearch)
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: TextField(
-              controller: _searchController,
-              style: TextStyle(color: fg),
-              decoration: InputDecoration(
-                hintText: '搜索...',
-                hintStyle: TextStyle(color: fg.withValues(alpha: 0.5)),
-                border: InputBorder.none,
-              ),
-              onChanged: (v) => setState(() => _searchQuery = v),
-            ),
-          ),
-        Divider(height: 1, color: fg.withValues(alpha: 0.12)),
         SizedBox(
           height: MediaQuery.of(context).size.height * 0.5,
-          child: _currentTab == 0
-              ? _buildChapterList(fg, isOnline)
-              : _buildBookmarkList(fg),
+          child: PageView(
+            onPageChanged: (index) => setState(() => _currentTab = index),
+            children: [
+              _buildChapterList(fg, isOnline),
+              _buildBookmarkList(fg),
+            ],
+          ),
         ),
       ],
     );
@@ -3047,7 +3087,29 @@ class _ChapterListPanelState extends State<_ChapterListPanel> {
       child: Row(
         children: [
           Expanded(child: Text(label)),
-          if (checked) Icon(Icons.check, size: 20, color: fg),
+          Container(
+            width: 18,
+            height: 18,
+            decoration: BoxDecoration(
+              border: Border.all(
+                color: checked
+                    ? Theme.of(context).colorScheme.primary
+                    : fg.withValues(alpha: 0.5),
+                width: 1.5,
+              ),
+              borderRadius: BorderRadius.circular(3),
+              color: checked
+                  ? Theme.of(context).colorScheme.primary
+                  : Colors.transparent,
+            ),
+            child: checked
+                ? Icon(
+                    Icons.check,
+                    size: 14,
+                    color: Theme.of(context).colorScheme.onPrimary,
+                  )
+                : null,
+          ),
         ],
       ),
     );
@@ -3064,16 +3126,19 @@ class _ChapterListPanelState extends State<_ChapterListPanel> {
             text,
             style: TextStyle(
               color: selected ? fg : fg.withValues(alpha: 0.5),
-              fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+              fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+              fontSize: 20,
             ),
           ),
-          if (selected)
-            Container(
-              margin: const EdgeInsets.only(top: 4),
-              width: 24,
-              height: 2,
-              color: fg,
+          const SizedBox(height: 4),
+          Container(
+            width: 28,
+            height: 3,
+            decoration: BoxDecoration(
+              color: selected ? Theme.of(context).colorScheme.primary : Colors.transparent,
+              borderRadius: BorderRadius.circular(2),
             ),
+          ),
         ],
       ),
     );
@@ -3081,83 +3146,115 @@ class _ChapterListPanelState extends State<_ChapterListPanel> {
 
   Widget _buildChapterList(Color fg, bool isOnline) {
     final display = _buildDisplayChapters(_filteredChapters);
-    return ListView.builder(
-      itemCount: display.length,
-      itemBuilder: (context, index) {
-        final chapter = display[index];
-        if (chapter.isVolume) {
-          final isExpanded = _expandedVolumes.contains(chapter.index);
+    return Scrollbar(
+      controller: _scrollController,
+      thumbVisibility: true,
+      child: ListView.builder(
+        controller: _scrollController,
+        itemCount: display.length,
+        itemBuilder: (context, index) {
+          final chapter = display[index];
+          if (chapter.isVolume) {
+            final isExpanded = _expandedVolumes.contains(chapter.index);
+            return InkWell(
+              onTap: () => setState(() {
+                if (isExpanded) {
+                  _expandedVolumes.remove(chapter.index);
+                } else {
+                  _expandedVolumes.add(chapter.index);
+                }
+              }),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                color: fg.withValues(alpha: 0.06),
+                child: Row(
+                  children: [
+                    Icon(isExpanded ? Icons.keyboard_arrow_down : Icons.chevron_right,
+                        color: fg, size: 20),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(chapter.title,
+                          style: TextStyle(color: fg, fontWeight: FontWeight.bold),
+                          maxLines: 1, overflow: TextOverflow.ellipsis),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }
+
+          final isSelected = chapter.index == widget.currentChapterIndex;
+          final fileName = ChapterCacheService.instance.getChapterFileName(chapter, suffix: 'cb');
+          final isCached = !isOnline || _cachedFiles.contains(fileName);
+          final hasTag = chapter.tag != null && chapter.tag!.isNotEmpty;
+          final hasWordCount = _showWordCount && chapter.wordCount != null && chapter.wordCount! > 0;
+          final showSubtitle = hasTag || hasWordCount;
+
           return InkWell(
-            onTap: () => setState(() {
-              if (isExpanded) {
-                _expandedVolumes.remove(chapter.index);
-              } else {
-                _expandedVolumes.add(chapter.index);
-              }
-            }),
-            child: Container(
+            onTap: () => widget.onChapterSelected(chapter.index),
+            child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              color: fg.withValues(alpha: 0.06),
               child: Row(
                 children: [
-                  Icon(isExpanded ? Icons.keyboard_arrow_down : Icons.chevron_right,
-                      color: fg, size: 20),
-                  const SizedBox(width: 4),
+                  if (chapter.isVip && !chapter.isPay)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: Icon(Icons.lock_outline, size: 18, color: fg.withValues(alpha: 0.6)),
+                    ),
                   Expanded(
-                    child: Text(chapter.title,
-                        style: TextStyle(color: fg, fontWeight: FontWeight.bold),
-                        maxLines: 1, overflow: TextOverflow.ellipsis),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          chapter.title,
+                          style: TextStyle(
+                            color: isSelected ? fg : fg.withValues(alpha: 0.85),
+                            fontWeight: isSelected ? FontWeight.bold : null,
+                            fontSize: 15,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        if (showSubtitle)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 2),
+                            child: Row(
+                              children: [
+                                if (hasTag)
+                                  Text(
+                                    chapter.tag!,
+                                    style: TextStyle(
+                                      color: fg.withValues(alpha: 0.5),
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                if (hasTag && hasWordCount)
+                                  const SizedBox(width: 8),
+                                if (hasWordCount)
+                                  Text(
+                                    '${(chapter.wordCount! / 10000).toStringAsFixed(1)}万',
+                                    style: TextStyle(
+                                      color: fg.withValues(alpha: 0.5),
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                      ],
+                    ),
                   ),
+                  const SizedBox(width: 8),
+                  if (isSelected)
+                    Icon(Icons.check, size: 18, color: fg)
+                  else if (!isCached)
+                    Icon(Icons.cloud_outlined, size: 18, color: fg.withValues(alpha: 0.4)),
                 ],
               ),
             ),
           );
-        }
-
-        final isSelected = chapter.index == widget.currentChapterIndex;
-        final fileName = ChapterCacheService.instance.getChapterFileName(chapter, suffix: 'cb');
-        final isCached = !isOnline || _cachedFiles.contains(fileName);
-
-        return ListTile(
-          selected: isSelected,
-          selectedTileColor: fg.withValues(alpha: 0.1),
-          title: Row(
-            children: [
-              Expanded(
-                child: Text(
-                  chapter.title,
-                  style: TextStyle(
-                    color: isSelected ? fg : fg.withValues(alpha: 0.8),
-                    fontWeight: isSelected ? FontWeight.bold : null,
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              if (_showWordCount && chapter.wordCount != null && chapter.wordCount! > 0)
-                Padding(
-                  padding: const EdgeInsets.only(right: 4),
-                  child: Text(
-                    '${(chapter.wordCount! / 10000).toStringAsFixed(1)}万',
-                    style: TextStyle(color: fg.withValues(alpha: 0.5), fontSize: 12),
-                  ),
-                ),
-              if (chapter.isVip && !chapter.isPay)
-                Padding(
-                  padding: const EdgeInsets.only(left: 4),
-                  child: Icon(Icons.lock, size: 16, color: Colors.red.shade400),
-                ),
-              if (!isCached)
-                Padding(
-                  padding: const EdgeInsets.only(left: 4),
-                  child: Icon(Icons.cloud_outlined, size: 16, color: fg.withValues(alpha: 0.5)),
-                ),
-            ],
-          ),
-          trailing: isSelected ? Icon(Icons.check, color: fg) : null,
-          onTap: () => widget.onChapterSelected(chapter.index),
-        );
-      },
+        },
+      ),
     );
   }
 
@@ -3169,29 +3266,32 @@ class _ChapterListPanelState extends State<_ChapterListPanel> {
     if (list.isEmpty) {
       return Center(child: Text('没有匹配的书签', style: TextStyle(color: fg.withValues(alpha: 0.5))));
     }
-    return ListView.builder(
-      itemCount: list.length,
-      itemBuilder: (context, index) {
-        final bookmark = list[index];
-        return ListTile(
-          title: Text(bookmark.chapterTitle, style: TextStyle(color: fg)),
-          subtitle: Text(
-            bookmark.note?.isNotEmpty == true ? bookmark.note! : bookmark.content,
-            style: TextStyle(color: fg.withValues(alpha: 0.6)),
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-          ),
-          trailing: Text(
-            _formatTime(bookmark.createdAt),
-            style: TextStyle(color: fg.withValues(alpha: 0.5), fontSize: 12),
-          ),
-          onTap: () {
-            Navigator.pop(context);
-            widget.onChapterSelected(bookmark.chapterIndex);
-          },
-          onLongPress: () => _deleteBookmark(bookmark),
-        );
-      },
+    return Scrollbar(
+      thumbVisibility: true,
+      child: ListView.builder(
+        itemCount: list.length,
+        itemBuilder: (context, index) {
+          final bookmark = list[index];
+          return ListTile(
+            title: Text(bookmark.chapterTitle, style: TextStyle(color: fg)),
+            subtitle: Text(
+              bookmark.note?.isNotEmpty == true ? bookmark.note! : bookmark.content,
+              style: TextStyle(color: fg.withValues(alpha: 0.6)),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+            trailing: Text(
+              _formatTime(bookmark.createdAt),
+              style: TextStyle(color: fg.withValues(alpha: 0.5), fontSize: 12),
+            ),
+            onTap: () {
+              Navigator.pop(context);
+              widget.onChapterSelected(bookmark.chapterIndex);
+            },
+            onLongPress: () => _deleteBookmark(bookmark),
+          );
+        },
+      ),
     );
   }
 
