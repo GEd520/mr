@@ -685,26 +685,51 @@ class _DetailPageState extends State<DetailPage> {
   }
 
   void _showChangeGroupDialog() {
-    final groups = ['全部', '追更', '漫画', '已完结'];
+    final bookshelfProvider = context.read<BookshelfProvider>();
+    final groups = bookshelfProvider.getAllGroups();
+    String selectedGroup = _book!.groupId ?? '全部';
+
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('修改分组'),
-        content: RadioGroup<String>(
-          groupValue: _book!.groupId ?? '全部',
-          onChanged: (value) {
-            Navigator.pop(context);
-            // TODO: 更新分组
-          },
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: groups
-                .map((group) => RadioListTile<String>(
-                      title: Text(group),
-                      value: group,
-                    ))
-                .toList(),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('修改分组'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: groups
+                  .map((group) => RadioListTile<String>(
+                        title: Text(group),
+                        value: group,
+                        groupValue: selectedGroup,
+                        onChanged: (value) {
+                          setDialogState(() => selectedGroup = value!);
+                        },
+                      ))
+                  .toList(),
+            ),
           ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                Navigator.pop(context);
+                // 更新分组
+                final newGroupId = selectedGroup == '全部' ? null : selectedGroup;
+                final updatedBook = _book!.copyWith(groupId: newGroupId);
+                await StorageService.instance.addToBookshelf(updatedBook.toJson());
+                setState(() {
+                  _book = updatedBook;
+                });
+                // 刷新书架
+                bookshelfProvider.loadBooks();
+              },
+              child: const Text('确定'),
+            ),
+          ],
         ),
       ),
     );
