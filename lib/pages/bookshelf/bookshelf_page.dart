@@ -1654,44 +1654,206 @@ class _BookshelfPageState extends State<BookshelfPage> {
 
   void _showMoveToGroupDialog(Book book, BookshelfProvider provider) {
     final groups = provider.getAllGroups();
-    String? selectedGroup = book.groupId ?? '全部';
+    final defaultGroups = ['全部', '本地', '小说', '音频', '漫画', '视频'];
+    String selectedGroup = book.groupId ?? '全部';
+
     showDialog(
       context: context,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setDialogState) => AlertDialog(
-            title: const Text('移动到分组'),
-            content: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: groups.map((group) {
-                  return RadioListTile<String>(
-                    title: Text(group),
-                    value: group,
-                    groupValue: selectedGroup,
-                    onChanged: (String? value) {
-                      setDialogState(() => selectedGroup = value);
+      builder: (context) => Dialog(
+        insetPadding: EdgeInsets.zero,
+        child: SizedBox(
+          width: MediaQuery.of(context).size.width * 0.9,
+          height: MediaQuery.of(context).size.height * 0.9,
+          child: Column(
+            children: [
+              // 工具栏
+              Material(
+                color: Theme.of(context).colorScheme.primary,
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                        child: Text(
+                          '选择分组',
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.onPrimary,
+                            fontSize: 18,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      icon: Icon(Icons.add, color: Theme.of(context).colorScheme.onPrimary),
+                      tooltip: '添加分组',
+                      onPressed: () {
+                        Navigator.pop(context);
+                        _showCreateGroupDialogForMove(book, provider);
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              // 分组列表
+              Expanded(
+                child: StatefulBuilder(
+                  builder: (context, setDialogState) => ListView.separated(
+                    itemCount: groups.length,
+                    separatorBuilder: (context, index) => const Divider(height: 1),
+                    itemBuilder: (context, index) {
+                      final group = groups[index];
+                      final isDefault = defaultGroups.contains(group);
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: CheckboxListTile(
+                                title: Text(group),
+                                value: selectedGroup == group,
+                                onChanged: (checked) {
+                                  if (checked == true) {
+                                    setDialogState(() => selectedGroup = group);
+                                  }
+                                },
+                                controlAffinity: ListTileControlAffinity.leading,
+                                contentPadding: EdgeInsets.zero,
+                              ),
+                            ),
+                            // 编辑按钮（仅自定义分组）
+                            if (!isDefault)
+                              TextButton(
+                                onPressed: () {
+                                  Navigator.pop(context);
+                                  _showEditGroupDialogForMove(book, provider, group);
+                                },
+                                child: const Text('编辑'),
+                              ),
+                          ],
+                        ),
+                      );
                     },
-                  );
-                }).toList(),
+                  ),
+                ),
               ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('取消'),
-              ),
-              FilledButton(
-                onPressed: () {
-                  provider.moveBookToGroup(book.bookUrl, selectedGroup == '全部' ? null : selectedGroup);
-                  Navigator.pop(context);
-                },
-                child: const Text('确定'),
+              // 底部按钮
+              Padding(
+                padding: const EdgeInsets.only(right: 16, bottom: 8),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('取消'),
+                    ),
+                    TextButton(
+                      onPressed: () {
+                        provider.moveBookToGroup(book.bookUrl, selectedGroup == '全部' ? null : selectedGroup);
+                        Navigator.pop(context);
+                      },
+                      child: Text(
+                        '确定',
+                        style: TextStyle(color: Theme.of(context).colorScheme.primary),
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ],
           ),
-        );
-      },
+        ),
+      ),
+    );
+  }
+
+  void _showCreateGroupDialogForMove(Book book, BookshelfProvider provider) {
+    final controller = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('新建分组'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: '输入分组名称',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              if (controller.text.isNotEmpty) {
+                final success = await provider.addCustomGroup(controller.text);
+                Navigator.pop(context);
+                if (!success && mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('分组已达上限(64个)或名称已存在')),
+                  );
+                }
+                // 重新打开分组选择对话框
+                _showMoveToGroupDialog(book, provider);
+              }
+            },
+            child: const Text('创建'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showEditGroupDialogForMove(Book book, BookshelfProvider provider, String oldName) {
+    final controller = TextEditingController(text: oldName);
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('编辑分组'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: '输入分组名称',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              // 删除分组
+              await provider.removeCustomGroup(oldName);
+              // 重新打开分组选择对话框
+              _showMoveToGroupDialog(book, provider);
+            },
+            child: Text('删除', style: TextStyle(color: Theme.of(context).colorScheme.error)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              if (controller.text.isNotEmpty && controller.text != oldName) {
+                final success = await provider.renameCustomGroup(oldName, controller.text);
+                Navigator.pop(context);
+                if (!success && mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('分组名称已存在')),
+                  );
+                }
+                // 重新打开分组选择对话框
+                _showMoveToGroupDialog(book, provider);
+              } else {
+                Navigator.pop(context);
+              }
+            },
+            child: const Text('保存'),
+          ),
+        ],
+      ),
     );
   }
 

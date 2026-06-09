@@ -78,28 +78,33 @@ class BookshelfProvider extends ChangeNotifier {
       groups.add('全部');
     }
 
-    // 本地分组：有本地书籍时显示
-    if (_books.any((book) => book.originType == BookOriginType.local)) {
+    // 本地分组：有本地书籍且没有自定义分组时显示
+    if (_books.any((book) =>
+        book.originType == BookOriginType.local && book.groupId == null)) {
       groups.add('本地');
     }
 
-    // 小说分组：有小说时显示
-    if (_books.any((book) => book.mediaType == MediaType.novel)) {
+    // 小说分组：有小说且没有自定义分组时显示
+    if (_books.any((book) =>
+        book.mediaType == MediaType.novel && book.groupId == null)) {
       groups.add('小说');
     }
 
-    // 音频分组：有音频时显示
-    if (_books.any((book) => book.mediaType == MediaType.audio)) {
+    // 音频分组：有音频且没有自定义分组时显示
+    if (_books.any((book) =>
+        book.mediaType == MediaType.audio && book.groupId == null)) {
       groups.add('音频');
     }
 
-    // 漫画分组：有漫画时显示
-    if (_books.any((book) => book.mediaType == MediaType.comic)) {
+    // 漫画分组：有漫画且没有自定义分组时显示
+    if (_books.any((book) =>
+        book.mediaType == MediaType.comic && book.groupId == null)) {
       groups.add('漫画');
     }
 
-    // 视频分组：有视频时显示
-    if (_books.any((book) => book.mediaType == MediaType.video)) {
+    // 视频分组：有视频且没有自定义分组时显示
+    if (_books.any((book) =>
+        book.mediaType == MediaType.video && book.groupId == null)) {
       groups.add('视频');
     }
 
@@ -175,20 +180,36 @@ class BookshelfProvider extends ChangeNotifier {
   /// 根据分组名称获取书籍列表（用于 PageView）
   List<Book> getBooksByGroup(String groupName) {
     List<Book> sourceBooks;
-    
+
     if (groupName == '全部') {
       sourceBooks = _books;
     } else if (groupName == '本地') {
-      sourceBooks = _books.where((book) => book.originType == BookOriginType.local).toList();
+      // 本地分组：只显示没有自定义分组的本地书籍
+      sourceBooks = _books.where((book) =>
+        book.originType == BookOriginType.local && book.groupId == null
+      ).toList();
     } else if (groupName == '小说') {
-      sourceBooks = _books.where((book) => book.mediaType == MediaType.novel).toList();
+      // 小说分组：只显示没有自定义分组的小说
+      sourceBooks = _books.where((book) =>
+        book.mediaType == MediaType.novel && book.groupId == null
+      ).toList();
     } else if (groupName == '音频') {
-      sourceBooks = _books.where((book) => book.mediaType == MediaType.audio).toList();
+      // 音频分组：只显示没有自定义分组的音频
+      sourceBooks = _books.where((book) =>
+        book.mediaType == MediaType.audio && book.groupId == null
+      ).toList();
     } else if (groupName == '漫画') {
-      sourceBooks = _books.where((book) => book.mediaType == MediaType.comic).toList();
+      // 漫画分组：只显示没有自定义分组的漫画
+      sourceBooks = _books.where((book) =>
+        book.mediaType == MediaType.comic && book.groupId == null
+      ).toList();
     } else if (groupName == '视频') {
-      sourceBooks = _books.where((book) => book.mediaType == MediaType.video).toList();
+      // 视频分组：只显示没有自定义分组的视频
+      sourceBooks = _books.where((book) =>
+        book.mediaType == MediaType.video && book.groupId == null
+      ).toList();
     } else {
+      // 自定义分组：显示该分组的书籍
       sourceBooks = _books.where((book) => book.groupId == groupName).toList();
     }
 
