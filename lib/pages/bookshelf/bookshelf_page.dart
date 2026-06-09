@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:cached_network_image/cached_network_image.dart';
-import 'package:flutter_slidable/flutter_slidable.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../models/book.dart';
 import '../../providers/bookshelf_provider.dart';
 import '../../routes/app_routes.dart';
@@ -43,18 +43,19 @@ enum GroupStyle {
 }
 
 class BookshelfPage extends StatefulWidget {
-  const BookshelfPage({super.key});
+  final VoidCallback? onSwipeToNext;
+  
+  const BookshelfPage({super.key, this.onSwipeToNext});
 
   @override
   State<BookshelfPage> createState() => _BookshelfPageState();
 }
 
 class _BookshelfPageState extends State<BookshelfPage> {
-  final List<String> _groups = ['全部', '追更', '漫画', '已完结'];
-  int _selectedGroupIndex = 0;
+  late PageController _pageController;
 
   // 书架配置
-  BookshelfLayout _layout = BookshelfLayout.grid3;
+  BookshelfLayout _layout = BookshelfLayout.list; // 默认列表模式
   BookshelfSort _sort = BookshelfSort.byTime;
   BookNameDisplay _bookNameDisplay = BookNameDisplay.show;
   GroupStyle _groupStyle = GroupStyle.byGroup;
@@ -67,98 +68,247 @@ class _BookshelfPageState extends State<BookshelfPage> {
   double _margin = 8.0;
 
   @override
+  void initState() {
+    super.initState();
+    // 使用 provider 中保存的分组索引
+    final provider = context.read<BookshelfProvider>();
+    _pageController = PageController(initialPage: provider.selectedGroupIndex);
+    _loadBookshelfConfig();
+    // 加载自定义分组
+    provider.loadCustomGroups();
+  }
+
+  Future<void> _loadBookshelfConfig() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _layout = BookshelfLayout.values[prefs.getInt('bookshelf_layout') ?? 0];
+      _sort = BookshelfSort.values[prefs.getInt('bookshelf_sort') ?? 0];
+      _groupStyle = GroupStyle.values[prefs.getInt('bookshelf_groupStyle') ?? 1];
+      _bookNameDisplay = BookNameDisplay.values[prefs.getInt('bookshelf_bookNameDisplay') ?? 0];
+      _showUnread = prefs.getBool('bookshelf_showUnread') ?? true;
+      _showLastUpdateTime = prefs.getBool('bookshelf_showLastUpdateTime') ?? true;
+      _showWaitUpdate = prefs.getBool('bookshelf_showWaitUpdate') ?? true;
+      _showFastScroller = prefs.getBool('bookshelf_showFastScroller') ?? false;
+      _margin = prefs.getDouble('bookshelf_margin') ?? 8.0;
+      _gridColumnCount = _getGridColumnCount(_layout);
+    });
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('书架'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.search),
-            onPressed: () {
-              Navigator.pushNamed(context, AppRoutes.search);
-            },
-          ),
-          PopupMenuButton<String>(
-            icon: const Icon(Icons.more_vert),
-            tooltip: '更多选项',
-            offset: const Offset(0, 48),
-            onSelected: (value) => _handleMenuSelection(value),
-            itemBuilder: (context) => [
-            const PopupMenuItem(
-              value: 'refresh',
-              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              height: 48,
-              child: Row(children: [Icon(Icons.refresh, size: 18), SizedBox(width: 12), Text('更新目录')]),
-            ),
-            const PopupMenuItem(
-              value: 'import_local',
-              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              height: 48,
-              child: Row(children: [Icon(Icons.folder, size: 18), SizedBox(width: 12), Text('本地导入')]),
-            ),
-            const PopupMenuItem(
-              value: 'import_url',
-              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              height: 48,
-              child: Row(children: [Icon(Icons.link, size: 18), SizedBox(width: 12), Text('URL导入')]),
-            ),
-            const PopupMenuItem(
-              value: 'batch',
-              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              height: 48,
-              child: Row(children: [Icon(Icons.checklist, size: 18), SizedBox(width: 12), Text('批量管理')]),
-            ),
-            const PopupMenuItem(
-              value: 'download',
-              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              height: 48,
-              child: Row(children: [Icon(Icons.download, size: 18), SizedBox(width: 12), Text('缓存导出')]),
-            ),
-            const PopupMenuItem(
-              value: 'group_manage',
-              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              height: 48,
-              child: Row(children: [Icon(Icons.folder_open, size: 18), SizedBox(width: 12), Text('分组管理')]),
-            ),
-            const PopupMenuItem(
-              value: 'config',
-              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              height: 48,
-              child: Row(children: [Icon(Icons.settings, size: 18), SizedBox(width: 12), Text('书架设置')]),
-            ),
-            const PopupMenuItem(
-              value: 'export_bookshelf',
-              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              height: 48,
-              child: Row(children: [Icon(Icons.upload_file, size: 18), SizedBox(width: 12), Text('导出书架')]),
-            ),
-            const PopupMenuItem(
-              value: 'import_bookshelf',
-              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              height: 48,
-              child: Row(children: [Icon(Icons.download_for_offline, size: 18), SizedBox(width: 12), Text('导入书架')]),
-            ),
-          ],
-          ),
-        ],
-      ),
       body: Consumer<BookshelfProvider>(
         builder: (context, provider, child) {
+          // 获取动态分组列表（只显示有书籍的分组）
+          final groups = provider.getVisibleGroups();
+
+          // 参考原版 Style1：TabLayout + ViewPager
+          // 分组标签和搜索在同一排，左右滑动切换分组
           return Column(
             children: [
-              _buildGroupTabs(provider),
+              // 顶部栏：分组标签 + 搜索按钮 + 更多菜单（同一排）
+              Container(
+                padding: EdgeInsets.only(
+                  top: MediaQuery.of(context).padding.top,
+                ),
+                color: Theme.of(context).colorScheme.surface,
+                child: SizedBox(
+                  height: 48,
+                  child: Row(
+                    children: [
+                      // 分组标签（横向滚动）
+                      Expanded(
+                        child: ListView.builder(
+                          scrollDirection: Axis.horizontal,
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          itemCount: groups.length,
+                          itemBuilder: (context, index) {
+                            final isSelected = index == provider.selectedGroupIndex;
+                            return GestureDetector(
+                              onTap: () {
+                                provider.setSelectedGroupIndex(index);
+                                provider.setGroup(groups[index]);
+                                _pageController.animateToPage(
+                                  index,
+                                  duration: const Duration(milliseconds: 300),
+                                  curve: Curves.easeInOut,
+                                );
+                              },
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 16),
+                                alignment: Alignment.center,
+                                child: Text(
+                                  groups[index],
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: isSelected ? FontWeight.w500 : FontWeight.normal,
+                                    color: isSelected
+                                        ? Theme.of(context).colorScheme.primary
+                                        : Theme.of(context).colorScheme.onSurface,
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                      // 搜索按钮
+                      IconButton(
+                        icon: const Icon(Icons.search),
+                        tooltip: '搜索',
+                        onPressed: () {
+                          Navigator.pushNamed(context, AppRoutes.search);
+                        },
+                      ),
+                      // 更多菜单
+                      PopupMenuButton<String>(
+                        icon: const Icon(Icons.more_vert),
+                        tooltip: '更多选项',
+                        offset: const Offset(0, 48),
+                        onSelected: (value) => _handleMenuSelection(value),
+                        itemBuilder: (context) => [
+                          const PopupMenuItem(
+                            value: 'refresh',
+                            height: 48,
+                            child: Row(
+                              children: [
+                                Icon(Icons.refresh, size: 20),
+                                SizedBox(width: 16),
+                                Text('更新目录'),
+                              ],
+                            ),
+                          ),
+                          const PopupMenuItem(
+                            value: 'import_local',
+                            height: 48,
+                            child: Row(
+                              children: [
+                                Icon(Icons.add, size: 20),
+                                SizedBox(width: 16),
+                                Text('添加本地'),
+                              ],
+                            ),
+                          ),
+                          const PopupMenuItem(
+                            value: 'import_remote',
+                            height: 48,
+                            child: Row(
+                              children: [
+                                Icon(Icons.add, size: 20),
+                                SizedBox(width: 16),
+                                Text('远程书籍'),
+                              ],
+                            ),
+                          ),
+                          const PopupMenuItem(
+                            value: 'import_url',
+                            height: 48,
+                            child: Row(
+                              children: [
+                                Icon(Icons.link, size: 20),
+                                SizedBox(width: 16),
+                                Text('添加网址'),
+                              ],
+                            ),
+                          ),
+                          const PopupMenuItem(
+                            value: 'bookshelf_manage',
+                            height: 48,
+                            child: Row(
+                              children: [
+                                Icon(Icons.sort, size: 20),
+                                SizedBox(width: 16),
+                                Text('书架管理'),
+                              ],
+                            ),
+                          ),
+                          const PopupMenuItem(
+                            value: 'download',
+                            height: 48,
+                            child: Row(
+                              children: [
+                                Icon(Icons.download, size: 20),
+                                SizedBox(width: 16),
+                                Text('缓存/导出'),
+                              ],
+                            ),
+                          ),
+                          const PopupMenuItem(
+                            value: 'group_manage',
+                            height: 48,
+                            child: Row(
+                              children: [
+                                Icon(Icons.folder, size: 20),
+                                SizedBox(width: 16),
+                                Text('分组管理'),
+                              ],
+                            ),
+                          ),
+                          const PopupMenuItem(
+                            value: 'layout',
+                            height: 48,
+                            child: Row(
+                              children: [
+                                Icon(Icons.view_quilt, size: 20),
+                                SizedBox(width: 16),
+                                Text('书架布局'),
+                              ],
+                            ),
+                          ),
+                          const PopupMenuItem(
+                            value: 'export_bookshelf',
+                            height: 48,
+                            child: Row(
+                              children: [
+                                Icon(Icons.upload, size: 20),
+                                SizedBox(width: 16),
+                                Text('导出书单'),
+                              ],
+                            ),
+                          ),
+                          const PopupMenuItem(
+                            value: 'import_bookshelf',
+                            height: 48,
+                            child: Row(
+                              children: [
+                                Icon(Icons.download, size: 20),
+                                SizedBox(width: 16),
+                                Text('导入书单'),
+                              ],
+                            ),
+                          ),
+                          const PopupMenuItem(
+                            value: 'log',
+                            height: 48,
+                            child: Row(
+                              children: [
+                                Icon(Icons.article, size: 20),
+                                SizedBox(width: 16),
+                                Text('日志'),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              // 书籍列表（支持左右滑动切换分组）
               Expanded(
                 child: provider.isBatchMode
                     ? _buildBatchView(provider)
-                    : _buildMainView(provider),
+                    : _buildMainView(provider, groups),
               ),
             ],
           );
         },
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _showImportDialog,
-        child: const Icon(Icons.add),
       ),
     );
   }
@@ -172,10 +322,13 @@ class _BookshelfPageState extends State<BookshelfPage> {
       case 'import_local':
         _showImportDialog();
         break;
+      case 'import_remote':
+        _showRemoteBookDialog();
+        break;
       case 'import_url':
         _showUrlImportDialog();
         break;
-      case 'batch':
+      case 'bookshelf_manage':
         provider.enterBatchMode();
         break;
       case 'download':
@@ -184,14 +337,17 @@ class _BookshelfPageState extends State<BookshelfPage> {
       case 'group_manage':
         _showGroupManageDialog();
         break;
-      case 'config':
-        _showBookshelfConfigDialog();
+      case 'layout':
+        _showBookshelfLayoutDialog();
         break;
       case 'export_bookshelf':
         _exportBookshelf();
         break;
       case 'import_bookshelf':
         _importBookshelf();
+        break;
+      case 'log':
+        _showLogDialog();
         break;
     }
   }
@@ -201,6 +357,22 @@ class _BookshelfPageState extends State<BookshelfPage> {
       const SnackBar(content: Text('正在更新书籍目录...')),
     );
     // TODO: 实现更新逻辑
+  }
+
+  void _showRemoteBookDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('远程书籍'),
+        content: const Text('远程书籍功能开发中...'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('关闭'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _showUrlImportDialog() {
@@ -234,168 +406,438 @@ class _BookshelfPageState extends State<BookshelfPage> {
   }
 
   void _showGroupManageDialog() {
+    final provider = context.read<BookshelfProvider>();
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      builder: (context) => DraggableScrollableSheet(
-        initialChildSize: 0.6,
-        minChildSize: 0.3,
-        maxChildSize: 0.9,
-        expand: false,
-        builder: (context, scrollController) => StatefulBuilder(
-          builder: (context, setSheetState) => Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text('分组管理', style: Theme.of(context).textTheme.titleLarge),
-                    IconButton(
-                      icon: const Icon(Icons.add),
-                      onPressed: () {
-                        _showCreateGroupDialog();
-                      },
-                    ),
-                  ],
-                ),
-              ),
-              const Divider(),
-              Expanded(
-                child: ListView.builder(
-                  controller: scrollController,
-                  itemCount: _groups.length,
-                  itemBuilder: (context, index) => ListTile(
-                    leading: const Icon(Icons.folder),
-                    title: Text(_groups[index]),
-                    trailing: index > 0
-                        ? IconButton(
-                            icon: const Icon(Icons.delete, size: 20),
-                            onPressed: () {
-                              setSheetState(() {
-                                _groups.removeAt(index);
-                              });
-                            },
-                          )
-                        : null,
+      builder: (context) => Consumer<BookshelfProvider>(
+        builder: (context, provider, child) {
+          final allGroups = provider.getAllGroups();
+          final defaultGroups = ['全部', '本地', '小说', '音频', '漫画', '视频'];
+
+          return DraggableScrollableSheet(
+            initialChildSize: 0.6,
+            minChildSize: 0.3,
+            maxChildSize: 0.9,
+            expand: false,
+            builder: (context, scrollController) => Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('分组管理', style: Theme.of(context).textTheme.titleLarge),
+                      IconButton(
+                        icon: const Icon(Icons.add),
+                        tooltip: '添加分组',
+                        onPressed: () {
+                          _showCreateGroupDialog(provider);
+                        },
+                      ),
+                    ],
                   ),
                 ),
-              ),
-            ],
-          ),
-        ),
+                const Divider(),
+                Expanded(
+                  child: ListView.builder(
+                    controller: scrollController,
+                    itemCount: allGroups.length,
+                    itemBuilder: (context, index) {
+                      final group = allGroups[index];
+                      final isDefault = defaultGroups.contains(group);
+                      return ListTile(
+                        leading: const Icon(Icons.folder),
+                        title: Text(group),
+                        trailing: isDefault
+                            ? null
+                            : Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    icon: const Icon(Icons.edit, size: 20),
+                                    tooltip: '编辑',
+                                    onPressed: () {
+                                      _showEditGroupDialog(provider, group);
+                                    },
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.delete, size: 20),
+                                    tooltip: '删除',
+                                    onPressed: () {
+                                      _showDeleteGroupDialog(provider, group);
+                                    },
+                                  ),
+                                ],
+                              ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
       ),
     );
   }
 
-  void _showBookshelfConfigDialog() {
+  void _showCreateGroupDialog(BookshelfProvider provider) {
+    final controller = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('新建分组'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: '输入分组名称',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              if (controller.text.isNotEmpty) {
+                final success = await provider.addCustomGroup(controller.text);
+                Navigator.pop(context);
+                if (!success && mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('分组已达上限(64个)或名称已存在')),
+                  );
+                }
+              }
+            },
+            child: const Text('创建'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showEditGroupDialog(BookshelfProvider provider, String oldName) {
+    final controller = TextEditingController(text: oldName);
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('编辑分组'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: '输入分组名称',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              if (controller.text.isNotEmpty && controller.text != oldName) {
+                final success = await provider.renameCustomGroup(oldName, controller.text);
+                Navigator.pop(context);
+                if (!success && mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('分组名称已存在')),
+                  );
+                }
+              } else {
+                Navigator.pop(context);
+              }
+            },
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showDeleteGroupDialog(BookshelfProvider provider, String groupName) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('删除分组'),
+        content: Text('确定要删除分组"$groupName"吗？\n该分组下的书籍将移至未分组。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              await provider.removeCustomGroup(groupName);
+              Navigator.pop(context);
+            },
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showBookshelfLayoutDialog() {
+    // 保存初始值用于取消时恢复
+    final initialLayout = _layout;
+    final initialSort = _sort;
+    final initialGroupStyle = _groupStyle;
+    final initialBookNameDisplay = _bookNameDisplay;
+    final initialShowUnread = _showUnread;
+    final initialShowLastUpdateTime = _showLastUpdateTime;
+    final initialShowWaitUpdate = _showWaitUpdate;
+    final initialShowFastScroller = _showFastScroller;
+    final initialMargin = _margin;
+
     showDialog(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
-          title: const Text('书架设置'),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // 分组样式
-                Text('分组样式', style: Theme.of(context).textTheme.titleMedium),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  children: [
-                    _buildGroupStyleChip('不分组', GroupStyle.none, setDialogState),
-                    _buildGroupStyleChip('按分组', GroupStyle.byGroup, setDialogState),
+          title: const Text('书架布局'),
+          content: SizedBox(
+            width: 400,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // 分组样式
+                  Row(
+                    children: [
+                      const Expanded(
+                        child: Padding(
+                          padding: EdgeInsets.symmetric(vertical: 6),
+                          child: Text('分组样式'),
+                        ),
+                      ),
+                      DropdownButton<GroupStyle>(
+                        value: _groupStyle,
+                        underline: const SizedBox(),
+                        items: const [
+                          DropdownMenuItem(
+                            value: GroupStyle.none,
+                            child: Text('不分组'),
+                          ),
+                          DropdownMenuItem(
+                            value: GroupStyle.byGroup,
+                            child: Text('按分组'),
+                          ),
+                        ],
+                        onChanged: (v) {
+                          if (v != null) {
+                            setDialogState(() => _groupStyle = v);
+                          }
+                        },
+                      ),
+                    ],
+                  ),
+                  // 显示未读标志
+                  SwitchListTile(
+                    title: const Text('显示未读标志'),
+                    value: _showUnread,
+                    onChanged: (v) {
+                      setDialogState(() => _showUnread = v);
+                    },
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                  // 显示上次更新时间
+                  SwitchListTile(
+                    title: const Text('显示上次更新时间'),
+                    value: _showLastUpdateTime,
+                    onChanged: (v) {
+                      setDialogState(() => _showLastUpdateTime = v);
+                    },
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                  // 显示等待更新数量
+                  SwitchListTile(
+                    title: const Text('显示等待更新数量'),
+                    value: _showWaitUpdate,
+                    onChanged: (v) {
+                      setDialogState(() => _showWaitUpdate = v);
+                    },
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                  // 显示快速滚动条
+                  SwitchListTile(
+                    title: const Text('显示快速滚动条'),
+                    value: _showFastScroller,
+                    onChanged: (v) {
+                      setDialogState(() => _showFastScroller = v);
+                    },
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                  const SizedBox(height: 8),
+                  // 视图和排序（两列布局）
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // 视图
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Padding(
+                              padding: EdgeInsets.symmetric(vertical: 6),
+                              child: Text('视图', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500)),
+                            ),
+                            _buildRadioItem('列表', BookshelfLayout.list, _layout, (v) {
+                              setDialogState(() {
+                                _layout = v;
+                                _gridColumnCount = _getGridColumnCount(v);
+                              });
+                            }),
+                            _buildRadioItem('紧凑列表', BookshelfLayout.listCompact, _layout, (v) {
+                              setDialogState(() {
+                                _layout = v;
+                                _gridColumnCount = _getGridColumnCount(v);
+                              });
+                            }),
+                            _buildRadioItem('网格二列', BookshelfLayout.grid2, _layout, (v) {
+                              setDialogState(() {
+                                _layout = v;
+                                _gridColumnCount = _getGridColumnCount(v);
+                              });
+                            }),
+                            _buildRadioItem('网格三列', BookshelfLayout.grid3, _layout, (v) {
+                              setDialogState(() {
+                                _layout = v;
+                                _gridColumnCount = _getGridColumnCount(v);
+                              });
+                            }),
+                            _buildRadioItem('网格四列', BookshelfLayout.grid4, _layout, (v) {
+                              setDialogState(() {
+                                _layout = v;
+                                _gridColumnCount = _getGridColumnCount(v);
+                              });
+                            }),
+                            _buildRadioItem('网格五列', BookshelfLayout.grid5, _layout, (v) {
+                              setDialogState(() {
+                                _layout = v;
+                                _gridColumnCount = _getGridColumnCount(v);
+                              });
+                            }),
+                            _buildRadioItem('网格六列', BookshelfLayout.grid6, _layout, (v) {
+                              setDialogState(() {
+                                _layout = v;
+                                _gridColumnCount = _getGridColumnCount(v);
+                              });
+                            }),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 16),
+                      // 排序
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Padding(
+                              padding: EdgeInsets.symmetric(vertical: 6),
+                              child: Text('排序', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500)),
+                            ),
+                            _buildRadioItem('按阅读时间', BookshelfSort.byTime, _sort, (v) {
+                              setDialogState(() => _sort = v);
+                            }),
+                            _buildRadioItem('按更新时间', BookshelfSort.byLatest, _sort, (v) {
+                              setDialogState(() => _sort = v);
+                            }),
+                            _buildRadioItem('按书名', BookshelfSort.byName, _sort, (v) {
+                              setDialogState(() => _sort = v);
+                            }),
+                            _buildRadioItem('手动排序', BookshelfSort.byManual, _sort, (v) {
+                              setDialogState(() => _sort = v);
+                            }),
+                            _buildRadioItem('综合排序', BookshelfSort.byAddTime, _sort, (v) {
+                              setDialogState(() => _sort = v);
+                            }),
+                            _buildRadioItem('按作者', BookshelfSort.byAuthor, _sort, (v) {
+                              setDialogState(() => _sort = v);
+                            }),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  // 书名显示（仅网格模式）
+                  if (_layout != BookshelfLayout.list && _layout != BookshelfLayout.listCompact) ...[
+                    const SizedBox(height: 8),
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 6),
+                      child: Text('书名', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500)),
+                    ),
+                    Row(
+                      children: [
+                        _buildRadioItem('显示', BookNameDisplay.show, _bookNameDisplay, (v) {
+                          setDialogState(() => _bookNameDisplay = v);
+                        }),
+                        const SizedBox(width: 16),
+                        _buildRadioItem('隐藏', BookNameDisplay.hide, _bookNameDisplay, (v) {
+                          setDialogState(() => _bookNameDisplay = v);
+                        }),
+                        const SizedBox(width: 16),
+                        _buildRadioItem('叠加', BookNameDisplay.overlay, _bookNameDisplay, (v) {
+                          setDialogState(() => _bookNameDisplay = v);
+                        }),
+                      ],
+                    ),
                   ],
-                ),
-                const SizedBox(height: 16),
-                // 布局选择
-                Text('布局样式', style: Theme.of(context).textTheme.titleMedium),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  children: [
-                    _buildLayoutChip('列表', BookshelfLayout.list, setDialogState),
-                    _buildLayoutChip('紧凑', BookshelfLayout.listCompact, setDialogState),
-                    _buildLayoutChip('2列', BookshelfLayout.grid2, setDialogState),
-                    _buildLayoutChip('3列', BookshelfLayout.grid3, setDialogState),
-                    _buildLayoutChip('4列', BookshelfLayout.grid4, setDialogState),
-                    _buildLayoutChip('5列', BookshelfLayout.grid5, setDialogState),
-                    _buildLayoutChip('6列', BookshelfLayout.grid6, setDialogState),
-                  ],
-                ),
-                const SizedBox(height: 16),
-                // 排序选择
-                Text('排序方式', style: Theme.of(context).textTheme.titleMedium),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  children: [
-                    _buildSortChip('阅读时间', BookshelfSort.byTime, setDialogState),
-                    _buildSortChip('最新章节', BookshelfSort.byLatest, setDialogState),
-                    _buildSortChip('书名', BookshelfSort.byName, setDialogState),
-                    _buildSortChip('手动排序', BookshelfSort.byManual, setDialogState),
-                    _buildSortChip('添加时间', BookshelfSort.byAddTime, setDialogState),
-                  ],
-                ),
-                const SizedBox(height: 16),
-                // 书名显示方式
-                Text('书名显示', style: Theme.of(context).textTheme.titleMedium),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  children: [
-                    _buildBookNameChip('显示', BookNameDisplay.show, setDialogState),
-                    _buildBookNameChip('隐藏', BookNameDisplay.hide, setDialogState),
-                    _buildBookNameChip('覆盖', BookNameDisplay.overlay, setDialogState),
-                  ],
-                ),
-                const SizedBox(height: 16),
-                // 显示选项
-                Text('显示选项', style: Theme.of(context).textTheme.titleMedium),
-                const SizedBox(height: 8),
-                SwitchListTile(
-                  title: const Text('显示未读数'),
-                  value: _showUnread,
-                  onChanged: (v) => setDialogState(() => _showUnread = v),
-                  contentPadding: EdgeInsets.zero,
-                ),
-                SwitchListTile(
-                  title: const Text('显示更新时间'),
-                  value: _showLastUpdateTime,
-                  onChanged: (v) => setDialogState(() => _showLastUpdateTime = v),
-                  contentPadding: EdgeInsets.zero,
-                ),
-                SwitchListTile(
-                  title: const Text('显示待更新数'),
-                  value: _showWaitUpdate,
-                  onChanged: (v) => setDialogState(() => _showWaitUpdate = v),
-                  contentPadding: EdgeInsets.zero,
-                ),
-                SwitchListTile(
-                  title: const Text('显示快速滚动条'),
-                  value: _showFastScroller,
-                  onChanged: (v) => setDialogState(() => _showFastScroller = v),
-                  contentPadding: EdgeInsets.zero,
-                ),
-                const SizedBox(height: 16),
-                // 边距设置
-                Text('边距设置: ${_margin.toInt()}', style: Theme.of(context).textTheme.titleMedium),
-                const SizedBox(height: 8),
-                Slider(
-                  value: _margin,
-                  min: 0,
-                  max: 60,
-                  divisions: 12,
-                  onChanged: (v) => setDialogState(() => _margin = v),
-                ),
-              ],
+                  const SizedBox(height: 16),
+                  // 间距
+                  Row(
+                    children: [
+                      const Text('间距'),
+                      Expanded(
+                        child: Slider(
+                          value: _margin,
+                          min: 0,
+                          max: 60,
+                          divisions: 12,
+                          onChanged: (v) {
+                            setDialogState(() => _margin = v);
+                          },
+                        ),
+                      ),
+                      Text('${_margin.toInt()}'),
+                    ],
+                  ),
+                ],
+              ),
             ),
           ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.pop(context),
+              onPressed: () {
+                // 取消时恢复初始值
+                setDialogState(() {
+                  _layout = initialLayout;
+                  _sort = initialSort;
+                  _groupStyle = initialGroupStyle;
+                  _bookNameDisplay = initialBookNameDisplay;
+                  _showUnread = initialShowUnread;
+                  _showLastUpdateTime = initialShowLastUpdateTime;
+                  _showWaitUpdate = initialShowWaitUpdate;
+                  _showFastScroller = initialShowFastScroller;
+                  _margin = initialMargin;
+                  _gridColumnCount = _getGridColumnCount(_layout);
+                });
+                Navigator.pop(context);
+              },
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () {
+                // 保存设置到配置
+                _saveBookshelfConfig();
+                Navigator.pop(context);
+                // 刷新页面
+                setState(() {});
+              },
               child: const Text('确定'),
             ),
           ],
@@ -404,54 +846,60 @@ class _BookshelfPageState extends State<BookshelfPage> {
     );
   }
 
-  Widget _buildLayoutChip(String label, BookshelfLayout layout, StateSetter setDialogState) {
-    return ChoiceChip(
-      label: Text(label),
-      selected: _layout == layout,
-      onSelected: (selected) {
-        if (selected) {
-          setDialogState(() {
-            _layout = layout;
-            _gridColumnCount = _getGridColumnCount(layout);
-          });
-        }
-      },
+  void _saveBookshelfConfig() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt('bookshelf_layout', _layout.index);
+    await prefs.setInt('bookshelf_sort', _sort.index);
+    await prefs.setInt('bookshelf_groupStyle', _groupStyle.index);
+    await prefs.setInt('bookshelf_bookNameDisplay', _bookNameDisplay.index);
+    await prefs.setBool('bookshelf_showUnread', _showUnread);
+    await prefs.setBool('bookshelf_showLastUpdateTime', _showLastUpdateTime);
+    await prefs.setBool('bookshelf_showWaitUpdate', _showWaitUpdate);
+    await prefs.setBool('bookshelf_showFastScroller', _showFastScroller);
+    await prefs.setDouble('bookshelf_margin', _margin);
+    debugPrint('保存书架配置成功');
+  }
+
+  Widget _buildRadioItem<T>(String label, T value, T groupValue, void Function(T) onChanged) {
+    return InkWell(
+      onTap: () => onChanged(value),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Radio<T>(
+            value: value,
+            groupValue: groupValue,
+            onChanged: (v) {
+              if (v != null) onChanged(v);
+            },
+            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            visualDensity: VisualDensity.compact,
+          ),
+          Text(label),
+        ],
+      ),
     );
   }
 
-  Widget _buildSortChip(String label, BookshelfSort sort, StateSetter setDialogState) {
-    return ChoiceChip(
-      label: Text(label),
-      selected: _sort == sort,
-      onSelected: (selected) {
-        if (selected) {
-          setDialogState(() => _sort = sort);
-        }
-      },
-    );
-  }
-
-  Widget _buildBookNameChip(String label, BookNameDisplay display, StateSetter setDialogState) {
-    return ChoiceChip(
-      label: Text(label),
-      selected: _bookNameDisplay == display,
-      onSelected: (selected) {
-        if (selected) {
-          setDialogState(() => _bookNameDisplay = display);
-        }
-      },
-    );
-  }
-
-  Widget _buildGroupStyleChip(String label, GroupStyle style, StateSetter setDialogState) {
-    return ChoiceChip(
-      label: Text(label),
-      selected: _groupStyle == style,
-      onSelected: (selected) {
-        if (selected) {
-          setDialogState(() => _groupStyle = style);
-        }
-      },
+  void _showLogDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('日志'),
+        content: const SizedBox(
+          width: double.maxFinite,
+          height: 300,
+          child: Center(
+            child: Text('暂无日志'),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('关闭'),
+          ),
+        ],
+      ),
     );
   }
 
@@ -473,60 +921,80 @@ class _BookshelfPageState extends State<BookshelfPage> {
     }
   }
 
-  Widget _buildMainView(BookshelfProvider provider) {
+  Widget _buildMainView(BookshelfProvider provider, List<String> groups) {
     final isList = _layout == BookshelfLayout.list || _layout == BookshelfLayout.listCompact;
-    
-    if (provider.books.isEmpty) {
-      return _buildEmptyState();
-    }
 
-    return RefreshIndicator(
-      onRefresh: provider.loadBooks,
-      child: isList
-          ? _buildListView(provider)
-          : _buildGridView(provider),
+    // 参考原版：使用 PageView 支持左右滑动切换分组
+    return PageView.builder(
+      controller: _pageController,
+      itemCount: groups.length,
+      onPageChanged: (index) {
+        provider.setSelectedGroupIndex(index);
+        provider.setGroup(groups[index]);
+      },
+      itemBuilder: (context, pageIndex) {
+        // 根据分组索引获取该分组的书籍
+        final groupBooks = provider.getBooksByGroup(groups[pageIndex]);
+
+        // 每个分组的书籍列表
+        if (groupBooks.isEmpty) {
+          return _buildEmptyState();
+        }
+
+        return RefreshIndicator(
+          onRefresh: provider.loadBooks,
+          child: isList
+              ? _buildListViewWithBooks(groupBooks, provider)
+              : _buildGridViewWithBooks(groupBooks, provider),
+        );
+      },
     );
   }
 
-  Widget _buildGroupTabs(BookshelfProvider provider) {
-    return Container(
-      height: 48,
-      padding: const EdgeInsets.symmetric(horizontal: 8),
-      child: ListView.builder(
-        scrollDirection: Axis.horizontal,
-        itemCount: _groups.length + 1,
-        itemBuilder: (context, index) {
-          if (index == _groups.length) {
-            return Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 4),
-              child: ActionChip(
-                label: const Text('+ 新建分组'),
-                onPressed: () {
-                  _showCreateGroupDialog();
-                },
-              ),
-            );
-          }
-
-          final isSelected = index == _selectedGroupIndex;
-          return Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 4),
-            child: FilterChip(
-              label: Text(_groups[index]),
-              selected: isSelected,
-              onSelected: (selected) {
-                setState(() {
-                  _selectedGroupIndex = index;
-                });
-                provider.setGroup(
-                  index == 0 ? null : _groups[index],
-                );
-              },
-            ),
-          );
-        },
-      ),
+  Widget _buildListViewWithBooks(List<Book> books, BookshelfProvider provider) {
+    final listView = ListView.builder(
+      padding: EdgeInsets.all(_margin),
+      itemCount: books.length,
+      itemBuilder: (context, index) {
+        final book = books[index];
+        return _buildListBookCard(book, provider);
+      },
     );
+
+    // 显示快速滚动条
+    if (_showFastScroller) {
+      return Scrollbar(
+        thumbVisibility: true,
+        child: listView,
+      );
+    }
+    return listView;
+  }
+
+  Widget _buildGridViewWithBooks(List<Book> books, BookshelfProvider provider) {
+    final gridView = GridView.builder(
+      padding: EdgeInsets.all(_margin),
+      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: _gridColumnCount,
+        childAspectRatio: 0.65,
+        crossAxisSpacing: _margin,
+        mainAxisSpacing: _margin,
+      ),
+      itemCount: books.length,
+      itemBuilder: (context, index) {
+        final book = books[index];
+        return _buildGridBookCard(book, provider);
+      },
+    );
+
+    // 显示快速滚动条
+    if (_showFastScroller) {
+      return Scrollbar(
+        thumbVisibility: true,
+        child: gridView,
+      );
+    }
+    return gridView;
   }
 
   Widget _buildGridView(BookshelfProvider provider) {
@@ -547,6 +1015,7 @@ class _BookshelfPageState extends State<BookshelfPage> {
   }
 
   Widget _buildGridBookCard(Book book, BookshelfProvider provider) {
+    // 参考原版设计：简洁的网格卡片
     return GestureDetector(
       onTap: () => _openBook(book),
       onLongPress: () => _showBookOptions(book, provider),
@@ -554,6 +1023,10 @@ class _BookshelfPageState extends State<BookshelfPage> {
         children: [
           Card(
             clipBehavior: Clip.antiAlias,
+            elevation: 0,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(4),
+            ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
@@ -574,12 +1047,12 @@ class _BookshelfPageState extends State<BookshelfPage> {
                               ),
                               errorWidget: (context, url, error) => Container(
                                 color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                                child: const Icon(Icons.book, size: 48),
+                                child: const Icon(Icons.book, size: 32),
                               ),
                             )
                           : Container(
                               color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                              child: const Icon(Icons.book, size: 48),
+                              child: const Icon(Icons.book, size: 32),
                             ),
                       // 书名覆盖在封面上
                       if (_bookNameDisplay == BookNameDisplay.overlay)
@@ -621,28 +1094,19 @@ class _BookshelfPageState extends State<BookshelfPage> {
                     ],
                   ),
                 ),
-                // 书名显示在下方
+                // 书名显示在下方（参考原版：12sp，2行）
                 if (_bookNameDisplay == BookNameDisplay.show)
                   Padding(
-                    padding: const EdgeInsets.all(8),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          book.name,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontWeight: FontWeight.w500,
-                            fontSize: 12,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        LinearProgressIndicator(
-                          value: book.progress,
-                          backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
-                        ),
-                      ],
+                    padding: const EdgeInsets.fromLTRB(4, 6, 4, 4),
+                    child: Text(
+                      book.name,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w500,
+                        fontSize: 12,
+                      ),
                     ),
                   ),
               ],
@@ -651,10 +1115,10 @@ class _BookshelfPageState extends State<BookshelfPage> {
           // 未读数徽章
           if (_showUnread && book.unreadCount > 0)
             Positioned(
-              top: 8,
-              right: 8,
+              top: 4,
+              right: 4,
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
                 decoration: BoxDecoration(
                   color: Theme.of(context).colorScheme.primary,
                   borderRadius: BorderRadius.circular(10),
@@ -672,19 +1136,19 @@ class _BookshelfPageState extends State<BookshelfPage> {
           // 本地标签
           if (book.originType == BookOriginType.local)
             Positioned(
-              top: 8,
-              left: 8,
+              top: 4,
+              left: 4,
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
                 decoration: BoxDecoration(
                   color: Theme.of(context).colorScheme.primaryContainer,
-                  borderRadius: BorderRadius.circular(4),
+                  borderRadius: BorderRadius.circular(3),
                 ),
                 child: Text(
                   '本地',
                   style: TextStyle(
                     color: Theme.of(context).colorScheme.onPrimaryContainer,
-                    fontSize: 10,
+                    fontSize: 9,
                   ),
                 ),
               ),
@@ -692,17 +1156,17 @@ class _BookshelfPageState extends State<BookshelfPage> {
           // 置顶图标
           if (book.isTop)
             Positioned(
-              bottom: _bookNameDisplay == BookNameDisplay.show ? 48 : 8,
-              right: 8,
+              bottom: _bookNameDisplay == BookNameDisplay.show ? 32 : 4,
+              right: 4,
               child: Container(
-                padding: const EdgeInsets.all(4),
+                padding: const EdgeInsets.all(3),
                 decoration: BoxDecoration(
                   color: Colors.black54,
-                  borderRadius: BorderRadius.circular(12),
+                  borderRadius: BorderRadius.circular(10),
                 ),
                 child: const Icon(
                   Icons.push_pin,
-                  size: 14,
+                  size: 12,
                   color: Colors.white,
                 ),
               ),
@@ -726,203 +1190,102 @@ class _BookshelfPageState extends State<BookshelfPage> {
   Widget _buildListBookCard(Book book, BookshelfProvider provider) {
     final isCompact = _layout == BookshelfLayout.listCompact;
 
-    return Slidable(
-      endActionPane: ActionPane(
-        motion: const DrawerMotion(),
-        children: [
-          SlidableAction(
-            onPressed: (_) => provider.toggleTop(book.bookUrl),
-            backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-            foregroundColor: Theme.of(context).colorScheme.onPrimaryContainer,
-            icon: book.isTop ? Icons.push_pin_outlined : Icons.push_pin,
-            label: book.isTop ? '取消置顶' : '置顶',
-          ),
-          SlidableAction(
-            onPressed: (_) => provider.removeFromBookshelf(book.bookUrl),
-            backgroundColor: Theme.of(context).colorScheme.errorContainer,
-            foregroundColor: Theme.of(context).colorScheme.onErrorContainer,
-            icon: Icons.delete,
-            label: '移除',
-          ),
-        ],
-      ),
-      child: InkWell(
-        onTap: () => _openBook(book),
-        onLongPress: () => _showBookOptions(book, provider),
-        child: Padding(
-          padding: EdgeInsets.symmetric(horizontal: _margin, vertical: 8),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // 封面
-              ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: Container(
-                  width: isCompact ? 48 : 66,
-                  height: isCompact ? 64 : 90,
-                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                  child: Stack(
-                    children: [
-                      if (book.coverUrl.isNotEmpty)
-                        CachedNetworkImage(
-                          imageUrl: book.coverUrl,
-                          fit: BoxFit.cover,
-                          width: double.infinity,
-                          height: double.infinity,
-                          placeholder: (context, url) => Container(
-                            color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                          ),
-                          errorWidget: (context, url, error) => const Center(
-                            child: Icon(Icons.book, size: 32),
-                          ),
-                        )
-                      else
-                        const Center(child: Icon(Icons.book, size: 32)),
-                      // 未读数徽章
-                      if (_showUnread && book.unreadCount > 0)
-                        Positioned(
-                          top: 4,
-                          right: 4,
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                            decoration: BoxDecoration(
-                              color: Theme.of(context).colorScheme.primary,
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                            child: Text(
-                              '${book.unreadCount}',
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 9,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ),
+    return InkWell(
+      onTap: () => _openBook(book),
+      onLongPress: () => _showBookOptions(book, provider),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 封面（参考原版：66x90dp，圆角4dp）
+            ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: Container(
+                width: isCompact ? 48 : 66,
+                height: isCompact ? 64 : 90,
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                child: book.coverUrl.isNotEmpty
+                    ? CachedNetworkImage(
+                        imageUrl: book.coverUrl,
+                        fit: BoxFit.cover,
+                        width: double.infinity,
+                        height: double.infinity,
+                        placeholder: (context, url) => Container(
+                          color: Theme.of(context).colorScheme.surfaceContainerHighest,
                         ),
-                    ],
-                  ),
-                ),
+                        errorWidget: (context, url, error) => const Center(
+                          child: Icon(Icons.book, size: 32),
+                        ),
+                      )
+                    : const Center(child: Icon(Icons.book, size: 32)),
               ),
-              const SizedBox(width: 12),
-              // 书籍信息
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // 书名行
-                    Row(
-                      children: [
-                        if (book.isTop)
-                          Padding(
-                            padding: const EdgeInsets.only(right: 4),
-                            child: Icon(
-                              Icons.push_pin,
-                              size: 14,
-                              color: Theme.of(context).colorScheme.primary,
-                            ),
-                          ),
-                        Expanded(
-                          child: Text(
-                            book.name,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                        ),
-                        if (book.originType == BookOriginType.local)
-                          Container(
-                            margin: const EdgeInsets.only(left: 8),
-                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                            decoration: BoxDecoration(
-                              color: Theme.of(context).colorScheme.primaryContainer,
-                              borderRadius: BorderRadius.circular(4),
-                            ),
-                            child: Text(
-                              '本地',
-                              style: TextStyle(
-                                fontSize: 10,
-                                color: Theme.of(context).colorScheme.onPrimaryContainer,
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
-                    if (!isCompact) ...[
-                      const SizedBox(height: 4),
-                      // 作者行
+            ),
+            const SizedBox(width: 10), // 参考原版：10dp间距
+            // 书籍信息
+            Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.only(left: 2, bottom: 4), // 参考原版
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // 书名行（参考原版：16sp，单行，未读徽章在右边）
                       Row(
                         children: [
-                          Icon(
-                            Icons.person_outline,
-                            size: 14,
-                            color: Theme.of(context).colorScheme.onSurfaceVariant,
-                          ),
-                          const SizedBox(width: 4),
+                          if (book.isTop)
+                            Padding(
+                              padding: const EdgeInsets.only(right: 4),
+                              child: Icon(
+                                Icons.push_pin,
+                                size: 14,
+                                color: Theme.of(context).colorScheme.primary,
+                              ),
+                            ),
                           Expanded(
                             child: Text(
-                              book.author,
+                              book.name,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                fontSize: 13,
-                                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w500,
                               ),
                             ),
                           ),
-                          if (_showLastUpdateTime && book.lastCheckTime != null)
-                            Text(
-                              _formatUpdateTime(book.lastCheckTime!),
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                          // 未读数徽章（在书名右边）
+                          if (_showUnread && book.unreadCount > 0)
+                            Container(
+                              margin: const EdgeInsets.only(left: 8),
+                              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                              decoration: BoxDecoration(
+                                color: Theme.of(context).colorScheme.primary,
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: Text(
+                                '${book.unreadCount}',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                ),
                               ),
                             ),
                         ],
                       ),
-                    ],
-                    const SizedBox(height: 4),
-                    // 阅读进度行
-                    Row(
-                      children: [
-                        Icon(
-                          Icons.history,
-                          size: 14,
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
-                        const SizedBox(width: 4),
-                        Expanded(
-                          child: Text(
-                            book.durChapterTitle.isNotEmpty
-                                ? book.durChapterTitle
-                                : '未开始阅读',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: 13,
-                              color: Theme.of(context).colorScheme.onSurfaceVariant,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    if (!isCompact) ...[
-                      const SizedBox(height: 4),
-                      // 最新章节行
-                      if (book.latestChapterTitle.isNotEmpty)
+                      if (!isCompact) ...[
+                        const SizedBox(height: 4),
+                        // 作者行（参考原版：13sp，后面跟着更新时间）
                         Row(
                           children: [
                             Icon(
-                              Icons.new_releases_outlined,
+                              Icons.person_outline,
                               size: 14,
                               color: Theme.of(context).colorScheme.onSurfaceVariant,
                             ),
                             const SizedBox(width: 4),
                             Expanded(
                               child: Text(
-                                '最新: ${book.latestChapterTitle}',
+                                book.author,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
@@ -931,14 +1294,77 @@ class _BookshelfPageState extends State<BookshelfPage> {
                                 ),
                               ),
                             ),
+                            // 更新时间（在作者后面）
+                            if (_showLastUpdateTime && book.lastCheckTime != null)
+                              Padding(
+                                padding: const EdgeInsets.only(left: 6),
+                                child: Text(
+                                  _formatUpdateTime(book.lastCheckTime!),
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              ),
                           ],
                         ),
+                      ],
+                      const SizedBox(height: 4),
+                      // 阅读进度行（参考原版：13sp，带图标）
+                      Row(
+                        children: [
+                          Icon(
+                            Icons.history,
+                            size: 14,
+                            color: Theme.of(context).colorScheme.onSurfaceVariant,
+                          ),
+                          const SizedBox(width: 4),
+                          Expanded(
+                            child: Text(
+                              book.durChapterTitle.isNotEmpty
+                                  ? book.durChapterTitle
+                                  : '未开始阅读',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (!isCompact) ...[
+                        const SizedBox(height: 4),
+                        // 最新章节行（参考原版：13sp，带图标）
+                        if (book.latestChapterTitle.isNotEmpty)
+                          Row(
+                            children: [
+                              Icon(
+                                Icons.new_releases_outlined,
+                                size: 14,
+                                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              ),
+                              const SizedBox(width: 4),
+                              Expanded(
+                                child: Text(
+                                  '最新: ${book.latestChapterTitle}',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                      ],
                     ],
-                  ],
+                  ),
                 ),
-              ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
@@ -1187,41 +1613,6 @@ class _BookshelfPageState extends State<BookshelfPage> {
     }
   }
 
-  void _showCreateGroupDialog() {
-    final controller = TextEditingController();
-    showDialog(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('新建分组'),
-          content: TextField(
-            controller: controller,
-            decoration: const InputDecoration(
-              hintText: '分组名称',
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('取消'),
-            ),
-            TextButton(
-              onPressed: () {
-                if (controller.text.isNotEmpty) {
-                  setState(() {
-                    _groups.add(controller.text);
-                  });
-                  Navigator.pop(context);
-                }
-              },
-              child: const Text('创建'),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
   void _showBookOptions(Book book, BookshelfProvider provider) {
     showModalBottomSheet(
       context: context,
@@ -1262,44 +1653,207 @@ class _BookshelfPageState extends State<BookshelfPage> {
   }
 
   void _showMoveToGroupDialog(Book book, BookshelfProvider provider) {
-    String? selectedGroup = book.groupId;
+    final groups = provider.getAllGroups();
+    final defaultGroups = ['全部', '本地', '小说', '音频', '漫画', '视频'];
+    String selectedGroup = book.groupId ?? '全部';
+
     showDialog(
       context: context,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setDialogState) => AlertDialog(
-            title: const Text('移动到分组'),
-            content: RadioGroup<String>(
-              groupValue: selectedGroup,
-              onChanged: (String? value) {
-                setDialogState(() => selectedGroup = value);
-              },
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: _groups.map((group) {
-                  return RadioListTile<String>(
-                    title: Text(group),
-                    value: group,
-                  );
-                }).toList(),
+      builder: (context) => Dialog(
+        insetPadding: EdgeInsets.zero,
+        child: SizedBox(
+          width: MediaQuery.of(context).size.width * 0.9,
+          height: MediaQuery.of(context).size.height * 0.9,
+          child: Column(
+            children: [
+              // 工具栏
+              Material(
+                color: Theme.of(context).colorScheme.primary,
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                        child: Text(
+                          '选择分组',
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.onPrimary,
+                            fontSize: 18,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      icon: Icon(Icons.add, color: Theme.of(context).colorScheme.onPrimary),
+                      tooltip: '添加分组',
+                      onPressed: () {
+                        Navigator.pop(context);
+                        _showCreateGroupDialogForMove(book, provider);
+                      },
+                    ),
+                  ],
+                ),
               ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('取消'),
+              // 分组列表
+              Expanded(
+                child: StatefulBuilder(
+                  builder: (context, setDialogState) => ListView.separated(
+                    itemCount: groups.length,
+                    separatorBuilder: (context, index) => const Divider(height: 1),
+                    itemBuilder: (context, index) {
+                      final group = groups[index];
+                      final isDefault = defaultGroups.contains(group);
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: CheckboxListTile(
+                                title: Text(group),
+                                value: selectedGroup == group,
+                                onChanged: (checked) {
+                                  if (checked == true) {
+                                    setDialogState(() => selectedGroup = group);
+                                  }
+                                },
+                                controlAffinity: ListTileControlAffinity.leading,
+                                contentPadding: EdgeInsets.zero,
+                              ),
+                            ),
+                            // 编辑按钮（仅自定义分组）
+                            if (!isDefault)
+                              TextButton(
+                                onPressed: () {
+                                  Navigator.pop(context);
+                                  _showEditGroupDialogForMove(book, provider, group);
+                                },
+                                child: const Text('编辑'),
+                              ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                ),
               ),
-              FilledButton(
-                onPressed: () {
-                  provider.moveBookToGroup(book.bookUrl, selectedGroup == '全部' ? null : selectedGroup);
-                  Navigator.pop(context);
-                },
-                child: const Text('确定'),
+              // 底部按钮
+              Padding(
+                padding: const EdgeInsets.only(right: 16, bottom: 8),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('取消'),
+                    ),
+                    TextButton(
+                      onPressed: () {
+                        provider.moveBookToGroup(book.bookUrl, selectedGroup == '全部' ? null : selectedGroup);
+                        Navigator.pop(context);
+                      },
+                      child: Text(
+                        '确定',
+                        style: TextStyle(color: Theme.of(context).colorScheme.primary),
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ],
           ),
-        );
-      },
+        ),
+      ),
+    );
+  }
+
+  void _showCreateGroupDialogForMove(Book book, BookshelfProvider provider) {
+    final controller = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('新建分组'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: '输入分组名称',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              if (controller.text.isNotEmpty) {
+                final success = await provider.addCustomGroup(controller.text);
+                Navigator.pop(context);
+                if (!success && mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('分组已达上限(64个)或名称已存在')),
+                  );
+                }
+                // 重新打开分组选择对话框
+                _showMoveToGroupDialog(book, provider);
+              }
+            },
+            child: const Text('创建'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showEditGroupDialogForMove(Book book, BookshelfProvider provider, String oldName) {
+    final controller = TextEditingController(text: oldName);
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('编辑分组'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: '输入分组名称',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              // 删除分组
+              await provider.removeCustomGroup(oldName);
+              // 重新打开分组选择对话框
+              _showMoveToGroupDialog(book, provider);
+            },
+            child: Text('删除', style: TextStyle(color: Theme.of(context).colorScheme.error)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              if (controller.text.isNotEmpty && controller.text != oldName) {
+                final success = await provider.renameCustomGroup(oldName, controller.text);
+                Navigator.pop(context);
+                if (!success && mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('分组名称已存在')),
+                  );
+                }
+                // 重新打开分组选择对话框
+                _showMoveToGroupDialog(book, provider);
+              } else {
+                Navigator.pop(context);
+              }
+            },
+            child: const Text('保存'),
+          ),
+        ],
+      ),
     );
   }
 
