@@ -43,9 +43,7 @@ class _ProfilePageState extends State<ProfilePage> {
         children: [
           // 顶部标题栏（高度48dp，与其他主页面一致）
           Container(
-            padding: EdgeInsets.only(
-              top: MediaQuery.of(context).padding.top,
-            ),
+            padding: EdgeInsets.only(top: MediaQuery.of(context).padding.top),
             color: Theme.of(context).colorScheme.primary,
             child: SizedBox(
               height: 48,
@@ -78,113 +76,120 @@ class _ProfilePageState extends State<ProfilePage> {
             child: ListView(
               padding: const EdgeInsets.only(top: 8),
               children: [
-          // 书源管理（无分类标题）
-          _buildSection([
-            _buildListItem(
-              icon: Icons.book,
-              title: '书源管理',
-              subtitle: '已导入 $_sourceCount 个书源',
-              onTap: () => _showBookSourceManagement(),
-            ),
-            _buildListItem(
-              icon: Icons.description,
-              title: 'TXT目录规则',
-              subtitle: '管理TXT文件目录解析规则',
-              onTap: () => Navigator.pushNamed(context, AppRoutes.txtTocRule),
-            ),
-            _buildListItem(
-              icon: Icons.find_replace,
-              title: '替换净化',
-              subtitle: '内容替换规则管理',
-              onTap: () => Navigator.pushNamed(context, AppRoutes.replaceRule),
-            ),
-            _buildListItem(
-              icon: Icons.translate,
-              title: '字典规则',
-              subtitle: '字典翻译规则管理',
-              onTap: () => Navigator.pushNamed(context, AppRoutes.dictRule),
-            ),
-            Consumer<AppProvider>(
-              builder: (context, provider, child) {
-                return _buildListItem(
-                  icon: Icons.palette,
-                  title: '主题模式',
-                  subtitle: _getThemeModeText(provider.themeMode),
-                  onTap: () => _showThemeDialog(provider),
-                );
-              },
-            ),
-            _buildSwitchItem(
-              icon: Icons.web,
-              title: 'Web服务',
-              subtitle: '开启后可通过浏览器访问',
-              value: false,
-              onChanged: (value) {},
-            ),
-          ]),
+                // 书源管理（无分类标题）
+                _buildSection([
+                  _buildListItem(
+                    icon: Icons.book,
+                    title: '书源管理',
+                    subtitle: '已导入 $_sourceCount 个书源',
+                    onTap: () => _showBookSourceManagement(),
+                  ),
+                  _buildListItem(
+                    icon: Icons.description,
+                    title: 'TXT目录规则',
+                    subtitle: '管理TXT文件目录解析规则',
+                    onTap: () =>
+                        Navigator.pushNamed(context, AppRoutes.txtTocRule),
+                  ),
+                  _buildListItem(
+                    icon: Icons.find_replace,
+                    title: '替换净化',
+                    subtitle: '内容替换规则管理',
+                    onTap: () =>
+                        Navigator.pushNamed(context, AppRoutes.replaceRule),
+                  ),
+                  _buildListItem(
+                    icon: Icons.translate,
+                    title: '字典规则',
+                    subtitle: '字典翻译规则管理',
+                    onTap: () =>
+                        Navigator.pushNamed(context, AppRoutes.dictRule),
+                  ),
+                  Consumer<AppProvider>(
+                    builder: (context, provider, child) {
+                      return _buildListItem(
+                        icon: Icons.palette,
+                        title: '主题模式',
+                        subtitle: _getThemeModeText(provider.themeMode),
+                        onTap: () => _showThemeDialog(provider),
+                      );
+                    },
+                  ),
+                  _buildSwitchItem(
+                    icon: Icons.web,
+                    title: 'Web服务',
+                    subtitle: '开启后可通过浏览器访问',
+                    value: false,
+                    onChanged: (value) {},
+                  ),
+                ]),
 
-          // 设置
-          _buildCategoryTitle('设置'),
-          _buildSection([
-            _buildListItem(
-              icon: Icons.backup,
-              title: '备份恢复',
-              subtitle: 'WebDAV备份与恢复',
-              onTap: () => Navigator.pushNamed(context, AppRoutes.backupRestore),
-            ),
-            _buildListItem(
-              icon: Icons.color_lens,
-              title: '主题设置',
-              subtitle: '自定义主题颜色和样式',
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => const ThemeSettingsPage(),
-                ),
-              ),
-            ),
-            _buildListItem(
-              icon: Icons.settings,
-              title: '其他设置',
-              subtitle: '阅读、界面等更多设置',
-              onTap: () => _showReaderSettings(),
-            ),
-          ]),
+                // 设置
+                _buildCategoryTitle('设置'),
+                _buildSection([
+                  _buildListItem(
+                    icon: Icons.backup,
+                    title: '备份恢复',
+                    subtitle: 'WebDAV备份与恢复',
+                    onTap: () =>
+                        Navigator.pushNamed(context, AppRoutes.backupRestore),
+                  ),
+                  _buildListItem(
+                    icon: Icons.color_lens,
+                    title: '主题设置',
+                    subtitle: '自定义主题颜色和样式',
+                    onTap: () => Navigator.push(
+                      context,
+                      AppPageRoute(
+                        builder: (context) => const ThemeSettingsPage(),
+                      ),
+                    ),
+                  ),
+                  _buildListItem(
+                    icon: Icons.settings,
+                    title: '其他设置',
+                    subtitle: '阅读、界面等更多设置',
+                    onTap: () => _showReaderSettings(),
+                  ),
+                ]),
 
-          // 其他
-          _buildCategoryTitle('其他'),
-          _buildSection([
-            _buildListItem(
-              icon: Icons.bookmark,
-              title: '书签',
-              subtitle: '查看所有书签',
-              onTap: () => Navigator.pushNamed(context, AppRoutes.bookmark),
-            ),
-            _buildListItem(
-              icon: Icons.history,
-              title: '阅读记录',
-              subtitle: '查看阅读历史',
-              onTap: () => Navigator.pushNamed(context, AppRoutes.readRecord),
-            ),
-            _buildListItem(
-              icon: Icons.storage,
-              title: '存储管理',
-              subtitle: '管理本地存储的书籍',
-              onTap: () => Navigator.pushNamed(context, AppRoutes.storageManage),
-            ),
-            _buildListItem(
-              icon: Icons.info_outline,
-              title: '关于',
-              onTap: _showAboutDialog,
-            ),
-            _buildListItem(
-              icon: Icons.exit_to_app,
-              title: '退出',
-              onTap: () => _showExitConfirm(),
-            ),
-          ]),
+                // 其他
+                _buildCategoryTitle('其他'),
+                _buildSection([
+                  _buildListItem(
+                    icon: Icons.bookmark,
+                    title: '书签',
+                    subtitle: '查看所有书签',
+                    onTap: () =>
+                        Navigator.pushNamed(context, AppRoutes.bookmark),
+                  ),
+                  _buildListItem(
+                    icon: Icons.history,
+                    title: '阅读记录',
+                    subtitle: '查看阅读历史',
+                    onTap: () =>
+                        Navigator.pushNamed(context, AppRoutes.readRecord),
+                  ),
+                  _buildListItem(
+                    icon: Icons.storage,
+                    title: '存储管理',
+                    subtitle: '管理本地存储的书籍',
+                    onTap: () =>
+                        Navigator.pushNamed(context, AppRoutes.storageManage),
+                  ),
+                  _buildListItem(
+                    icon: Icons.info_outline,
+                    title: '关于',
+                    onTap: _showAboutDialog,
+                  ),
+                  _buildListItem(
+                    icon: Icons.exit_to_app,
+                    title: '退出',
+                    onTap: () => _showExitConfirm(),
+                  ),
+                ]),
 
-          const SizedBox(height: 24),
+                const SizedBox(height: 24),
               ],
             ),
           ),
@@ -196,9 +201,7 @@ class _ProfilePageState extends State<ProfilePage> {
   Widget _buildSection(List<Widget> children) {
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-      child: Column(
-        children: _insertDividers(children),
-      ),
+      child: Column(children: _insertDividers(children)),
     );
   }
 
@@ -221,11 +224,15 @@ class _ProfilePageState extends State<ProfilePage> {
     for (var i = 0; i < children.length; i++) {
       result.add(children[i]);
       if (i < children.length - 1) {
-        result.add(Divider(
-          height: 1,
-          indent: 56,
-          color: Theme.of(context).colorScheme.outlineVariant.withOpacity(0.5),
-        ));
+        result.add(
+          Divider(
+            height: 1,
+            indent: 56,
+            color: Theme.of(
+              context,
+            ).colorScheme.outlineVariant.withOpacity(0.5),
+          ),
+        );
       }
     }
     return result;
@@ -239,24 +246,20 @@ class _ProfilePageState extends State<ProfilePage> {
   }) {
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      leading: Icon(
-        icon,
-        color: Theme.of(context).colorScheme.primary,
-      ),
+      leading: Icon(icon, color: Theme.of(context).colorScheme.primary),
       title: Text(
         title,
-        style: const TextStyle(
-          fontSize: 16,
-          fontWeight: FontWeight.w500,
-        ),
+        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
       ),
-      subtitle: subtitle != null ? Text(
-        subtitle,
-        style: TextStyle(
-          fontSize: 12,
-          color: Theme.of(context).colorScheme.onSurfaceVariant,
-        ),
-      ) : null,
+      subtitle: subtitle != null
+          ? Text(
+              subtitle,
+              style: TextStyle(
+                fontSize: 12,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            )
+          : null,
       trailing: Icon(
         Icons.chevron_right,
         color: Theme.of(context).colorScheme.onSurfaceVariant,
@@ -275,28 +278,21 @@ class _ProfilePageState extends State<ProfilePage> {
   }) {
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      leading: Icon(
-        icon,
-        color: Theme.of(context).colorScheme.primary,
-      ),
+      leading: Icon(icon, color: Theme.of(context).colorScheme.primary),
       title: Text(
         title,
-        style: const TextStyle(
-          fontSize: 16,
-          fontWeight: FontWeight.w500,
-        ),
+        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
       ),
-      subtitle: subtitle != null ? Text(
-        subtitle,
-        style: TextStyle(
-          fontSize: 12,
-          color: Theme.of(context).colorScheme.onSurfaceVariant,
-        ),
-      ) : null,
-      trailing: Switch(
-        value: value,
-        onChanged: onChanged,
-      ),
+      subtitle: subtitle != null
+          ? Text(
+              subtitle,
+              style: TextStyle(
+                fontSize: 12,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            )
+          : null,
+      trailing: Switch(value: value, onChanged: onChanged),
       onTap: () => onChanged(!value),
     );
   }
@@ -315,9 +311,7 @@ class _ProfilePageState extends State<ProfilePage> {
   void _showBookSourceManagement() {
     Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (context) => const BookSourceManagePage(),
-      ),
+      AppPageRoute(builder: (context) => const BookSourceManagePage()),
     );
   }
 
@@ -469,10 +463,7 @@ class ReaderSettingsSheet extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            '阅读设置',
-            style: Theme.of(context).textTheme.titleLarge,
-          ),
+          Text('阅读设置', style: Theme.of(context).textTheme.titleLarge),
           const SizedBox(height: 16),
           ListTile(
             title: const Text('默认翻页方式'),

@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:file_picker/file_picker.dart';
 import 'dart:io';
 import '../../providers/app_provider.dart';
+import '../../routes/app_routes.dart';
 
 class ThemeSettingsPage extends StatefulWidget {
   const ThemeSettingsPage({super.key});
@@ -76,27 +77,27 @@ class _ThemeSettingsPageState extends State<ThemeSettingsPage> {
             _buildListItem(
               title: '主题管理',
               subtitle: '管理日间/夜间主题颜色和背景',
-              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ThemeManagePage())),
+              onTap: () => Navigator.push(context, AppPageRoute(builder: (_) => const ThemeManagePage())),
             ),
             _buildListItem(
               title: '底栏管理',
               subtitle: '管理日间/夜间底栏样式和布局',
-              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const NavigationBarManagePage())),
+              onTap: () => Navigator.push(context, AppPageRoute(builder: (_) => const NavigationBarManagePage())),
             ),
             _buildListItem(
               title: '顶栏管理',
               subtitle: '自定义顶部工具栏样式',
-              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const TopBarManagePage())),
+              onTap: () => Navigator.push(context, AppPageRoute(builder: (_) => const TopBarManagePage())),
             ),
             _buildListItem(
               title: '书籍信息管理',
               subtitle: '自定义书籍详情页样式',
-              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const BookInfoManagePage())),
+              onTap: () => Navigator.push(context, AppPageRoute(builder: (_) => const BookInfoManagePage())),
             ),
             _buildListItem(
               title: '气泡管理',
               subtitle: '自定义气泡样式',
-              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const BubbleManagePage())),
+              onTap: () => Navigator.push(context, AppPageRoute(builder: (_) => const BubbleManagePage())),
             ),
           ]),
 
@@ -106,7 +107,7 @@ class _ThemeSettingsPageState extends State<ThemeSettingsPage> {
             _buildListItem(
               title: '封面配置',
               subtitle: '自定义封面显示样式',
-              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const CoverConfigPage())),
+              onTap: () => Navigator.push(context, AppPageRoute(builder: (_) => const CoverConfigPage())),
             ),
           ]),
 

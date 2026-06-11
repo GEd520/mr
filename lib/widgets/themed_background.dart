@@ -1,200 +1,232 @@
 import 'dart:io';
-import 'dart:ui';
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+
 import '../providers/app_provider.dart';
 
-/// 全局背景图片组件 - 使用 GlobalKey 保持状态
-class ThemedBackground extends StatefulWidget {
+/// Keeps the app wallpaper outside the navigator's page transitions.
+class ThemedBackground extends StatelessWidget {
   final Widget child;
 
-  const ThemedBackground({
-    super.key,
-    required this.child,
-  });
-
-  @override
-  State<ThemedBackground> createState() => ThemedBackgroundState();
-}
-
-class ThemedBackgroundState extends State<ThemedBackground> {
-  // 使用静态 GlobalKey 确保背景图片不会被重建
-  static final GlobalKey _backgroundKey = GlobalKey();
+  const ThemedBackground({super.key, required this.child});
 
   @override
   Widget build(BuildContext context) {
     return Stack(
       fit: StackFit.expand,
       children: [
-        // 背景图片层 - 使用 GlobalKey 保持状态
-        Positioned.fill(
-          key: _backgroundKey,
-          child: const _BackgroundLayer(),
+        const Positioned.fill(
+          child: RepaintBoundary(child: _BackgroundLayer()),
         ),
-        // 内容层
-        widget.child,
+        child,
       ],
     );
   }
 }
 
-/// 背景层组件
 class _BackgroundLayer extends StatelessWidget {
   const _BackgroundLayer();
 
   @override
   Widget build(BuildContext context) {
-    final backgroundImage = context.select<AppProvider, String?>(
-      (provider) => provider.currentBackgroundImage,
-    );
-    final backgroundBlur = context.select<AppProvider, int>(
-      (provider) => provider.currentBackgroundBlur,
-    );
-    final brightness = context.select<AppProvider, Brightness>(
-      (provider) => provider.themeMode == ThemeMode.dark
-          ? Brightness.dark
-          : Brightness.light,
+    final settings = context.select<AppProvider, _BackgroundSettings>(
+      (provider) => _BackgroundSettings(
+        imagePath: provider.currentBackgroundImage,
+        blur: provider.currentBackgroundBlur,
+      ),
     );
 
-    if (backgroundImage == null || backgroundImage.isEmpty) {
+    final imagePath = settings.imagePath;
+    if (imagePath == null || imagePath.isEmpty) {
       return const SizedBox.shrink();
     }
 
-    return _BackgroundImageWidget(
-      imagePath: backgroundImage,
-      blur: backgroundBlur,
-      brightness: brightness,
-    );
+    return _StableBackgroundImage(imagePath: imagePath, blur: settings.blur);
   }
 }
 
-/// 背景图片组件 - 使用 StatefulWidget 和 didUpdateWidget 避免重建
-class _BackgroundImageWidget extends StatefulWidget {
+class _BackgroundSettings {
+  final String? imagePath;
+  final int blur;
+
+  const _BackgroundSettings({required this.imagePath, required this.blur});
+
+  @override
+  bool operator ==(Object other) {
+    return other is _BackgroundSettings &&
+        other.imagePath == imagePath &&
+        other.blur == blur;
+  }
+
+  @override
+  int get hashCode => Object.hash(imagePath, blur);
+}
+
+/// Resolves the wallpaper once and keeps the decoded frame while pages rebuild.
+class _StableBackgroundImage extends StatefulWidget {
   final String imagePath;
   final int blur;
-  final Brightness brightness;
 
-  const _BackgroundImageWidget({
-    required this.imagePath,
-    required this.blur,
-    required this.brightness,
-  });
+  const _StableBackgroundImage({required this.imagePath, required this.blur});
 
   @override
-  State<_BackgroundImageWidget> createState() => _BackgroundImageWidgetState();
+  State<_StableBackgroundImage> createState() => _StableBackgroundImageState();
 }
 
-class _BackgroundImageWidgetState extends State<_BackgroundImageWidget> {
-  // 静态缓存 ImageProvider
-  static final Map<String, ImageProvider> _imageProviderCache = {};
-  // 当前显示的图片路径
-  String? _currentImagePath;
-  ImageProvider? _currentImageProvider;
+class _StableBackgroundImageState extends State<_StableBackgroundImage> {
+  ImageStream? _imageStream;
+  ImageStreamListener? _imageStreamListener;
+  ui.Image? _image;
+  Object? _loadError;
+  bool _hasResolvedImage = false;
 
   @override
-  void initState() {
-    super.initState();
-    _updateImageProvider();
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_hasResolvedImage) {
+      _resolveImage();
+    }
   }
 
   @override
-  void didUpdateWidget(_BackgroundImageWidget oldWidget) {
+  void didUpdateWidget(_StableBackgroundImage oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // 只有图片路径变化时才更新 ImageProvider
     if (oldWidget.imagePath != widget.imagePath) {
-      _updateImageProvider();
+      _resolveImage();
     }
   }
 
-  void _updateImageProvider() {
-    if (_currentImagePath == widget.imagePath && _currentImageProvider != null) {
-      return; // 没有变化，不需要更新
-    }
+  @override
+  void dispose() {
+    _stopListening();
+    _image?.dispose();
+    super.dispose();
+  }
 
-    _currentImagePath = widget.imagePath;
+  void _resolveImage() {
+    _hasResolvedImage = true;
+    _loadError = null;
+    _stopListening();
 
-    if (_imageProviderCache.containsKey(widget.imagePath)) {
-      _currentImageProvider = _imageProviderCache[widget.imagePath]!;
-    } else {
-      if (widget.imagePath.startsWith('http://') ||
-          widget.imagePath.startsWith('https://')) {
-        _currentImageProvider = NetworkImage(widget.imagePath);
-      } else if (widget.imagePath.startsWith('assets://')) {
-        _currentImageProvider =
-            AssetImage(widget.imagePath.replaceFirst('assets://', ''));
-      } else {
-        _currentImageProvider = FileImage(File(widget.imagePath));
-      }
-      _imageProviderCache[widget.imagePath] = _currentImageProvider!;
+    final provider = _createImageProvider(widget.imagePath);
+    final stream = provider.resolve(createLocalImageConfiguration(context));
+    late final ImageStreamListener listener;
+    listener = ImageStreamListener(
+      (imageInfo, synchronousCall) {
+        if (!mounted || _imageStream != stream) {
+          imageInfo.dispose();
+          return;
+        }
+        if (_image == imageInfo.image && _loadError == null) {
+          imageInfo.dispose();
+          return;
+        }
+        final decodedImage = imageInfo.image.clone();
+        imageInfo.dispose();
+        final previousImage = _image;
+        setState(() {
+          _image = decodedImage;
+          _loadError = null;
+        });
+        previousImage?.dispose();
+      },
+      onError: (Object error, StackTrace? stackTrace) {
+        if (!mounted || _imageStream != stream) {
+          return;
+        }
+        setState(() {
+          _loadError = error;
+        });
+      },
+    );
+
+    _imageStream = stream;
+    _imageStreamListener = listener;
+    stream.addListener(listener);
+  }
+
+  void _stopListening() {
+    final stream = _imageStream;
+    final listener = _imageStreamListener;
+    if (stream != null && listener != null) {
+      stream.removeListener(listener);
     }
+    _imageStream = null;
+    _imageStreamListener = null;
+  }
+
+  ImageProvider _createImageProvider(String path) {
+    if (path.startsWith('http://') || path.startsWith('https://')) {
+      return NetworkImage(path);
+    }
+    if (path.startsWith('assets://')) {
+      return AssetImage(path.replaceFirst('assets://', ''));
+    }
+    return FileImage(File(path));
   }
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    final image = _image;
 
-    if (_currentImageProvider == null) {
-      return Container(color: colorScheme.background);
+    if (image == null || _loadError != null) {
+      return ColoredBox(color: colorScheme.surface);
     }
 
+    Widget imageLayer = RawImage(
+      image: image,
+      fit: BoxFit.cover,
+      alignment: Alignment.center,
+      filterQuality: FilterQuality.medium,
+    );
+
+    if (widget.blur > 0) {
+      imageLayer = ImageFiltered(
+        imageFilter: ui.ImageFilter.blur(
+          sigmaX: widget.blur.toDouble(),
+          sigmaY: widget.blur.toDouble(),
+          tileMode: TileMode.clamp,
+        ),
+        child: imageLayer,
+      );
+    }
+
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     return Stack(
       fit: StackFit.expand,
       children: [
-        // 背景图片
-        Image(
-          image: _currentImageProvider!,
-          fit: BoxFit.cover,
-          alignment: Alignment.center,
-          gaplessPlayback: true,
-          filterQuality: FilterQuality.medium,
-          errorBuilder: (context, error, stackTrace) {
-            return Container(color: colorScheme.background);
-          },
-        ),
-        // 渐变遮罩
-        Container(
+        imageLayer,
+        DecoratedBox(
           decoration: BoxDecoration(
             gradient: LinearGradient(
               begin: Alignment.topCenter,
               end: Alignment.bottomCenter,
-              colors: _getOverlayGradientColors(),
+              colors: isDark
+                  ? [
+                      Colors.black.withValues(alpha: 0.15),
+                      Colors.black.withValues(alpha: 0.20),
+                      Colors.black.withValues(alpha: 0.25),
+                      Colors.black.withValues(alpha: 0.30),
+                    ]
+                  : [
+                      Colors.white.withValues(alpha: 0.10),
+                      Colors.white.withValues(alpha: 0.15),
+                      Colors.white.withValues(alpha: 0.20),
+                      Colors.white.withValues(alpha: 0.25),
+                    ],
               stops: const [0.0, 0.3, 0.7, 1.0],
             ),
           ),
         ),
-        // 模糊效果
-        if (widget.blur > 0)
-          ImageFiltered(
-            imageFilter: ImageFilter.blur(
-              sigmaX: widget.blur.toDouble(),
-              sigmaY: widget.blur.toDouble(),
-            ),
-            child: Container(color: Colors.transparent),
-          ),
       ],
     );
   }
-
-  List<Color> _getOverlayGradientColors() {
-    if (widget.brightness == Brightness.dark) {
-      return [
-        Colors.black.withOpacity(0.15),
-        Colors.black.withOpacity(0.20),
-        Colors.black.withOpacity(0.25),
-        Colors.black.withOpacity(0.30),
-      ];
-    } else {
-      return [
-        Colors.white.withOpacity(0.10),
-        Colors.white.withOpacity(0.15),
-        Colors.white.withOpacity(0.20),
-        Colors.white.withOpacity(0.25),
-      ];
-    }
-  }
 }
 
-/// 背景图片预览组件 - 用于主题设置页面预览
+/// Small wallpaper preview used by theme settings.
 class BackgroundImagePreview extends StatelessWidget {
   final String? imagePath;
   final int blur;
@@ -212,93 +244,55 @@ class BackgroundImagePreview extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    final path = imagePath;
 
-    if (imagePath == null || imagePath!.isEmpty) {
-      return Container(
-        width: width,
-        height: height,
-        decoration: BoxDecoration(
-          color: colorScheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(8),
+    if (path == null || path.isEmpty) {
+      return _buildFallback(colorScheme, Icons.image_not_supported_outlined);
+    }
+
+    final ImageProvider<Object> imageProvider;
+    if (path.startsWith('http://') || path.startsWith('https://')) {
+      imageProvider = NetworkImage(path);
+    } else if (path.startsWith('assets://')) {
+      imageProvider = AssetImage(path.replaceFirst('assets://', ''));
+    } else {
+      imageProvider = FileImage(File(path));
+    }
+
+    Widget imageWidget = Image(
+      image: imageProvider,
+      fit: BoxFit.cover,
+      gaplessPlayback: true,
+      errorBuilder: (_, __, ___) {
+        return _buildFallback(colorScheme, Icons.broken_image_outlined);
+      },
+    );
+
+    if (blur > 0) {
+      imageWidget = ImageFiltered(
+        imageFilter: ui.ImageFilter.blur(
+          sigmaX: blur.toDouble(),
+          sigmaY: blur.toDouble(),
         ),
-        child: Icon(
-          Icons.image_not_supported_outlined,
-          color: colorScheme.onSurfaceVariant,
-          size: 32,
-        ),
+        child: imageWidget,
       );
     }
 
-    ImageProvider imageProvider;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(8),
+      child: SizedBox(width: width, height: height, child: imageWidget),
+    );
+  }
 
-    try {
-      if (imagePath!.startsWith('http://') || imagePath!.startsWith('https://')) {
-        imageProvider = NetworkImage(imagePath!);
-      } else if (imagePath!.startsWith('assets://')) {
-        imageProvider = AssetImage(imagePath!.replaceFirst('assets://', ''));
-      } else {
-        imageProvider = FileImage(File(imagePath!));
-      }
-
-      Widget imageWidget = Image(
-        image: imageProvider,
-        fit: BoxFit.cover,
-        errorBuilder: (context, error, stackTrace) {
-          return Container(
-            width: width,
-            height: height,
-            decoration: BoxDecoration(
-              color: colorScheme.surfaceContainerHighest,
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Icon(
-              Icons.broken_image_outlined,
-              color: colorScheme.onSurfaceVariant,
-              size: 32,
-            ),
-          );
-        },
-      );
-
-      if (blur > 0) {
-        return ClipRRect(
-          borderRadius: BorderRadius.circular(8),
-          child: SizedBox(
-            width: width,
-            height: height,
-            child: ImageFiltered(
-              imageFilter: ImageFilter.blur(
-                sigmaX: blur.toDouble(),
-                sigmaY: blur.toDouble(),
-              ),
-              child: imageWidget,
-            ),
-          ),
-        );
-      }
-
-      return ClipRRect(
+  Widget _buildFallback(ColorScheme colorScheme, IconData icon) {
+    return Container(
+      width: width,
+      height: height,
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(8),
-        child: SizedBox(
-          width: width,
-          height: height,
-          child: imageWidget,
-        ),
-      );
-    } catch (e) {
-      return Container(
-        width: width,
-        height: height,
-        decoration: BoxDecoration(
-          color: colorScheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Icon(
-          Icons.error_outline,
-          color: colorScheme.onSurfaceVariant,
-          size: 32,
-        ),
-      );
-    }
+      ),
+      child: Icon(icon, color: colorScheme.onSurfaceVariant, size: 32),
+    );
   }
 }
