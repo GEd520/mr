@@ -2208,7 +2208,6 @@ class _ThemeEditDialogState extends State<_ThemeEditDialog> {
                   value: value,
                   min: min,
                   max: max,
-                  divisions: (max - min).round(), // 每次变化 1
                   onChanged: (v) => setState(() => value = v),
                 ),
                 Text(
@@ -3290,35 +3289,32 @@ class _NavBarEditDialogState extends State<_NavBarEditDialog> {
                       ),
 
                     // 不透明度 - 非侧边栏模式
-                    if (_config.layoutMode != 'sidebar')
-                      _buildSliderOption(
-                        '不透明度',
-                        _config.opacity.toDouble(),
-                        0,
-                        100,
-                        (v) => setState(() => _config.opacity = v.round()),
-                        isPercentage: true,
-                      ),
+                    _buildSliderOption(
+                      '不透明度',
+                      _config.opacity.toDouble(),
+                      0,
+                      100,
+                      (v) => setState(() => _config.opacity = v.round()),
+                      isPercentage: true,
+                    ),
 
                     // 边框颜色 - 非侧边栏模式
-                    if (_config.layoutMode != 'sidebar')
-                      _buildColorOption(
-                        '边框颜色',
-                        _config.borderColor != null ? Color(_config.borderColor!) : Colors.transparent,
-                        (c) => setState(() => _config.borderColor = c.value),
-                        canDisable: true,
-                      ),
+                    _buildColorOption(
+                      '边框颜色',
+                      _config.borderColor != null ? Color(_config.borderColor!) : Colors.transparent,
+                      (c) => setState(() => _config.borderColor = c.value),
+                      canDisable: true,
+                    ),
 
                     // 边框透明度 - 非侧边栏模式
-                    if (_config.layoutMode != 'sidebar')
-                      _buildSliderOption(
-                        '边框透明度',
-                        _config.borderAlpha.toDouble(),
-                        0,
-                        100,
-                        (v) => setState(() => _config.borderAlpha = v.round()),
-                        isPercentage: true,
-                      ),
+                    _buildSliderOption(
+                      '边框透明度',
+                      _config.borderAlpha.toDouble(),
+                      0,
+                      100,
+                      (v) => setState(() => _config.borderAlpha = v.round()),
+                      isPercentage: true,
+                    ),
 
                     // 侧边栏背景 - 仅侧边栏模式
                     if (_config.layoutMode == 'sidebar')
@@ -3831,11 +3827,12 @@ class _NavBarEditDialogState extends State<_NavBarEditDialog> {
   }
 
   void _showNumberPickerDialog(String title, double currentValue, double min, double max, ValueChanged<double> onChanged, {bool isPercentage = false}) {
+    double value = currentValue;
+
     showDialog(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setState) {
-          double value = currentValue;
           return AlertDialog(
             title: Text(title),
             content: Column(
@@ -3845,7 +3842,6 @@ class _NavBarEditDialogState extends State<_NavBarEditDialog> {
                   value: value,
                   min: min,
                   max: max,
-                  divisions: (max - min).round(), // 每次变化 1
                   onChanged: (v) => setState(() => value = v),
                 ),
                 Text(
