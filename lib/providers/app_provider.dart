@@ -4,7 +4,18 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-class AppProvider extends ChangeNotifier {
+class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
+  AppProvider() {
+    WidgetsBinding.instance.addObserver(this);
+    _loadThemeSettings();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
   static final Map<String, String> _loadedFonts = {};
 
   ThemeMode _themeMode = ThemeMode.system;
@@ -369,8 +380,11 @@ class AppProvider extends ChangeNotifier {
     );
   }
 
-  AppProvider() {
-    _loadThemeSettings();
+  @override
+  void didChangePlatformBrightness() {
+    if (_themeMode == ThemeMode.system) {
+      notifyListeners();
+    }
   }
 
   Future<void> _loadThemeSettings() async {

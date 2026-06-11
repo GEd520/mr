@@ -587,6 +587,13 @@ class _ThemeManagePageState extends State<ThemeManagePage> {
             height: 102,
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(10), // ui_panel_radius
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.12),
+                  blurRadius: 6,
+                  offset: const Offset(0, 2),
+                ),
+              ],
             ),
             child: ClipRRect(
               borderRadius: BorderRadius.circular(10),
