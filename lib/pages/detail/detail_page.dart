@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:ui';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -10,6 +11,7 @@ import '../../models/book.dart';
 import '../../models/book_source.dart';
 import '../../models/chapter.dart';
 import '../../providers/bookshelf_provider.dart';
+import '../../providers/app_provider.dart';
 import '../../routes/app_routes.dart';
 import '../../services/storage_service.dart';
 import '../../services/book_data_provider.dart';
@@ -147,11 +149,18 @@ class _DetailPageState extends State<DetailPage> {
       );
     }
 
+    final bookInfoBackground =
+        context.watch<AppProvider>().currentBookInfoBackgroundImage;
+    final hasCustomBackground =
+        bookInfoBackground != null && bookInfoBackground.isNotEmpty;
     return Scaffold(
       body: Stack(
         children: [
-          // 背景模糊图片
-          if (_book!.coverUrl.isNotEmpty)
+          if (hasCustomBackground)
+            Positioned.fill(
+              child: _buildBackgroundImage(bookInfoBackground),
+            )
+          else if (_book!.coverUrl.isNotEmpty)
             Positioned.fill(
               child: CachedNetworkImage(
                 imageUrl: _book!.coverUrl,
@@ -163,9 +172,14 @@ class _DetailPageState extends State<DetailPage> {
             ),
           Positioned.fill(
             child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+              filter: ImageFilter.blur(
+                sigmaX: hasCustomBackground ? 0 : 20,
+                sigmaY: hasCustomBackground ? 0 : 20,
+              ),
               child: Container(
-                color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.85),
+                color: Theme.of(context).colorScheme.surface.withValues(
+                  alpha: hasCustomBackground ? 0.72 : 0.85,
+                ),
               ),
             ),
           ),
@@ -188,6 +202,21 @@ class _DetailPageState extends State<DetailPage> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildBackgroundImage(String path) {
+    if (path.startsWith('http://') || path.startsWith('https://')) {
+      return CachedNetworkImage(
+        imageUrl: path,
+        fit: BoxFit.cover,
+        errorWidget: (_, __, ___) => const SizedBox.shrink(),
+      );
+    }
+    return Image.file(
+      File(path),
+      fit: BoxFit.cover,
+      errorBuilder: (_, __, ___) => const SizedBox.shrink(),
     );
   }
 

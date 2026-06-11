@@ -1,7 +1,12 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class AppProvider extends ChangeNotifier {
+  static final Map<String, String> _loadedFonts = {};
+
   ThemeMode _themeMode = ThemeMode.system;
   bool _isNoImageMode = false;
   String? _nickname;
@@ -26,6 +31,34 @@ class AppProvider extends ChangeNotifier {
   String? _nightBackgroundImage;
   int _dayBackgroundBlur = 0;
   int _nightBackgroundBlur = 0;
+  String? _dayBookInfoBackgroundImage;
+  String? _nightBookInfoBackgroundImage;
+  String? _dayPanelBackgroundImage;
+  String? _nightPanelBackgroundImage;
+  String _dayPanelBackgroundMode = 'crop';
+  String _nightPanelBackgroundMode = 'crop';
+  double _dayCornerScale = 1;
+  double _nightCornerScale = 1;
+  int _dayLayoutAlpha = 100;
+  int _nightLayoutAlpha = 100;
+  Color? _dayPanelBorderColor;
+  Color? _nightPanelBorderColor;
+  int _dayPanelBorderAlpha = 100;
+  int _nightPanelBorderAlpha = 100;
+  bool _daySearchFollow = false;
+  bool _nightSearchFollow = false;
+  bool _dayReplyFollow = false;
+  bool _nightReplyFollow = false;
+  int _dayFontScale = 10;
+  int _nightFontScale = 10;
+  String? _dayUiFontPath;
+  String? _nightUiFontPath;
+  String? _dayTitleFontPath;
+  String? _nightTitleFontPath;
+  String? _dayUiFontFamily;
+  String? _nightUiFontFamily;
+  String? _dayTitleFontFamily;
+  String? _nightTitleFontFamily;
 
   // 底栏配置
   String _navBarLayoutMode = 'floating'; // floating, standard, sidebar
@@ -94,6 +127,35 @@ class AppProvider extends ChangeNotifier {
     }
   }
 
+  bool get _usesNightTheme {
+    if (_themeMode == ThemeMode.dark) return true;
+    if (_themeMode == ThemeMode.light) return false;
+    return WidgetsBinding.instance.platformDispatcher.platformBrightness ==
+        Brightness.dark;
+  }
+
+  String? get currentBookInfoBackgroundImage => _usesNightTheme
+      ? _nightBookInfoBackgroundImage
+      : _dayBookInfoBackgroundImage;
+  String? get currentPanelBackgroundImage =>
+      _usesNightTheme ? _nightPanelBackgroundImage : _dayPanelBackgroundImage;
+  String get currentPanelBackgroundMode =>
+      _usesNightTheme ? _nightPanelBackgroundMode : _dayPanelBackgroundMode;
+  double get currentCornerScale =>
+      _usesNightTheme ? _nightCornerScale : _dayCornerScale;
+  int get currentLayoutAlpha =>
+      _usesNightTheme ? _nightLayoutAlpha : _dayLayoutAlpha;
+  Color? get currentPanelBorderColor =>
+      _usesNightTheme ? _nightPanelBorderColor : _dayPanelBorderColor;
+  int get currentPanelBorderAlpha =>
+      _usesNightTheme ? _nightPanelBorderAlpha : _dayPanelBorderAlpha;
+  bool get currentSearchFollow =>
+      _usesNightTheme ? _nightSearchFollow : _daySearchFollow;
+  bool get currentReplyFollow =>
+      _usesNightTheme ? _nightReplyFollow : _dayReplyFollow;
+  int get currentFontScale =>
+      _usesNightTheme ? _nightFontScale : _dayFontScale;
+
   Color get currentNavBarColor {
     if (_themeMode == ThemeMode.dark) {
       return _nightNavBarColor;
@@ -114,8 +176,14 @@ class AppProvider extends ChangeNotifier {
         ? Colors.transparent
         : _dayBackgroundColor;
 
+    final panelRadius = 10 * _dayCornerScale;
+    final panelBorder = _panelBorder(
+      _dayPanelBorderColor,
+      _dayPanelBorderAlpha,
+    );
     return ThemeData(
       useMaterial3: true,
+      fontFamily: _dayUiFontFamily,
       brightness: Brightness.light,
       colorScheme: ColorScheme.light(
         primary: _dayPrimaryColor,
@@ -137,7 +205,30 @@ class AppProvider extends ChangeNotifier {
           color: _foregroundFor(_dayPrimaryColor),
           fontSize: 20,
           fontWeight: FontWeight.normal,
+          fontFamily: _dayTitleFontFamily ?? _dayUiFontFamily,
         ),
+      ),
+      cardTheme: CardThemeData(
+        color: _daySurfaceColor.withValues(alpha: _dayLayoutAlpha / 100),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(panelRadius),
+          side: panelBorder,
+        ),
+      ),
+      dialogTheme: DialogThemeData(
+        backgroundColor: _daySurfaceColor.withValues(
+          alpha: _dayLayoutAlpha / 100,
+        ),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(panelRadius),
+          side: panelBorder,
+        ),
+      ),
+      inputDecorationTheme: _inputDecorationTheme(
+        _dayReplyFollow,
+        panelRadius,
+        _daySurfaceColor,
+        _dayLayoutAlpha,
       ),
       switchTheme: _switchTheme(_dayAccentColor),
       checkboxTheme: _checkboxTheme(_dayAccentColor),
@@ -185,8 +276,14 @@ class AppProvider extends ChangeNotifier {
         ? Colors.transparent
         : _nightBackgroundColor;
 
+    final panelRadius = 10 * _nightCornerScale;
+    final panelBorder = _panelBorder(
+      _nightPanelBorderColor,
+      _nightPanelBorderAlpha,
+    );
     return ThemeData(
       useMaterial3: true,
+      fontFamily: _nightUiFontFamily,
       brightness: Brightness.dark,
       colorScheme: ColorScheme.dark(
         primary: _nightPrimaryColor,
@@ -208,7 +305,30 @@ class AppProvider extends ChangeNotifier {
           color: _foregroundFor(_nightPrimaryColor),
           fontSize: 20,
           fontWeight: FontWeight.normal,
+          fontFamily: _nightTitleFontFamily ?? _nightUiFontFamily,
         ),
+      ),
+      cardTheme: CardThemeData(
+        color: _nightSurfaceColor.withValues(alpha: _nightLayoutAlpha / 100),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(panelRadius),
+          side: panelBorder,
+        ),
+      ),
+      dialogTheme: DialogThemeData(
+        backgroundColor: _nightSurfaceColor.withValues(
+          alpha: _nightLayoutAlpha / 100,
+        ),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(panelRadius),
+          side: panelBorder,
+        ),
+      ),
+      inputDecorationTheme: _inputDecorationTheme(
+        _nightReplyFollow,
+        panelRadius,
+        _nightSurfaceColor,
+        _nightLayoutAlpha,
       ),
       switchTheme: _switchTheme(_nightAccentColor),
       checkboxTheme: _checkboxTheme(_nightAccentColor),
@@ -271,6 +391,37 @@ class AppProvider extends ChangeNotifier {
     _nightBackgroundImage = prefs.getString('nightBackgroundImage');
     _dayBackgroundBlur = prefs.getInt('dayBackgroundBlur') ?? 0;
     _nightBackgroundBlur = prefs.getInt('nightBackgroundBlur') ?? 0;
+    _dayBookInfoBackgroundImage = prefs.getString('dayBookInfoBackgroundImage');
+    _nightBookInfoBackgroundImage =
+        prefs.getString('nightBookInfoBackgroundImage');
+    _dayPanelBackgroundImage = prefs.getString('dayPanelBackgroundImage');
+    _nightPanelBackgroundImage = prefs.getString('nightPanelBackgroundImage');
+    _dayPanelBackgroundMode =
+        prefs.getString('dayPanelBackgroundMode') ?? 'crop';
+    _nightPanelBackgroundMode =
+        prefs.getString('nightPanelBackgroundMode') ?? 'crop';
+    _dayCornerScale = prefs.getDouble('dayCornerScale') ?? 1;
+    _nightCornerScale = prefs.getDouble('nightCornerScale') ?? 1;
+    _dayLayoutAlpha = prefs.getInt('dayLayoutAlpha') ?? 100;
+    _nightLayoutAlpha = prefs.getInt('nightLayoutAlpha') ?? 100;
+    _dayPanelBorderColor = _storedColor(prefs, 'dayPanelBorderColor');
+    _nightPanelBorderColor = _storedColor(prefs, 'nightPanelBorderColor');
+    _dayPanelBorderAlpha = prefs.getInt('dayPanelBorderAlpha') ?? 100;
+    _nightPanelBorderAlpha = prefs.getInt('nightPanelBorderAlpha') ?? 100;
+    _daySearchFollow = prefs.getBool('daySearchFollow') ?? false;
+    _nightSearchFollow = prefs.getBool('nightSearchFollow') ?? false;
+    _dayReplyFollow = prefs.getBool('dayReplyFollow') ?? false;
+    _nightReplyFollow = prefs.getBool('nightReplyFollow') ?? false;
+    _dayFontScale = prefs.getInt('dayFontScale') ?? 10;
+    _nightFontScale = prefs.getInt('nightFontScale') ?? 10;
+    _dayUiFontPath = prefs.getString('dayUiFontPath');
+    _nightUiFontPath = prefs.getString('nightUiFontPath');
+    _dayTitleFontPath = prefs.getString('dayTitleFontPath');
+    _nightTitleFontPath = prefs.getString('nightTitleFontPath');
+    _dayUiFontFamily = await _loadFont(_dayUiFontPath, 'day_ui');
+    _nightUiFontFamily = await _loadFont(_nightUiFontPath, 'night_ui');
+    _dayTitleFontFamily = await _loadFont(_dayTitleFontPath, 'day_title');
+    _nightTitleFontFamily = await _loadFont(_nightTitleFontPath, 'night_title');
 
     // 加载底栏配置
     _navBarLayoutMode = prefs.getString('navBarLayoutMode') ?? 'floating';
@@ -294,6 +445,18 @@ class AppProvider extends ChangeNotifier {
     Color? navBarColor,
     String? backgroundImage,
     int? backgroundBlur,
+    String? bookInfoBackgroundImage,
+    String? panelBackgroundImage,
+    String? panelBackgroundMode,
+    double? cornerScale,
+    int? layoutAlpha,
+    Color? panelBorderColor,
+    int? panelBorderAlpha,
+    bool? searchFollow,
+    bool? replyFollow,
+    int? fontScale,
+    String? uiFontPath,
+    String? titleFontPath,
   }) async {
     if (primaryColor != null) _dayPrimaryColor = primaryColor;
     if (accentColor != null) _dayAccentColor = accentColor;
@@ -302,6 +465,36 @@ class AppProvider extends ChangeNotifier {
     if (navBarColor != null) _dayNavBarColor = navBarColor;
     if (backgroundImage != null) _dayBackgroundImage = backgroundImage.isEmpty ? null : backgroundImage;
     if (backgroundBlur != null) _dayBackgroundBlur = backgroundBlur;
+    _dayBookInfoBackgroundImage = _updatedPath(
+      bookInfoBackgroundImage,
+      _dayBookInfoBackgroundImage,
+    );
+    _dayPanelBackgroundImage = _updatedPath(
+      panelBackgroundImage,
+      _dayPanelBackgroundImage,
+    );
+    if (panelBackgroundMode != null) {
+      _dayPanelBackgroundMode = panelBackgroundMode;
+    }
+    if (cornerScale != null) _dayCornerScale = cornerScale.clamp(0, 3);
+    if (layoutAlpha != null) _dayLayoutAlpha = layoutAlpha.clamp(0, 100);
+    if (panelBorderColor != null) {
+      _dayPanelBorderColor = panelBorderColor.a == 0 ? null : panelBorderColor;
+    }
+    if (panelBorderAlpha != null) {
+      _dayPanelBorderAlpha = panelBorderAlpha.clamp(0, 100);
+    }
+    if (searchFollow != null) _daySearchFollow = searchFollow;
+    if (replyFollow != null) _dayReplyFollow = replyFollow;
+    if (fontScale != null) _dayFontScale = fontScale.clamp(8, 16);
+    if (uiFontPath != null) {
+      _dayUiFontPath = uiFontPath.isEmpty ? null : uiFontPath;
+      _dayUiFontFamily = await _loadFont(_dayUiFontPath, 'day_ui');
+    }
+    if (titleFontPath != null) {
+      _dayTitleFontPath = titleFontPath.isEmpty ? null : titleFontPath;
+      _dayTitleFontFamily = await _loadFont(_dayTitleFontPath, 'day_title');
+    }
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt('dayPrimaryColor', _dayPrimaryColor.value);
@@ -309,6 +502,7 @@ class AppProvider extends ChangeNotifier {
     await prefs.setInt('dayBackgroundColor', _dayBackgroundColor.value);
     await prefs.setInt('daySurfaceColor', _daySurfaceColor.value);
     await prefs.setInt('dayNavBarColor', _dayNavBarColor.value);
+    await _saveThemeExtras(prefs, isNight: false);
     if (backgroundImage != null) {
       if (backgroundImage.isEmpty) {
         await prefs.remove('dayBackgroundImage');
@@ -331,6 +525,18 @@ class AppProvider extends ChangeNotifier {
     Color? navBarColor,
     String? backgroundImage,
     int? backgroundBlur,
+    String? bookInfoBackgroundImage,
+    String? panelBackgroundImage,
+    String? panelBackgroundMode,
+    double? cornerScale,
+    int? layoutAlpha,
+    Color? panelBorderColor,
+    int? panelBorderAlpha,
+    bool? searchFollow,
+    bool? replyFollow,
+    int? fontScale,
+    String? uiFontPath,
+    String? titleFontPath,
   }) async {
     if (primaryColor != null) _nightPrimaryColor = primaryColor;
     if (accentColor != null) _nightAccentColor = accentColor;
@@ -339,6 +545,40 @@ class AppProvider extends ChangeNotifier {
     if (navBarColor != null) _nightNavBarColor = navBarColor;
     if (backgroundImage != null) _nightBackgroundImage = backgroundImage.isEmpty ? null : backgroundImage;
     if (backgroundBlur != null) _nightBackgroundBlur = backgroundBlur;
+    _nightBookInfoBackgroundImage = _updatedPath(
+      bookInfoBackgroundImage,
+      _nightBookInfoBackgroundImage,
+    );
+    _nightPanelBackgroundImage = _updatedPath(
+      panelBackgroundImage,
+      _nightPanelBackgroundImage,
+    );
+    if (panelBackgroundMode != null) {
+      _nightPanelBackgroundMode = panelBackgroundMode;
+    }
+    if (cornerScale != null) _nightCornerScale = cornerScale.clamp(0, 3);
+    if (layoutAlpha != null) _nightLayoutAlpha = layoutAlpha.clamp(0, 100);
+    if (panelBorderColor != null) {
+      _nightPanelBorderColor =
+          panelBorderColor.a == 0 ? null : panelBorderColor;
+    }
+    if (panelBorderAlpha != null) {
+      _nightPanelBorderAlpha = panelBorderAlpha.clamp(0, 100);
+    }
+    if (searchFollow != null) _nightSearchFollow = searchFollow;
+    if (replyFollow != null) _nightReplyFollow = replyFollow;
+    if (fontScale != null) _nightFontScale = fontScale.clamp(8, 16);
+    if (uiFontPath != null) {
+      _nightUiFontPath = uiFontPath.isEmpty ? null : uiFontPath;
+      _nightUiFontFamily = await _loadFont(_nightUiFontPath, 'night_ui');
+    }
+    if (titleFontPath != null) {
+      _nightTitleFontPath = titleFontPath.isEmpty ? null : titleFontPath;
+      _nightTitleFontFamily = await _loadFont(
+        _nightTitleFontPath,
+        'night_title',
+      );
+    }
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt('nightPrimaryColor', _nightPrimaryColor.value);
@@ -346,6 +586,7 @@ class AppProvider extends ChangeNotifier {
     await prefs.setInt('nightBackgroundColor', _nightBackgroundColor.value);
     await prefs.setInt('nightSurfaceColor', _nightSurfaceColor.value);
     await prefs.setInt('nightNavBarColor', _nightNavBarColor.value);
+    await _saveThemeExtras(prefs, isNight: true);
     if (backgroundImage != null) {
       if (backgroundImage.isEmpty) {
         await prefs.remove('nightBackgroundImage');
@@ -364,6 +605,131 @@ class AppProvider extends ChangeNotifier {
     return ThemeData.estimateBrightnessForColor(background) == Brightness.dark
         ? Colors.white
         : Colors.black87;
+  }
+
+  static BorderSide _panelBorder(Color? color, int alpha) {
+    if (color == null) return BorderSide.none;
+    return BorderSide(color: color.withValues(alpha: alpha / 100));
+  }
+
+  static InputDecorationTheme _inputDecorationTheme(
+    bool followTheme,
+    double radius,
+    Color surface,
+    int alpha,
+  ) {
+    if (!followTheme) return const InputDecorationTheme();
+    final border = OutlineInputBorder(
+      borderRadius: BorderRadius.circular(radius),
+      borderSide: BorderSide.none,
+    );
+    return InputDecorationTheme(
+      filled: true,
+      fillColor: surface.withValues(alpha: alpha / 100),
+      border: border,
+      enabledBorder: border,
+      focusedBorder: border,
+    );
+  }
+
+  static Color? _storedColor(SharedPreferences prefs, String key) {
+    final value = prefs.getInt(key);
+    return value == null ? null : Color(value);
+  }
+
+  static String? _updatedPath(String? value, String? current) {
+    if (value == null) return current;
+    return value.isEmpty ? null : value;
+  }
+
+  Future<String?> _loadFont(String? path, String prefix) async {
+    if (path == null || path.isEmpty || path.startsWith('http')) return null;
+    final cached = _loadedFonts[path];
+    if (cached != null) return cached;
+    final file = File(path);
+    if (!await file.exists()) return null;
+    try {
+      final bytes = await file.readAsBytes();
+      final family = 'theme_${prefix}_${path.hashCode.abs()}';
+      final loader = FontLoader(family)
+        ..addFont(Future.value(ByteData.sublistView(bytes)));
+      await loader.load();
+      _loadedFonts[path] = family;
+      return family;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _saveThemeExtras(
+    SharedPreferences prefs, {
+    required bool isNight,
+  }) async {
+    final prefix = isNight ? 'night' : 'day';
+    final bookInfo = isNight
+        ? _nightBookInfoBackgroundImage
+        : _dayBookInfoBackgroundImage;
+    final panel = isNight
+        ? _nightPanelBackgroundImage
+        : _dayPanelBackgroundImage;
+    final border = isNight ? _nightPanelBorderColor : _dayPanelBorderColor;
+    await _saveOptionalString(prefs, '${prefix}BookInfoBackgroundImage', bookInfo);
+    await _saveOptionalString(prefs, '${prefix}PanelBackgroundImage', panel);
+    await prefs.setString(
+      '${prefix}PanelBackgroundMode',
+      isNight ? _nightPanelBackgroundMode : _dayPanelBackgroundMode,
+    );
+    await prefs.setDouble(
+      '${prefix}CornerScale',
+      isNight ? _nightCornerScale : _dayCornerScale,
+    );
+    await prefs.setInt(
+      '${prefix}LayoutAlpha',
+      isNight ? _nightLayoutAlpha : _dayLayoutAlpha,
+    );
+    if (border == null) {
+      await prefs.remove('${prefix}PanelBorderColor');
+    } else {
+      await prefs.setInt('${prefix}PanelBorderColor', border.value);
+    }
+    await prefs.setInt(
+      '${prefix}PanelBorderAlpha',
+      isNight ? _nightPanelBorderAlpha : _dayPanelBorderAlpha,
+    );
+    await prefs.setBool(
+      '${prefix}SearchFollow',
+      isNight ? _nightSearchFollow : _daySearchFollow,
+    );
+    await prefs.setBool(
+      '${prefix}ReplyFollow',
+      isNight ? _nightReplyFollow : _dayReplyFollow,
+    );
+    await prefs.setInt(
+      '${prefix}FontScale',
+      isNight ? _nightFontScale : _dayFontScale,
+    );
+    await _saveOptionalString(
+      prefs,
+      '${prefix}UiFontPath',
+      isNight ? _nightUiFontPath : _dayUiFontPath,
+    );
+    await _saveOptionalString(
+      prefs,
+      '${prefix}TitleFontPath',
+      isNight ? _nightTitleFontPath : _dayTitleFontPath,
+    );
+  }
+
+  static Future<void> _saveOptionalString(
+    SharedPreferences prefs,
+    String key,
+    String? value,
+  ) async {
+    if (value == null || value.isEmpty) {
+      await prefs.remove(key);
+    } else {
+      await prefs.setString(key, value);
+    }
   }
 
   static SwitchThemeData _switchTheme(Color accent) {

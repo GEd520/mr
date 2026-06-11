@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../providers/app_provider.dart';
@@ -209,10 +211,40 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   Widget _buildSection(List<Widget> children) {
-    return ColoredBox(
-      color: Colors.transparent,
+    final provider = context.watch<AppProvider>();
+    final imagePath = provider.currentPanelBackgroundImage;
+    final borderColor = provider.currentPanelBorderColor;
+    final radius = 10 * provider.currentCornerScale;
+    return Container(
+      clipBehavior: imagePath == null ? Clip.none : Clip.antiAlias,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(radius),
+        border: borderColor == null
+            ? null
+            : Border.all(
+                color: borderColor.withValues(
+                  alpha: provider.currentPanelBorderAlpha / 100,
+                ),
+              ),
+        image: imagePath == null || imagePath.isEmpty
+            ? null
+            : DecorationImage(
+                image: _panelImageProvider(imagePath),
+                fit: provider.currentPanelBackgroundMode == 'fit'
+                    ? BoxFit.contain
+                    : BoxFit.cover,
+                opacity: provider.currentLayoutAlpha / 100,
+              ),
+      ),
       child: Column(children: children),
     );
+  }
+
+  ImageProvider _panelImageProvider(String path) {
+    if (path.startsWith('http://') || path.startsWith('https://')) {
+      return NetworkImage(path);
+    }
+    return FileImage(File(path));
   }
 
   Widget _buildCategoryTitle(String title) {

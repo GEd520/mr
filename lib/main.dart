@@ -89,8 +89,16 @@ class DanShenqiApp extends StatelessWidget {
             onGenerateRoute: AppRoutes.generateRoute,
             // 应用全局背景图片
             builder: (context, widget) {
+              final mediaQuery = MediaQuery.of(context);
               return ThemedBackground(
-                child: widget ?? const SizedBox(),
+                child: MediaQuery(
+                  data: mediaQuery.copyWith(
+                    textScaler: TextScaler.linear(
+                      appProvider.currentFontScale / 10,
+                    ),
+                  ),
+                  child: widget ?? const SizedBox(),
+                ),
               );
             },
           );

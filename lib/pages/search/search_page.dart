@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:provider/provider.dart';
 import '../../providers/search_provider.dart';
+import '../../providers/app_provider.dart';
 import '../../models/book.dart';
 import '../../models/book_source.dart';
 import '../../routes/app_routes.dart';
@@ -48,6 +49,10 @@ class _SearchPageState extends State<SearchPage> {
 
   @override
   Widget build(BuildContext context) {
+    final appProvider = context.watch<AppProvider>();
+    final searchRadius = appProvider.currentSearchFollow
+        ? 10 * appProvider.currentCornerScale
+        : 16.0;
     return Scaffold(
       body: Consumer<SearchProvider>(
         builder: (context, provider, child) {
@@ -93,9 +98,23 @@ class _SearchPageState extends State<SearchPage> {
                                           },
                                         )
                                       : null,
-                                  border: OutlineInputBorder(
-                                    borderRadius: BorderRadius.circular(16),
-                                  ),
+                                   border: OutlineInputBorder(
+                                     borderRadius: BorderRadius.circular(
+                                       searchRadius,
+                                     ),
+                                   ),
+                                   filled: appProvider.currentSearchFollow,
+                                   fillColor: appProvider.currentSearchFollow
+                                       ? Theme.of(context)
+                                             .colorScheme
+                                             .surface
+                                             .withValues(
+                                               alpha:
+                                                   appProvider
+                                                       .currentLayoutAlpha /
+                                                   100,
+                                             )
+                                       : null,
                                   contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0),
                                   isDense: true,
                                 ),

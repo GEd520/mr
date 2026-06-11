@@ -1,4 +1,7 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:file_picker/file_picker.dart';
@@ -265,6 +268,18 @@ class _ThemeManagePageState extends State<ThemeManagePage> {
         navBarColor: theme.navBarColor,
         backgroundImage: theme.mainBgImage ?? '',
         backgroundBlur: theme.bgImageBlur,
+        bookInfoBackgroundImage: theme.bookInfoBgImage ?? '',
+        panelBackgroundImage: theme.panelBgImage ?? '',
+        panelBackgroundMode: theme.panelBgMode,
+        cornerScale: theme.cornerScale,
+        layoutAlpha: theme.layoutAlpha,
+        panelBorderColor: theme.panelBorderColor ?? Colors.transparent,
+        panelBorderAlpha: theme.panelBorderAlpha,
+        searchFollow: theme.searchFollow,
+        replyFollow: theme.replyFollow,
+        fontScale: theme.fontScale,
+        uiFontPath: theme.uiFont ?? '',
+        titleFontPath: theme.titleFont ?? '',
       );
     } else {
       provider.setThemeMode(ThemeMode.light);
@@ -276,10 +291,23 @@ class _ThemeManagePageState extends State<ThemeManagePage> {
         navBarColor: theme.navBarColor,
         backgroundImage: theme.mainBgImage ?? '',
         backgroundBlur: theme.bgImageBlur,
+        bookInfoBackgroundImage: theme.bookInfoBgImage ?? '',
+        panelBackgroundImage: theme.panelBgImage ?? '',
+        panelBackgroundMode: theme.panelBgMode,
+        cornerScale: theme.cornerScale,
+        layoutAlpha: theme.layoutAlpha,
+        panelBorderColor: theme.panelBorderColor ?? Colors.transparent,
+        panelBorderAlpha: theme.panelBorderAlpha,
+        searchFollow: theme.searchFollow,
+        replyFollow: theme.replyFollow,
+        fontScale: theme.fontScale,
+        uiFontPath: theme.uiFont ?? '',
+        titleFontPath: theme.titleFont ?? '',
       );
     }
     setState(() => _activeThemeId = theme.id);
     await _saveThemes();
+    await _recordCloudSyncTask('主题已应用', theme);
 
     // 显示提示信息
     if (mounted) {
@@ -301,7 +329,6 @@ class _ThemeManagePageState extends State<ThemeManagePage> {
         title: const Text('主题管理'),
         actions: [
           PopupMenuButton<String>(
-            // 添加偏移量，避免遮挡其他按钮
             offset: const Offset(0, 48),
             onSelected: (value) {
               switch (value) {
@@ -310,6 +337,12 @@ class _ThemeManagePageState extends State<ThemeManagePage> {
                   break;
                 case 'import':
                   _importThemes();
+                  break;
+                case 'cloud_sync_tasks':
+                  Navigator.push(
+                    context,
+                    AppPageRoute(builder: (_) => const CloudSyncTaskPage()),
+                  );
                   break;
                 case 'reset':
                   _resetToDefault();
@@ -324,6 +357,10 @@ class _ThemeManagePageState extends State<ThemeManagePage> {
               const PopupMenuItem(
                 value: 'import',
                 child: Text('导入主题包'),
+              ),
+              const PopupMenuItem(
+                value: 'cloud_sync_tasks',
+                child: Text('云端同步任务'),
               ),
               const PopupMenuItem(
                 value: 'reset',
@@ -625,7 +662,11 @@ class _ThemeManagePageState extends State<ThemeManagePage> {
                   child: Row(
                     children: [
                       // btn_apply - 应用按钮
-                      _buildActionButton('应用', () => _applyTheme(theme)),
+                      _buildActionButton(
+                        isActive ? '已应用' : '应用',
+                        () => _applyTheme(theme),
+                        textColor: isActive ? Colors.red : null,
+                      ),
                       
                       const SizedBox(width: 8),
                       
@@ -648,7 +689,11 @@ class _ThemeManagePageState extends State<ThemeManagePage> {
     );
   }
 
-  Widget _buildActionButton(String text, VoidCallback onTap) {
+  Widget _buildActionButton(
+    String text,
+    VoidCallback onTap, {
+    Color? textColor,
+  }) {
     final colorScheme = Theme.of(context).colorScheme;
     return GestureDetector(
       onTap: onTap,
@@ -665,7 +710,8 @@ class _ThemeManagePageState extends State<ThemeManagePage> {
             text,
             style: TextStyle(
               fontSize: 13,
-              color: colorScheme.onSurface,
+              color: textColor ?? colorScheme.onSurface,
+              fontWeight: textColor == null ? FontWeight.normal : FontWeight.w600,
             ),
           ),
         ),
@@ -761,8 +807,9 @@ class _ThemeManagePageState extends State<ThemeManagePage> {
   }
 
   void _editTheme(ThemeConfig? existing) {
-    final isEdit = existing != null;
-    final theme = existing ?? ThemeConfig(
+    final isBuiltinCopy = existing?.isBuiltin == true;
+    final isEdit = existing != null && !isBuiltinCopy;
+    final theme = existing?.copy() ?? ThemeConfig(
       id: 'custom_${DateTime.now().millisecondsSinceEpoch}',
       name: '新主题',
       isNight: _isNightTheme,
@@ -772,6 +819,13 @@ class _ThemeManagePageState extends State<ThemeManagePage> {
       backgroundColor: _isNightTheme ? const Color(0xFF424242) : const Color(0xFFF5F5F5),
       navBarColor: _isNightTheme ? const Color(0xFF424242) : const Color(0xFFEEEEEE),
     );
+    if (isBuiltinCopy) {
+      theme
+        ..id = 'custom_${DateTime.now().millisecondsSinceEpoch}'
+        ..name = '${theme.name} 副本'
+        ..isBuiltin = false
+        ..updatedAt = DateTime.now();
+    }
 
     showDialog(
       context: context,
@@ -780,11 +834,18 @@ class _ThemeManagePageState extends State<ThemeManagePage> {
         isEdit: isEdit,
         onSave: (updatedTheme) async {
           if (isEdit) {
-            setState(() {});
+            final index = _themes.indexWhere((item) => item.id == updatedTheme.id);
+            if (index >= 0) {
+              setState(() => _themes[index] = updatedTheme);
+            }
           } else {
             setState(() => _themes.add(updatedTheme));
           }
           await _saveThemes();
+          await _recordCloudSyncTask('主题已保存', updatedTheme);
+          if (isEdit && updatedTheme.id == _activeThemeId) {
+            await _applyTheme(updatedTheme);
+          }
         },
       ),
     );
@@ -807,6 +868,10 @@ class _ThemeManagePageState extends State<ThemeManagePage> {
       items.add(_buildDialogItem('编辑', () {
         Navigator.pop(context);
         _editTheme(theme);
+      }));
+      items.add(_buildDialogItem('复制主题', () {
+        Navigator.pop(context);
+        _copyTheme(theme);
       }));
       items.add(_buildDialogItem('导出主题包', () {
         Navigator.pop(context);
@@ -835,23 +900,35 @@ class _ThemeManagePageState extends State<ThemeManagePage> {
   }
 
   void _exportTheme(ThemeConfig theme) {
-    // 导出主题为 JSON
     final json = theme.toJson();
+    Share.share(json, subject: '主题分享');
+  }
+
+  Future<void> _copyTheme(ThemeConfig theme) async {
+    final json = theme.toJson();
+    await Clipboard.setData(ClipboardData(text: json));
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('主题配置已生成\n$json'),
-        duration: const Duration(seconds: 5),
-        action: SnackBarAction(
-          label: '复制',
-          onPressed: () {
-            // 复制到剪贴板
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('已复制到剪贴板')),
-            );
-          },
-        ),
-      ),
+      const SnackBar(content: Text('已复制到剪贴板')),
     );
+  }
+
+  Future<void> _recordCloudSyncTask(String action, ThemeConfig theme) async {
+    final prefs = await SharedPreferences.getInstance();
+    final tasks = prefs.getStringList('cloudSyncTasks') ?? [];
+    tasks.insert(
+      0,
+      jsonEncode({
+        'action': action,
+        'themeId': theme.id,
+        'themeName': theme.name,
+        'time': DateTime.now().millisecondsSinceEpoch,
+      }),
+    );
+    if (tasks.length > 20) {
+      tasks.removeRange(20, tasks.length);
+    }
+    await prefs.setStringList('cloudSyncTasks', tasks);
   }
 
   void _exportAllThemes() {
@@ -892,21 +969,62 @@ class _ThemeManagePageState extends State<ThemeManagePage> {
   }
 
   void _importThemes() {
+    final controller = TextEditingController();
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('导入主题包'),
-        content: const Text('请粘贴主题配置数据：'),
+        content: SizedBox(
+          width: 420,
+          child: TextField(
+            controller: controller,
+            minLines: 5,
+            maxLines: 10,
+            decoration: const InputDecoration(
+              hintText: '粘贴一个或多个主题配置，每行一个',
+              border: OutlineInputBorder(),
+            ),
+          ),
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
             child: const Text('取消'),
           ),
           TextButton(
-            onPressed: () {
+            onPressed: () async {
+              final lines = controller.text
+                  .split(RegExp(r'[\r\n]+'))
+                  .map((line) => line.trim())
+                  .where((line) => line.isNotEmpty);
+              final imported = <ThemeConfig>[];
+              var failed = 0;
+              for (final line in lines) {
+                try {
+                  final theme = ThemeConfig.fromJson(line)
+                    ..id = 'custom_${DateTime.now().microsecondsSinceEpoch}_${imported.length}'
+                    ..isBuiltin = false
+                    ..updatedAt = DateTime.now();
+                  imported.add(theme);
+                } catch (_) {
+                  failed++;
+                }
+              }
+              if (imported.isNotEmpty) {
+                setState(() => _themes.addAll(imported));
+                await _saveThemes();
+              }
+              if (!ctx.mounted) return;
               Navigator.pop(ctx);
+              if (!mounted) return;
               ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('导入功能开发中...')),
+                SnackBar(
+                  content: Text(
+                    imported.isEmpty
+                        ? '没有可导入的有效主题'
+                        : '已导入 ${imported.length} 个主题${failed > 0 ? '，$failed 个失败' : ''}',
+                  ),
+                ),
               );
             },
             child: const Text('导入'),
@@ -967,6 +1085,158 @@ class _ThemeManagePageState extends State<ThemeManagePage> {
   }
 }
 
+class CloudSyncTaskPage extends StatefulWidget {
+  const CloudSyncTaskPage({super.key});
+
+  @override
+  State<CloudSyncTaskPage> createState() => _CloudSyncTaskPageState();
+}
+
+class _CloudSyncTaskPageState extends State<CloudSyncTaskPage> {
+  final List<_CloudSyncTaskEntry> _tasks = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadTasks();
+  }
+
+  Future<void> _loadTasks() async {
+    final prefs = await SharedPreferences.getInstance();
+    final rawTasks = prefs.getStringList('cloudSyncTasks') ?? [];
+    final tasks = <_CloudSyncTaskEntry>[];
+    for (final raw in rawTasks) {
+      try {
+        tasks.add(_CloudSyncTaskEntry.fromJson(jsonDecode(raw) as Map<String, dynamic>));
+      } catch (_) {
+        continue;
+      }
+    }
+    if (!mounted) return;
+    setState(() {
+      _tasks
+        ..clear()
+        ..addAll(tasks);
+    });
+  }
+
+  Future<void> _clearTasks() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('cloudSyncTasks');
+    if (!mounted) return;
+    setState(_tasks.clear);
+  }
+
+  String _formatTime(int millisecondsSinceEpoch) {
+    final time = DateTime.fromMillisecondsSinceEpoch(millisecondsSinceEpoch);
+    return '${time.year}-${time.month.toString().padLeft(2, '0')}-${time.day.toString().padLeft(2, '0')} '
+        '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('云端同步任务'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            tooltip: '刷新',
+            onPressed: _loadTasks,
+          ),
+          if (_tasks.isNotEmpty)
+            IconButton(
+              icon: const Icon(Icons.delete_outline),
+              tooltip: '清空',
+              onPressed: _clearTasks,
+            ),
+        ],
+      ),
+      body: _tasks.isEmpty
+          ? Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Text(
+                  '暂无云端同步任务\n\n主题被应用、保存或复制后，会在这里记录待同步项。',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: colorScheme.onSurfaceVariant,
+                    height: 1.6,
+                  ),
+                ),
+              ),
+            )
+          : ListView.separated(
+              padding: const EdgeInsets.all(16),
+              itemCount: _tasks.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 10),
+              itemBuilder: (context, index) {
+                final task = _tasks[index];
+                return Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: colorScheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        task.action,
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                          color: colorScheme.onSurface,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        task.themeName,
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        _formatTime(task.time),
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+    );
+  }
+}
+
+class _CloudSyncTaskEntry {
+  final String action;
+  final String themeName;
+  final int time;
+
+  _CloudSyncTaskEntry({
+    required this.action,
+    required this.themeName,
+    required this.time,
+  });
+
+  factory _CloudSyncTaskEntry.fromJson(Map<String, dynamic> json) {
+    return _CloudSyncTaskEntry(
+      action: json['action'] as String? ?? '同步任务',
+      themeName: json['themeName'] as String? ?? '未知主题',
+      time: json['time'] as int? ?? DateTime.now().millisecondsSinceEpoch,
+    );
+  }
+}
+
 // 主题编辑对话框 - 完全参考 legado-main 的 dialog_theme_package_edit.xml
 class _ThemeEditDialog extends StatefulWidget {
   final ThemeConfig theme;
@@ -991,7 +1261,7 @@ class _ThemeEditDialogState extends State<_ThemeEditDialog> {
   @override
   void initState() {
     super.initState();
-    _theme = widget.theme;
+    _theme = widget.theme.copy();
     _nameController.text = _theme.name;
   }
 
@@ -1390,11 +1660,13 @@ class _ThemeEditDialogState extends State<_ThemeEditDialog> {
     double hue = HSVColor.fromColor(currentColor).hue;
     double saturation = HSVColor.fromColor(currentColor).saturation;
     double value = HSVColor.fromColor(currentColor).value;
+    bool isEditingColorCode = false;
     
     // 颜色编码输入控制器
     final colorController = TextEditingController(
       text: '#${currentColor.value.toRadixString(16).padLeft(8, '0').substring(2).toUpperCase()}',
     );
+    final colorFocusNode = FocusNode();
 
     showDialog(
       context: context,
@@ -1402,9 +1674,9 @@ class _ThemeEditDialogState extends State<_ThemeEditDialog> {
         builder: (ctx, setDialogState) {
           final selectedColor = HSVColor.fromAHSV(1.0, hue, saturation, value).toColor();
           
-          // 更新颜色编码显示
+          // 滑动调色时同步编码；手动输入期间不覆盖用户正在编辑的内容。
           final colorHex = '#${selectedColor.value.toRadixString(16).padLeft(8, '0').substring(2).toUpperCase()}';
-          if (colorController.text != colorHex) {
+          if (!isEditingColorCode && colorController.text != colorHex) {
             colorController.text = colorHex;
             colorController.selection = TextSelection.collapsed(offset: colorHex.length);
           }
@@ -1454,7 +1726,13 @@ class _ThemeEditDialogState extends State<_ThemeEditDialog> {
                     value: hue,
                     min: 0,
                     max: 360,
-                    onChanged: (v) => setDialogState(() => hue = v),
+                    onChanged: (v) {
+                      colorFocusNode.unfocus();
+                      setDialogState(() {
+                        isEditingColorCode = false;
+                        hue = v;
+                      });
+                    },
                     displayValue: hue.round().toString(),
                     gradientColors: [
                       const Color(0xFFFF0000), // 红
@@ -1475,7 +1753,13 @@ class _ThemeEditDialogState extends State<_ThemeEditDialog> {
                     value: saturation,
                     min: 0,
                     max: 1,
-                    onChanged: (v) => setDialogState(() => saturation = v),
+                    onChanged: (v) {
+                      colorFocusNode.unfocus();
+                      setDialogState(() {
+                        isEditingColorCode = false;
+                        saturation = v;
+                      });
+                    },
                     displayValue: '${(saturation * 100).round()}%',
                     gradientColors: [
                       HSVColor.fromAHSV(1.0, hue, 0, value).toColor(),
@@ -1491,7 +1775,13 @@ class _ThemeEditDialogState extends State<_ThemeEditDialog> {
                     value: value,
                     min: 0,
                     max: 1,
-                    onChanged: (v) => setDialogState(() => value = v),
+                    onChanged: (v) {
+                      colorFocusNode.unfocus();
+                      setDialogState(() {
+                        isEditingColorCode = false;
+                        value = v;
+                      });
+                    },
                     displayValue: '${(value * 100).round()}%',
                     gradientColors: [
                       HSVColor.fromAHSV(1.0, hue, saturation, 0).toColor(),
@@ -1508,6 +1798,7 @@ class _ThemeEditDialogState extends State<_ThemeEditDialog> {
                       Expanded(
                         child: TextField(
                           controller: colorController,
+                          focusNode: colorFocusNode,
                           decoration: InputDecoration(
                             hintText: '#RRGGBB',
                             isDense: true,
@@ -1515,18 +1806,37 @@ class _ThemeEditDialogState extends State<_ThemeEditDialog> {
                             border: OutlineInputBorder(
                               borderRadius: BorderRadius.circular(8),
                             ),
-                          ),
-                          style: const TextStyle(fontSize: 14, fontFamily: 'monospace'),
-                          onSubmitted: (text) {
-                            final color = _parseColor(text);
-                            if (color != null) {
-                              setDialogState(() {
-                                hue = HSVColor.fromColor(color).hue;
-                                saturation = HSVColor.fromColor(color).saturation;
-                                value = HSVColor.fromColor(color).value;
-                              });
-                            }
-                          },
+                           ),
+                           style: const TextStyle(fontSize: 14, fontFamily: 'monospace'),
+                           keyboardType: TextInputType.text,
+                           textCapitalization: TextCapitalization.characters,
+                           autocorrect: false,
+                           enableSuggestions: false,
+                           onTap: () {
+                             isEditingColorCode = true;
+                           },
+                           onChanged: (text) {
+                             final color = _parseColor(text);
+                             if (color == null) return;
+                             final hsv = HSVColor.fromColor(color);
+                             setDialogState(() {
+                               hue = hsv.hue;
+                               saturation = hsv.saturation;
+                               value = hsv.value;
+                             });
+                           },
+                           onSubmitted: (text) {
+                             final color = _parseColor(text);
+                             if (color != null) {
+                               final hsv = HSVColor.fromColor(color);
+                               setDialogState(() {
+                                 hue = hsv.hue;
+                                 saturation = hsv.saturation;
+                                 value = hsv.value;
+                                 isEditingColorCode = false;
+                               });
+                             }
+                           },
                         ),
                       ),
                       const SizedBox(width: 8),
@@ -1537,12 +1847,14 @@ class _ThemeEditDialogState extends State<_ThemeEditDialog> {
                           style: TextStyle(color: colorScheme.onSurfaceVariant),
                         ),
                       ),
-                      const SizedBox(width: 8),
-                      TextButton(
-                        onPressed: () {
-                          onChanged(selectedColor);
-                          Navigator.pop(ctx);
-                        },
+                       const SizedBox(width: 8),
+                       TextButton(
+                         onPressed: () {
+                           onChanged(
+                             _parseColor(colorController.text) ?? selectedColor,
+                           );
+                           Navigator.pop(ctx);
+                         },
                         child: Text(
                           '确定',
                           style: TextStyle(
@@ -1559,7 +1871,10 @@ class _ThemeEditDialogState extends State<_ThemeEditDialog> {
           );
         },
       ),
-    );
+    ).whenComplete(() {
+      colorController.dispose();
+      colorFocusNode.dispose();
+    });
   }
   
   /// 解析颜色字符串，支持 #RRGGBB、#AARRGGBB、RRGGBB 等格式
@@ -1614,6 +1929,7 @@ class _ThemeEditDialogState extends State<_ThemeEditDialog> {
         ),
         Expanded(
           child: Stack(
+            clipBehavior: Clip.none,
             children: [
               // 渐变背景
               Container(
@@ -1626,14 +1942,15 @@ class _ThemeEditDialogState extends State<_ThemeEditDialog> {
                 ),
               ),
               // 滑块
-              SliderTheme(
-                data: SliderThemeData(
-                  trackHeight: 24,
-                  thumbColor: Colors.white,
-                  thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8),
-                  overlayColor: Colors.white.withOpacity(0.2),
-                  activeTrackColor: Colors.transparent,
-                  inactiveTrackColor: Colors.transparent,
+               SliderTheme(
+                 data: SliderThemeData(
+                   trackHeight: 24,
+                   trackShape: const _FullWidthSliderTrackShape(),
+                   thumbColor: Colors.white,
+                   thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8),
+                   overlayShape: SliderComponentShape.noOverlay,
+                   activeTrackColor: Colors.transparent,
+                   inactiveTrackColor: Colors.transparent,
                 ),
                 child: Slider(
                   value: value,
@@ -2051,6 +2368,27 @@ class _ThemeEditDialogState extends State<_ThemeEditDialog> {
   }
 }
 
+class _FullWidthSliderTrackShape extends RoundedRectSliderTrackShape {
+  const _FullWidthSliderTrackShape();
+
+  @override
+  Rect getPreferredRect({
+    required RenderBox parentBox,
+    Offset offset = Offset.zero,
+    required SliderThemeData sliderTheme,
+    bool isEnabled = false,
+    bool isDiscrete = false,
+  }) {
+    final trackHeight = sliderTheme.trackHeight ?? 2;
+    return Rect.fromLTWH(
+      offset.dx,
+      offset.dy + (parentBox.size.height - trackHeight) / 2,
+      parentBox.size.width,
+      trackHeight,
+    );
+  }
+}
+
 /// 主题配置类 - 参考 legado-main 的 ThemeConfig.Config
 class ThemeConfig {
   String id;
@@ -2107,12 +2445,55 @@ class ThemeConfig {
     DateTime? updatedAt,
   }) : updatedAt = updatedAt ?? DateTime.now();
 
+  ThemeConfig copy() {
+    return ThemeConfig(
+      id: id,
+      name: name,
+      isNight: isNight,
+      isBuiltin: isBuiltin,
+      primaryColor: primaryColor,
+      accentColor: accentColor,
+      backgroundColor: backgroundColor,
+      navBarColor: navBarColor,
+      mainBgImage: mainBgImage,
+      bgImageBlur: bgImageBlur,
+      bookInfoBgImage: bookInfoBgImage,
+      panelBgImage: panelBgImage,
+      panelBgMode: panelBgMode,
+      cornerScale: cornerScale,
+      layoutAlpha: layoutAlpha,
+      panelBorderColor: panelBorderColor,
+      panelBorderAlpha: panelBorderAlpha,
+      searchFollow: searchFollow,
+      replyFollow: replyFollow,
+      fontScale: fontScale,
+      uiFont: uiFont,
+      titleFont: titleFont,
+      updatedAt: updatedAt,
+    );
+  }
+
   String toJson() {
     return '$id|$name|$isNight|$isBuiltin|${primaryColor.value}|${accentColor.value}|${backgroundColor.value}|${navBarColor.value}|${mainBgImage ?? ''}|$bgImageBlur|${bookInfoBgImage ?? ''}|${panelBgImage ?? ''}|$panelBgMode|$cornerScale|$layoutAlpha|${panelBorderColor?.value ?? 0}|$panelBorderAlpha|$searchFollow|$replyFollow|$fontScale|${uiFont ?? ''}|${titleFont ?? ''}|${updatedAt.millisecondsSinceEpoch}';
   }
 
   factory ThemeConfig.fromJson(String json) {
     final parts = json.split('|');
+    if (parts.length < 8) {
+      throw const FormatException('主题配置字段不足');
+    }
+    String valueAt(int index, [String fallback = '']) {
+      return index < parts.length ? parts[index] : fallback;
+    }
+
+    int intAt(int index, int fallback) {
+      return int.tryParse(valueAt(index)) ?? fallback;
+    }
+
+    double doubleAt(int index, double fallback) {
+      return double.tryParse(valueAt(index)) ?? fallback;
+    }
+
     return ThemeConfig(
       id: parts[0],
       name: parts[1],
@@ -2122,21 +2503,25 @@ class ThemeConfig {
       accentColor: Color(int.parse(parts[5])),
       backgroundColor: Color(int.parse(parts[6])),
       navBarColor: Color(int.parse(parts[7])),
-      mainBgImage: parts[8].isEmpty ? null : parts[8],
-      bgImageBlur: int.parse(parts[9]),
-      bookInfoBgImage: parts[10].isEmpty ? null : parts[10],
-      panelBgImage: parts[11].isEmpty ? null : parts[11],
-      panelBgMode: parts[12],
-      cornerScale: double.parse(parts[13]),
-      layoutAlpha: int.parse(parts[14]),
-      panelBorderColor: int.parse(parts[15]) == 0 ? null : Color(int.parse(parts[15])),
-      panelBorderAlpha: int.parse(parts[16]),
-      searchFollow: parts[17] == 'true',
-      replyFollow: parts[18] == 'true',
-      fontScale: int.parse(parts[19]),
-      uiFont: parts[20].isEmpty ? null : parts[20],
-      titleFont: parts[21].isEmpty ? null : parts[21],
-      updatedAt: parts.length > 22 ? DateTime.fromMillisecondsSinceEpoch(int.parse(parts[22])) : DateTime.now(),
+      mainBgImage: valueAt(8).isEmpty ? null : valueAt(8),
+      bgImageBlur: intAt(9, 0).clamp(0, 25),
+      bookInfoBgImage: valueAt(10).isEmpty ? null : valueAt(10),
+      panelBgImage: valueAt(11).isEmpty ? null : valueAt(11),
+      panelBgMode: valueAt(12, 'crop') == 'fit' ? 'fit' : 'crop',
+      cornerScale: doubleAt(13, 1).clamp(0, 3),
+      layoutAlpha: intAt(14, 100).clamp(0, 100),
+      panelBorderColor: intAt(15, 0) == 0
+          ? null
+          : Color(intAt(15, 0)),
+      panelBorderAlpha: intAt(16, 100).clamp(0, 100),
+      searchFollow: valueAt(17) == 'true',
+      replyFollow: valueAt(18) == 'true',
+      fontScale: intAt(19, 10).clamp(8, 16),
+      uiFont: valueAt(20).isEmpty ? null : valueAt(20),
+      titleFont: valueAt(21).isEmpty ? null : valueAt(21),
+      updatedAt: DateTime.fromMillisecondsSinceEpoch(
+        intAt(22, DateTime.now().millisecondsSinceEpoch),
+      ),
     );
   }
 }
@@ -3525,10 +3910,12 @@ class _NavBarEditDialogState extends State<_NavBarEditDialog> {
     double hue = HSVColor.fromColor(currentColor).hue;
     double saturation = HSVColor.fromColor(currentColor).saturation;
     double value = HSVColor.fromColor(currentColor).value;
+    bool isEditingColorCode = false;
     
     final colorController = TextEditingController(
       text: '#${currentColor.value.toRadixString(16).padLeft(8, '0').substring(2).toUpperCase()}',
     );
+    final colorFocusNode = FocusNode();
 
     showDialog(
       context: context,
@@ -3537,7 +3924,7 @@ class _NavBarEditDialogState extends State<_NavBarEditDialog> {
           final selectedColor = HSVColor.fromAHSV(1.0, hue, saturation, value).toColor();
           
           final colorHex = '#${selectedColor.value.toRadixString(16).padLeft(8, '0').substring(2).toUpperCase()}';
-          if (colorController.text != colorHex) {
+          if (!isEditingColorCode && colorController.text != colorHex) {
             colorController.text = colorHex;
             colorController.selection = TextSelection.collapsed(offset: colorHex.length);
           }
@@ -3585,7 +3972,13 @@ class _NavBarEditDialogState extends State<_NavBarEditDialog> {
                     value: hue,
                     min: 0,
                     max: 360,
-                    onChanged: (v) => setDialogState(() => hue = v),
+                    onChanged: (v) {
+                      colorFocusNode.unfocus();
+                      setDialogState(() {
+                        isEditingColorCode = false;
+                        hue = v;
+                      });
+                    },
                     displayValue: hue.round().toString(),
                     gradientColors: [
                       const Color(0xFFFF0000),
@@ -3606,7 +3999,13 @@ class _NavBarEditDialogState extends State<_NavBarEditDialog> {
                     value: saturation,
                     min: 0,
                     max: 1,
-                    onChanged: (v) => setDialogState(() => saturation = v),
+                    onChanged: (v) {
+                      colorFocusNode.unfocus();
+                      setDialogState(() {
+                        isEditingColorCode = false;
+                        saturation = v;
+                      });
+                    },
                     displayValue: '${(saturation * 100).round()}%',
                     gradientColors: [
                       HSVColor.fromAHSV(1.0, hue, 0, value).toColor(),
@@ -3622,7 +4021,13 @@ class _NavBarEditDialogState extends State<_NavBarEditDialog> {
                     value: value,
                     min: 0,
                     max: 1,
-                    onChanged: (v) => setDialogState(() => value = v),
+                    onChanged: (v) {
+                      colorFocusNode.unfocus();
+                      setDialogState(() {
+                        isEditingColorCode = false;
+                        value = v;
+                      });
+                    },
                     displayValue: '${(value * 100).round()}%',
                     gradientColors: [
                       HSVColor.fromAHSV(1.0, hue, saturation, 0).toColor(),
@@ -3637,6 +4042,7 @@ class _NavBarEditDialogState extends State<_NavBarEditDialog> {
                       Expanded(
                         child: TextField(
                           controller: colorController,
+                          focusNode: colorFocusNode,
                           decoration: InputDecoration(
                             hintText: '#RRGGBB',
                             isDense: true,
@@ -3646,6 +4052,34 @@ class _NavBarEditDialogState extends State<_NavBarEditDialog> {
                             ),
                           ),
                           style: const TextStyle(fontSize: 14, fontFamily: 'monospace'),
+                          keyboardType: TextInputType.text,
+                          textCapitalization: TextCapitalization.characters,
+                          autocorrect: false,
+                          enableSuggestions: false,
+                          onTap: () {
+                            isEditingColorCode = true;
+                          },
+                          onChanged: (text) {
+                            final color = _parseColor(text);
+                            if (color == null) return;
+                            final hsv = HSVColor.fromColor(color);
+                            setDialogState(() {
+                              hue = hsv.hue;
+                              saturation = hsv.saturation;
+                              value = hsv.value;
+                            });
+                          },
+                          onSubmitted: (text) {
+                            final color = _parseColor(text);
+                            if (color == null) return;
+                            final hsv = HSVColor.fromColor(color);
+                            setDialogState(() {
+                              hue = hsv.hue;
+                              saturation = hsv.saturation;
+                              value = hsv.value;
+                              isEditingColorCode = false;
+                            });
+                          },
                         ),
                       ),
                       const SizedBox(width: 8),
@@ -3659,7 +4093,9 @@ class _NavBarEditDialogState extends State<_NavBarEditDialog> {
                       const SizedBox(width: 8),
                       TextButton(
                         onPressed: () {
-                          onChanged(selectedColor);
+                          onChanged(
+                            _parseColor(colorController.text) ?? selectedColor,
+                          );
                           Navigator.pop(ctx);
                         },
                         child: Text(
@@ -3678,7 +4114,25 @@ class _NavBarEditDialogState extends State<_NavBarEditDialog> {
           );
         },
       ),
-    );
+    ).whenComplete(() {
+      colorController.dispose();
+      colorFocusNode.dispose();
+    });
+  }
+
+  Color? _parseColor(String text) {
+    var value = text.trim();
+    if (value.startsWith('#')) {
+      value = value.substring(1);
+    }
+    if (value.toLowerCase().startsWith('0x')) {
+      value = value.substring(2);
+    }
+
+    if (value.length != 6 && value.length != 8) return null;
+    final parsed = int.tryParse(value, radix: 16);
+    if (parsed == null) return null;
+    return Color(value.length == 6 ? parsed + 0xFF000000 : parsed);
   }
 
   Widget _buildColorSlider({
@@ -3701,6 +4155,7 @@ class _NavBarEditDialogState extends State<_NavBarEditDialog> {
         ),
         Expanded(
           child: Stack(
+            clipBehavior: Clip.none,
             children: [
               Container(
                 height: 24,
@@ -3712,9 +4167,10 @@ class _NavBarEditDialogState extends State<_NavBarEditDialog> {
               SliderTheme(
                 data: SliderThemeData(
                   trackHeight: 24,
+                  trackShape: const _FullWidthSliderTrackShape(),
                   thumbColor: Colors.white,
                   thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8),
-                  overlayColor: Colors.white.withOpacity(0.2),
+                  overlayShape: SliderComponentShape.noOverlay,
                   activeTrackColor: Colors.transparent,
                   inactiveTrackColor: Colors.transparent,
                 ),
