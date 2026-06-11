@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_js/flutter_js.dart';
+import 'package:html/parser.dart' as html_parser;
 import 'package:path_provider/path_provider.dart';
 import '../app_logger.dart';
 import 'platform_channel.dart';
@@ -88,15 +89,45 @@ class JsEngine {
 
   /// 初始化 JS 引擎
   Future<bool> init() async {
+    if (_initialized && _jsRuntime != null) {
+      // 验证全局对象是否仍然存在（防止运行时被意外重置）
+      final check = evaluate('typeof java !== "undefined" && typeof CryptoJS !== "undefined" && typeof _javaCache !== "undefined" && typeof _AES !== "undefined"');
+      if (check == 'true') return true;
+      // 全局对象丢失，需要重新注入
+      debugPrint('JsEngine: 全局对象丢失，重新注入 polyfills');
+      _injectJavaBridge();
+      final recheck = evaluate('typeof java !== "undefined"');
+      if (recheck == 'true') return true;
+      // 重新注入也失败，重建运行时
+      debugPrint('JsEngine: 重新注入失败，重建运行时');
+      _jsRuntime?.dispose();
+      _jsRuntime = null;
+      _initialized = false;
+    }
+
     if (_initialized) return true;
     try {
       _jsRuntime = getJavascriptRuntime();
-      _initialized = true;
-
+      // 先标记运行时可用，再注入 polyfills
+      // 注意：_initialized 在所有注入完成后才设为 true
       await _injectNodePolyfills();
       _injectJavaBridge();
       await _loadInstalledPackages();
 
+      // 验证注入是否成功
+      final verifyResult = evaluate('typeof java !== "undefined" && typeof CryptoJS !== "undefined" && typeof _javaCache !== "undefined" && typeof _AES !== "undefined"');
+      if (verifyResult != 'true') {
+        debugPrint('JsEngine: 注入验证失败！java=${evaluate('typeof java')}, CryptoJS=${evaluate('typeof CryptoJS')}, _javaCache=${evaluate('typeof _javaCache')}, _AES=${evaluate('typeof _AES')}');
+        // 尝试重新注入
+        _injectJavaBridge();
+        final retryResult = evaluate('typeof java !== "undefined" && typeof _AES !== "undefined"');
+        if (retryResult != 'true') {
+          debugPrint('JsEngine: 重新注入仍然失败，初始化失败');
+          return false;
+        }
+      }
+
+      _initialized = true;
       return true;
     } catch (e) {
       debugPrint('JsEngine init error: $e');
@@ -391,36 +422,26 @@ class JsEngine {
       }
 
       // ===== fetch() 全局函数 =====
-      // 借鉴 legado 的 JsExtensions.ajax，同步模式从缓存取，无缓存返回空
+      // 借鉴 legado 的 JsExtensions.ajax：直接返回 HTML 字符串（同步模式）
+      // legado 书源中 fetch(url) 期望直接得到 HTML，不是 Response 对象
       function fetch(input, init) {
         var url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
         var method = (init && init.method) || 'GET';
-        var headers = (init && init.headers) || {};
-        var body = (init && init.body) || null;
-        var cacheKey = method.toUpperCase() === 'POST' ? 'http_post:' + url : 'http_get:' + url;
-        if (_javaCache[cacheKey] !== undefined) {
-          var cachedText = _javaCache[cacheKey];
-          return {
-            ok: true,
-            status: 200,
-            statusText: 'OK',
-            url: url,
-            headers: {},
-            text: function() { return Promise.resolve(cachedText); },
-            json: function() { try { return Promise.resolve(JSON.parse(cachedText)); } catch(e) { return Promise.reject(e); } },
-            html: function() { return cachedText; },
-          };
+        // 自动拼接 baseUrl
+        var fullUrl = url;
+        if (url && !url.startsWith('http') && typeof baseUrl !== 'undefined' && baseUrl) {
+          fullUrl = baseUrl.replace(/\/+\$/, '') + '/' + url.replace(/^\/+/, '');
         }
-        return {
-          ok: false,
-          status: 0,
-          statusText: 'No cache',
-          url: url,
-          headers: {},
-          text: function() { return Promise.resolve(''); },
-          json: function() { return Promise.reject(new Error('No cache')); },
-          html: function() { return ''; },
-        };
+        var cacheKey = method.toUpperCase() === 'POST' ? 'http_post:' + fullUrl : 'http_get:' + fullUrl;
+        if (_javaCache[cacheKey] !== undefined) {
+          return _javaCache[cacheKey];
+        }
+        // fallback: 尝试原始 url
+        if (fullUrl !== url) {
+          var origKey = method.toUpperCase() === 'POST' ? 'http_post:' + url : 'http_get:' + url;
+          if (_javaCache[origKey] !== undefined) return _javaCache[origKey];
+        }
+        return '';
       }
 
       // ===== XMLHttpRequest 简易实现 =====
@@ -457,8 +478,18 @@ class JsEngine {
       };
       XMLHttpRequest.prototype.send = function(body) {
         var self = this;
-        var cacheKey = this._method === 'POST' ? 'http_post:' + this._url : 'http_get:' + this._url;
+        var url = this._url;
+        // 自动拼接 baseUrl
+        if (url && !url.startsWith('http') && typeof baseUrl !== 'undefined' && baseUrl) {
+          url = baseUrl.replace(/\/+\$/, '') + '/' + url.replace(/^\/+/, '');
+        }
+        var cacheKey = this._method === 'POST' ? 'http_post:' + url : 'http_get:' + url;
         var cachedText = _javaCache[cacheKey] || '';
+        // fallback: 尝试原始 url
+        if (!cachedText && url !== this._url) {
+          var origKey = this._method === 'POST' ? 'http_post:' + this._url : 'http_get:' + this._url;
+          cachedText = _javaCache[origKey] || '';
+        }
         this.readyState = 2;
         if (this.onreadystatechange) this.onreadystatechange();
         this.readyState = 3;
@@ -553,347 +584,361 @@ class JsEngine {
     evaluate(nodePolyfills);
   }
 
+  // ===== 纯 JS AES 引擎（QuickJS 同步可用，不依赖 Dart 桥接）=====
+
+  void _injectAesEngine() {
+    // 分步注入 AES 引擎，避免单次 evaluate 代码过大导致失败
+
+    // Step 1: S-Box 和基础函数
+    const aesStep1 = '''
+      var _AES_SBOX = [0x63,0x7c,0x77,0x7b,0xf2,0x6b,0x6f,0xc5,0x30,0x01,0x67,0x2b,0xfe,0xd7,0xab,0x76,0xca,0x82,0xc9,0x7d,0xfa,0x59,0x47,0xf0,0xad,0xd4,0xa2,0xaf,0x9c,0xa4,0x72,0xc0,0xb7,0xfd,0x93,0x26,0x36,0x3f,0xf7,0xcc,0x34,0xa5,0xe5,0xf1,0x71,0xd8,0x31,0x15,0x04,0xc7,0x23,0xc3,0x18,0x96,0x05,0x9a,0x07,0x12,0x80,0xe2,0xeb,0x27,0xb2,0x75,0x09,0x83,0x2c,0x1a,0x1b,0x6e,0x5a,0xa0,0x52,0x3b,0xd6,0xb3,0x29,0xe3,0x2f,0x84,0x53,0xd1,0x00,0xed,0x20,0xfc,0xb1,0x5b,0x6a,0xcb,0xbe,0x39,0x4a,0x4c,0x58,0xcf,0xd0,0xef,0xaa,0xfb,0x43,0x4d,0x33,0x85,0x45,0xf9,0x02,0x7f,0x50,0x3c,0x9f,0xa8,0x51,0xa3,0x40,0x8f,0x92,0x9d,0x38,0xf5,0xbc,0xb6,0xda,0x21,0x10,0xff,0xf3,0xd2,0xcd,0x0c,0x13,0xec,0x5f,0x97,0x44,0x17,0xc4,0xa7,0x7e,0x3d,0x64,0x5d,0x19,0x73,0x60,0x81,0x4f,0xdc,0x22,0x2a,0x90,0x88,0x46,0xee,0xb8,0x14,0xde,0x5e,0x0b,0xdb,0xe0,0x32,0x3a,0x0a,0x49,0x06,0x24,0x5c,0xc2,0xd3,0xac,0x62,0x91,0x95,0xe4,0x79,0xe7,0xc8,0x37,0x6d,0x8d,0xd5,0x4e,0xa9,0x6c,0x56,0xf4,0xea,0x65,0x7a,0xae,0x08,0xba,0x78,0x25,0x2e,0x1c,0xa6,0xb4,0xc6,0xe8,0xdd,0x74,0x1f,0x4b,0xbd,0x8b,0x8a,0x70,0x3e,0xb5,0x66,0x48,0x03,0xf6,0x0e,0x61,0x35,0x57,0xb9,0x86,0xc1,0x1d,0x9e,0xe1,0xf8,0x98,0x11,0x69,0xd9,0x8e,0x94,0x9b,0x1e,0x87,0xe9,0xce,0x55,0x28,0xdf,0x8c,0xa1,0x89,0x0d,0xbf,0xe6,0x42,0x68,0x41,0x99,0x2d,0x0f,0xb0,0x54,0xbb,0x16];
+      var _AES_INV_SBOX = [0x52,0x09,0x6a,0xd5,0x30,0x36,0xa5,0x38,0xbf,0x40,0xa3,0x9e,0x81,0xf3,0xd7,0xfb,0x7c,0xe3,0x39,0x82,0x9b,0x2f,0xff,0x87,0x34,0x8e,0x43,0x44,0xc4,0xde,0xe9,0xcb,0x54,0x7b,0x94,0x32,0xa6,0xc2,0x23,0x3d,0xee,0x4c,0x95,0x0b,0x42,0xfa,0xc3,0x4e,0x08,0x2e,0xa1,0x66,0x28,0xd9,0x24,0xb2,0x76,0x5b,0xa2,0x49,0x6d,0x8b,0xd1,0x25,0x72,0xf8,0xf6,0x64,0x86,0x68,0x98,0x16,0xd4,0xa4,0x5c,0xcc,0x5d,0x65,0xb6,0x92,0x6c,0x70,0x48,0x50,0xfd,0xed,0xb9,0xda,0x5e,0x15,0x46,0x57,0xa7,0x8d,0x9d,0x84,0x90,0xd8,0xab,0x00,0x8c,0xbc,0xd3,0x0a,0xf7,0xe4,0x58,0x05,0xb8,0xb3,0x45,0x06,0xd0,0x2c,0x1e,0x8f,0xca,0x3f,0x0f,0x02,0xc1,0xaf,0xbd,0x03,0x01,0x13,0x8a,0x6b,0x3a,0x91,0x11,0x41,0x4f,0x67,0xdc,0xea,0x97,0xf2,0xcf,0xce,0xf0,0xb4,0xe6,0x73,0x96,0xac,0x74,0x22,0xe7,0xad,0x35,0x85,0xe2,0xf9,0x37,0xe8,0x1c,0x75,0xdf,0x6e,0x47,0xf1,0x1a,0x71,0x1d,0x29,0xc5,0x89,0x6f,0xb7,0x62,0x0e,0xaa,0x18,0xbe,0x1b,0xfc,0x56,0x3e,0x4b,0xc6,0xd2,0x79,0x20,0x9a,0xdb,0xc0,0xfe,0x78,0xcd,0x5a,0xf4,0x1f,0xdd,0xa8,0x33,0x88,0x07,0xc7,0x31,0xb1,0x12,0x10,0x59,0x27,0x80,0xec,0x5f,0x60,0x51,0x7f,0xa9,0x19,0xb5,0x4a,0x0d,0x2d,0xe5,0x7a,0x9f,0x93,0xc9,0x9c,0xef,0xa0,0xe0,0x3b,0x4d,0xae,0x2a,0xf5,0xb0,0xc8,0xeb,0xbb,0x3c,0x83,0x53,0x99,0x61,0x17,0x2b,0x04,0x7e,0xba,0x77,0xd6,0x26,0xe1,0x69,0x14,0x63,0x55,0x21,0x0c,0x7d];
+      var _AES_RCON = [0x00,0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80,0x1b,0x36];
+      function _aesXtime(a) { return (a & 0x80) ? ((a << 1) ^ 0x1b) : (a << 1); }
+      function _aesMul(a, b) { var r = 0; for (var i = 0; i < 8; i++) { if (b & 1) r ^= a; a = _aesXtime(a); b >>= 1; } return r & 0xff; }
+      function _aesSubBytes(s) { for (var i = 0; i < 16; i++) s[i] = _AES_SBOX[s[i]]; }
+      function _aesInvSubBytes(s) { for (var i = 0; i < 16; i++) s[i] = _AES_INV_SBOX[s[i]]; }
+      function _aesShiftRows(s) { var t=s[1];s[1]=s[5];s[5]=s[9];s[9]=s[13];s[13]=t;t=s[2];s[2]=s[10];s[10]=t;t=s[6];s[6]=s[14];s[14]=t;t=s[15];s[15]=s[11];s[11]=s[7];s[7]=s[3];s[3]=t; }
+      function _aesInvShiftRows(s) { var t=s[13];s[13]=s[9];s[9]=s[5];s[5]=s[1];s[1]=t;t=s[2];s[2]=s[10];s[10]=t;t=s[6];s[6]=s[14];s[14]=t;t=s[3];s[3]=s[7];s[7]=s[11];s[11]=s[15];s[15]=t; }
+      function _aesMixColumns(s) { for (var i=0;i<4;i++) { var a=s[i*4],b=s[i*4+1],c=s[i*4+2],d=s[i*4+3]; s[i*4]=_aesMul(2,a)^_aesMul(3,b)^c^d; s[i*4+1]=a^_aesMul(2,b)^_aesMul(3,c)^d; s[i*4+2]=a^b^_aesMul(2,c)^_aesMul(3,d); s[i*4+3]=_aesMul(3,a)^b^c^_aesMul(2,d); } }
+      function _aesInvMixColumns(s) { for (var i=0;i<4;i++) { var a=s[i*4],b=s[i*4+1],c=s[i*4+2],d=s[i*4+3]; s[i*4]=_aesMul(0x0e,a)^_aesMul(0x0b,b)^_aesMul(0x0d,c)^_aesMul(0x09,d); s[i*4+1]=_aesMul(0x09,a)^_aesMul(0x0e,b)^_aesMul(0x0b,c)^_aesMul(0x0d,d); s[i*4+2]=_aesMul(0x0d,a)^_aesMul(0x09,b)^_aesMul(0x0e,c)^_aesMul(0x0b,d); s[i*4+3]=_aesMul(0x0b,a)^_aesMul(0x0d,b)^_aesMul(0x09,c)^_aesMul(0x0e,d); } }
+      function _aesAddRoundKey(s, rk) { for (var i = 0; i < 16; i++) s[i] ^= rk[i]; }
+    ''';
+
+    // Step 2: Key expansion + encrypt/decrypt blocks
+    const aesStep2 = '''
+      function _aesKeyExpansion(key) {
+        var nk = key.length / 4, nr = nk + 6;
+        var w = new Array(4 * (nr + 1));
+        for (var i = 0; i < nk; i++) { w[i*4]=key[i*4]; w[i*4+1]=key[i*4+1]; w[i*4+2]=key[i*4+2]; w[i*4+3]=key[i*4+3]; }
+        for (var i = nk; i < 4*(nr+1); i++) {
+          var t = [w[(i-1)*4], w[(i-1)*4+1], w[(i-1)*4+2], w[(i-1)*4+3]];
+          if (i % nk === 0) { var tmp=t[0]; t[0]=_AES_SBOX[t[1]]^_AES_RCON[i/nk]; t[1]=_AES_SBOX[t[2]]; t[2]=_AES_SBOX[t[3]]; t[3]=_AES_SBOX[tmp]; }
+          else if (nk > 6 && i % nk === 4) { t[0]=_AES_SBOX[t[0]]; t[1]=_AES_SBOX[t[1]]; t[2]=_AES_SBOX[t[2]]; t[3]=_AES_SBOX[t[3]]; }
+          w[i*4]=w[(i-nk)*4]^t[0]; w[i*4+1]=w[(i-nk)*4+1]^t[1]; w[i*4+2]=w[(i-nk)*4+2]^t[2]; w[i*4+3]=w[(i-nk)*4+3]^t[3];
+        }
+        return w;
+      }
+      function _aesEncryptBlock(block, w, nr) {
+        var s = block.slice(); _aesAddRoundKey(s, w.slice(0, 16));
+        for (var r = 1; r < nr; r++) { _aesSubBytes(s); _aesShiftRows(s); _aesMixColumns(s); _aesAddRoundKey(s, w.slice(r*16, r*16+16)); }
+        _aesSubBytes(s); _aesShiftRows(s); _aesAddRoundKey(s, w.slice(nr*16, nr*16+16));
+        return s;
+      }
+      function _aesDecryptBlock(block, w, nr) {
+        var s = block.slice(); _aesAddRoundKey(s, w.slice(nr*16, nr*16+16));
+        for (var r = nr-1; r > 0; r--) { _aesInvShiftRows(s); _aesInvSubBytes(s); _aesAddRoundKey(s, w.slice(r*16, r*16+16)); _aesInvMixColumns(s); }
+        _aesInvShiftRows(s); _aesInvSubBytes(s); _aesAddRoundKey(s, w.slice(0, 16));
+        return s;
+      }
+      function _aesPkcs7Pad(data) { var pad = 16 - (data.length % 16); var r = data.slice(); for (var i = 0; i < pad; i++) r.push(pad); return r; }
+      function _aesPkcs7Unpad(data) { if (data.length === 0) return data; var pad = data[data.length - 1]; if (pad < 1 || pad > 16) return data; for (var i = data.length - pad; i < data.length; i++) { if (data[i] !== pad) return data; } return data.slice(0, data.length - pad); }
+    ''';
+
+    // Step 3: UTF-8/Base64 conversion + _AES public API
+    const aesStep3 = '''
+      function _aesUtf8ToBytes(str) {
+        var bytes = [];
+        for (var i = 0; i < str.length; i++) {
+          var c = str.charCodeAt(i);
+          if (c < 0x80) bytes.push(c);
+          else if (c < 0x800) { bytes.push(0xc0|(c>>6)); bytes.push(0x80|(c&0x3f)); }
+          else if (c >= 0xd800 && c <= 0xdbff) { var hi=c,lo=str.charCodeAt(++i); var cp=((hi-0xd800)<<10)+(lo-0xdc00)+0x10000; bytes.push(0xf0|(cp>>18)); bytes.push(0x80|((cp>>12)&0x3f)); bytes.push(0x80|((cp>>6)&0x3f)); bytes.push(0x80|(cp&0x3f)); }
+          else { bytes.push(0xe0|(c>>12)); bytes.push(0x80|((c>>6)&0x3f)); bytes.push(0x80|(c&0x3f)); }
+        }
+        return bytes;
+      }
+      function _aesBytesToUtf8(bytes) {
+        var str = '';
+        for (var i = 0; i < bytes.length; i++) {
+          var c = bytes[i];
+          if (c < 0x80) str += String.fromCharCode(c);
+          else if (c >= 0xf0) { str += String.fromCharCode(((c&0x07)<<18)|((bytes[++i]&0x3f)<<12)|((bytes[++i]&0x3f)<<6)|(bytes[++i]&0x3f)); }
+          else if (c >= 0xe0) { str += String.fromCharCode(((c&0x0f)<<12)|((bytes[++i]&0x3f)<<6)|(bytes[++i]&0x3f)); }
+          else { str += String.fromCharCode(((c&0x1f)<<6)|(bytes[++i]&0x3f)); }
+        }
+        return str;
+      }
+      var _AES_B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+      function _aesBytesToBase64(bytes) {
+        var r = '';
+        for (var i = 0; i < bytes.length; i += 3) {
+          var b1=bytes[i], b2=i+1<bytes.length?bytes[i+1]:0, b3=i+2<bytes.length?bytes[i+2]:0;
+          r += _AES_B64[b1>>2] + _AES_B64[((b1&3)<<4)|(b2>>4)] + (i+1<bytes.length?_AES_B64[((b2&15)<<2)|(b3>>6)]:'=') + (i+2<bytes.length?_AES_B64[b3&63]:'=');
+        }
+        return r;
+      }
+      function _aesBase64ToBytes(b64) {
+        b64 = b64.replace(/[^A-Za-z0-9+/]/g, '');
+        var bytes = [];
+        for (var i = 0; i < b64.length; i += 4) {
+          var b1=_AES_B64.indexOf(b64[i]), b2=_AES_B64.indexOf(b64[i+1]), b3=b64[i+2]==='='?0:_AES_B64.indexOf(b64[i+2]), b4=b64[i+3]==='='?0:_AES_B64.indexOf(b64[i+3]);
+          bytes.push((b1<<2)|(b2>>4)); if (b64[i+2]!=='=') bytes.push(((b2&15)<<4)|(b3>>2)); if (b64[i+3]!=='=') bytes.push(((b3&3)<<6)|b4);
+        }
+        return bytes;
+      }
+      function _aesParseKey(val) {
+        if (!val) return [];
+        if (typeof val === 'object' && val.words && Array.isArray(val.words)) {
+          var bytes = [];
+          for (var i = 0; i < val.words.length; i++) { bytes.push((val.words[i]>>24)&0xff, (val.words[i]>>16)&0xff, (val.words[i]>>8)&0xff, val.words[i]&0xff); }
+          return val.sigBytes !== undefined ? bytes.slice(0, val.sigBytes) : bytes;
+        }
+        if (typeof val === 'string') return _aesUtf8ToBytes(val);
+        if (Array.isArray(val)) return val;
+        if (typeof val === 'number') return [val];
+        return [];
+      }
+    ''';
+
+    // Step 4: _AES public API
+    const aesStep4 = '''
+      var _AES = {
+        encrypt: function(data, key, iv, mode) {
+          mode = mode || 'CBC';
+          var kb = _aesParseKey(key), ivb = iv ? _aesParseKey(iv) : [];
+          var db = (typeof data === 'string') ? _aesUtf8ToBytes(data) : data;
+          var nr = kb.length/4 + 6, w = _aesKeyExpansion(kb), padded = _aesPkcs7Pad(db), encrypted = [];
+          if (mode === 'ECB') { for (var i=0;i<padded.length;i+=16) { encrypted=encrypted.concat(_aesEncryptBlock(padded.slice(i,i+16),w,nr)); } }
+          else { var prev=ivb.length>=16?ivb.slice(0,16):new Array(16).fill(0); for (var i=0;i<padded.length;i+=16) { var block=padded.slice(i,i+16); for (var j=0;j<16;j++) block[j]^=prev[j]; var enc=_aesEncryptBlock(block,w,nr); encrypted=encrypted.concat(enc); prev=enc; } }
+          return _aesBytesToBase64(encrypted);
+        },
+        decrypt: function(data, key, iv, mode) {
+          mode = mode || 'CBC';
+          var kb = _aesParseKey(key), ivb = iv ? _aesParseKey(iv) : [];
+          var db = (typeof data === 'string') ? _aesBase64ToBytes(data) : data;
+          var nr = kb.length/4 + 6, w = _aesKeyExpansion(kb), decrypted = [];
+          if (mode === 'ECB') { for (var i=0;i<db.length;i+=16) { decrypted=decrypted.concat(_aesDecryptBlock(db.slice(i,i+16),w,nr)); } }
+          else { var prev=ivb.length>=16?ivb.slice(0,16):new Array(16).fill(0); for (var i=0;i<db.length;i+=16) { var block=db.slice(i,i+16); var dec=_aesDecryptBlock(block,w,nr); for (var j=0;j<16;j++) dec[j]^=prev[j]; decrypted=decrypted.concat(dec); prev=block; } }
+          return _aesBytesToUtf8(_aesPkcs7Unpad(decrypted));
+        },
+        utf8Parse: function(str) {
+          var bytes = _aesUtf8ToBytes(str), words = [];
+          for (var i = 0; i < bytes.length; i += 4) { words.push(((bytes[i]||0)<<24)|((bytes[i+1]||0)<<16)|((bytes[i+2]||0)<<8)|(bytes[i+3]||0)); }
+          return { words: words, sigBytes: bytes.length };
+        },
+        base64Parse: function(str) {
+          var bytes = _aesBase64ToBytes(str), words = [];
+          for (var i = 0; i < bytes.length; i += 4) { words.push(((bytes[i]||0)<<24)|((bytes[i+1]||0)<<16)|((bytes[i+2]||0)<<8)|(bytes[i+3]||0)); }
+          return { words: words, sigBytes: bytes.length };
+        },
+      };
+    ''';
+
+    // 分步注入，每步独立 try-catch
+    try {
+      evaluate(aesStep1);
+      evaluate(aesStep2);
+      evaluate(aesStep3);
+      evaluate(aesStep4);
+      final aesCheck = evaluate('typeof _AES !== "undefined"');
+      if (aesCheck == 'true') {
+        debugPrint('JsEngine: _AES 引擎注入成功');
+      } else {
+        debugPrint('JsEngine: _AES 引擎注入后验证失败');
+        _injectAesFallback();
+      }
+    } catch (e) {
+      debugPrint('JsEngine: _AES 引擎注入失败: $e，使用 fallback');
+      _injectAesFallback();
+    }
+  }
+
+  /// AES 引擎注入失败时的简化 fallback
+  void _injectAesFallback() {
+    evaluate('var _AES = { encrypt: function(d,k,iv,m) { return ""; }, decrypt: function(d,k,iv,m) { return ""; }, utf8Parse: function(s) { return s; }, base64Parse: function(s) { return s; } };');
+  }
+
+  /// 注入纯 JS MD5 引擎
+  void _injectMd5Engine() {
+    const md5Code = '''
+      var _MD5 = (function() {
+        function safeAdd(x, y) { var l = (x & 0xFFFF) + (y & 0xFFFF), m = (x >> 16) + (y >> 16) + (l >> 16); return (m << 16) | (l & 0xFFFF); }
+        function bitRotateLeft(n, c) { return (n << c) | (n >>> (32 - c)); }
+        function md5cmn(q, a, b, x, s, t) { return safeAdd(bitRotateLeft(safeAdd(safeAdd(a, q), safeAdd(x, t)), s), b); }
+        function md5ff(a, b, c, d, x, s, t) { return md5cmn((b & c) | ((~b) & d), a, b, x, s, t); }
+        function md5gg(a, b, c, d, x, s, t) { return md5cmn((b & d) | (c & (~d)), a, b, x, s, t); }
+        function md5hh(a, b, c, d, x, s, t) { return md5cmn(b ^ c ^ d, a, b, x, s, t); }
+        function md5ii(a, b, c, d, x, s, t) { return md5cmn(c ^ (b | (~d)), a, b, x, s, t); }
+        function binlMD5(x, len) {
+          x[len >> 5] |= 0x80 << (len % 32);
+          x[(((len + 64) >>> 9) << 4) + 14] = len;
+          var a = 1732584193, b = -271733879, c = -1732584194, d = 271733878;
+          for (var i = 0; i < x.length; i += 16) {
+            var oa = a, ob = b, oc = c, od = d;
+            a=md5ff(a,b,c,d,x[i],7,-680876936); d=md5ff(d,a,b,c,x[i+1],12,-389564586); c=md5ff(c,d,a,b,x[i+2],17,606105819); b=md5ff(b,c,d,a,x[i+3],22,-1044525330);
+            a=md5ff(a,b,c,d,x[i+4],7,-176418897); d=md5ff(d,a,b,c,x[i+5],12,1200080426); c=md5ff(c,d,a,b,x[i+6],17,-1473231341); b=md5ff(b,c,d,a,x[i+7],22,-45705983);
+            a=md5ff(a,b,c,d,x[i+8],7,1770035416); d=md5ff(d,a,b,c,x[i+9],12,-1958414417); c=md5ff(c,d,a,b,x[i+10],17,-42063); b=md5ff(b,c,d,a,x[i+11],22,-1990404162);
+            a=md5ff(a,b,c,d,x[i+12],7,1804603682); d=md5ff(d,a,b,c,x[i+13],12,-40341101); c=md5ff(c,d,a,b,x[i+14],17,-1502002290); b=md5ff(b,c,d,a,x[i+15],22,1236535329);
+            a=md5gg(a,b,c,d,x[i+1],5,-165796510); d=md5gg(d,a,b,c,x[i+6],9,-1069501632); c=md5gg(c,d,a,b,x[i+11],14,643717713); b=md5gg(b,c,d,a,x[i],20,-373897302);
+            a=md5gg(a,b,c,d,x[i+5],5,-701558691); d=md5gg(d,a,b,c,x[i+10],9,38016083); c=md5gg(c,d,a,b,x[i+15],14,-660478335); b=md5gg(b,c,d,a,x[i+4],20,-405537848);
+            a=md5gg(a,b,c,d,x[i+9],5,568446438); d=md5gg(d,a,b,c,x[i+14],9,-1019803690); c=md5gg(c,d,a,b,x[i+3],14,-187363961); b=md5gg(b,c,d,a,x[i+8],20,1163531501);
+            a=md5gg(a,b,c,d,x[i+13],5,-1444681467); d=md5gg(d,a,b,c,x[i+2],9,-51403784); c=md5gg(c,d,a,b,x[i+7],14,1735328473); b=md5gg(b,c,d,a,x[i+12],20,-1926607734);
+            a=md5hh(a,b,c,d,x[i+5],4,-378558); d=md5hh(d,a,b,c,x[i+8],11,-2022574463); c=md5hh(c,d,a,b,x[i+11],16,1839030562); b=md5hh(b,c,d,a,x[i+14],23,-35309556);
+            a=md5hh(a,b,c,d,x[i+1],4,-1530992060); d=md5hh(d,a,b,c,x[i+4],11,1272893353); c=md5hh(c,d,a,b,x[i+7],16,-155497632); b=md5hh(b,c,d,a,x[i+10],23,-1094730640);
+            a=md5hh(a,b,c,d,x[i+13],4,681279174); d=md5hh(d,a,b,c,x[i],11,-358537222); c=md5hh(c,d,a,b,x[i+3],16,-722521979); b=md5hh(b,c,d,a,x[i+6],23,76029189);
+            a=md5hh(a,b,c,d,x[i+9],4,-640364487); d=md5hh(d,a,b,c,x[i+12],11,-421815835); c=md5hh(c,d,a,b,x[i+15],16,530742520); b=md5hh(b,c,d,a,x[i+2],23,-995338651);
+            a=md5ii(a,b,c,d,x[i],6,-198630844); d=md5ii(d,a,b,c,x[i+7],10,1126891415); c=md5ii(c,d,a,b,x[i+14],15,-1416354905); b=md5ii(b,c,d,a,x[i+5],21,-57434055);
+            a=md5ii(a,b,c,d,x[i+12],6,1700485571); d=md5ii(d,a,b,c,x[i+3],10,-1894986606); c=md5ii(c,d,a,b,x[i+10],15,-1051523); b=md5ii(b,c,d,a,x[i+1],21,-2054922799);
+            a=md5ii(a,b,c,d,x[i+8],6,1873313359); d=md5ii(d,a,b,c,x[i+15],10,-30611744); c=md5ii(c,d,a,b,x[i+6],15,-1560198380); b=md5ii(b,c,d,a,x[i+13],21,1309151649);
+            a=md5ii(a,b,c,d,x[i+4],6,-145523070); d=md5ii(d,a,b,c,x[i+11],10,-1120210379); c=md5ii(c,d,a,b,x[i+2],15,718787259); b=md5ii(b,c,d,a,x[i+9],21,-343485551);
+            a=safeAdd(a,oa); b=safeAdd(b,ob); c=safeAdd(c,oc); d=safeAdd(d,od);
+          }
+          return [a, b, c, d];
+        }
+        function binl2rstr(input) {
+          var output = '';
+          for (var i = 0; i < input.length * 32; i += 8) output += String.fromCharCode((input[i >> 5] >>> (i % 32)) & 0xFF);
+          return output;
+        }
+        function rstr2binl(input) {
+          var output = [];
+          for (var i = 0; i < input.length * 8; i += 32) output[i >> 5] = 0;
+          for (var i = 0; i < input.length * 8; i += 8) output[i >> 5] |= (input.charCodeAt(i / 8) & 0xFF) << (i % 32);
+          return output;
+        }
+        function rstrMD5(s) { return binl2rstr(binlMD5(rstr2binl(s), s.length * 8)); }
+        function rstr2hex(input) {
+          var hexTab = '0123456789abcdef', output = '';
+          for (var i = 0; i < input.length; i++) {
+            var x = input.charCodeAt(i);
+            output += hexTab.charAt((x >>> 4) & 0x0F) + hexTab.charAt(x & 0x0F);
+          }
+          return output;
+        }
+        function str2rstrUTF8(input) {
+          return unescape(encodeURIComponent(input));
+        }
+        return function(str) { return rstr2hex(rstrMD5(str2rstrUTF8(str))); };
+      })();
+    ''';
+    try {
+      evaluate(md5Code);
+      final check = evaluate('typeof _MD5 !== "undefined"');
+      if (check == 'true') {
+        debugPrint('JsEngine: _MD5 引擎注入成功');
+      } else {
+        debugPrint('JsEngine: _MD5 引擎注入后验证失败');
+      }
+    } catch (e) {
+      debugPrint('JsEngine: _MD5 引擎注入失败: $e');
+    }
+  }
+
   // ===== Java 桥接对象（QuickJS 侧）=====
 
   void _injectJavaBridge() {
+    // 拆分注入：先注入基础变量，再注入 AES 引擎，再注入 java 对象，最后注入 CryptoJS
+    // 每步独立 try-catch，避免一步失败导致全部丢失
+
+    // 1. 注入 _javaCache 基础变量
+    try {
+      evaluate('if (typeof _javaCache === "undefined") var _javaCache = {};');
+    } catch (e) {
+      debugPrint('JsEngine: _javaCache 注入失败: $e');
+      try { evaluate('var _javaCache = {};'); } catch (_) {}
+    }
+
+    // 2. 注入纯 JS AES 引擎（不依赖 Dart 桥接，QuickJS 同步可用）
+    _injectAesEngine();
+
+    // 2.5 注入纯 JS MD5 引擎
+    _injectMd5Engine();
     // 注意：不能使用 const，因为字符串中包含 $ 符号（JS 正则替换引用 $&）
-    final javaBridge = '''
+    final helperCode = '''
       // ===== Legado Java 桥接对象（QuickJS 侧）=====
       // 借鉴 legado 的 JsExtensions 接口，通过 Dart 侧 NativeChannel 桥接
       // 核心策略：同步模式从 _javaCache 取缓存值，异步模式由 Dart 端预缓存
+      // _javaCache 已在前面注入，这里不再重复声明
 
-      var _javaCache = {};
-
-      // ===== 内置 HTML 解析器（不依赖 java.jsoup，避免递归自调用）=====
-      // 使用 DOMParser 风格的简易解析，用于 java.jsoup.selectFirst/selectAll/getAttr
+      // ===== 内置 HTML 解析器（精简版：优先从 Dart 预缓存取结果，仅做最小正则兜底）=====
+      // Dart 端通过 _nativeJsoupParse + _preCacheBridgeCalls 已将解析结果写入 _javaCache
+      // JS 侧只需查缓存，未命中时用简单正则兜底
       var _JsoupLite = {
-        _parse: function(html) {
-          // 利用 QuickJS 的 E4X 或 innerHTML 方式解析
-          // 这里用正则+字符串匹配实现简易 CSS 选择器
-          return html;
+        _hashStr: function(s) {
+          var h = 0;
+          for (var i = 0; i < s.length; i++) {
+            h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+          }
+          return h;
+        },
+        _cacheKey: function(prefix, selector, html) {
+          return prefix + ':' + selector + ':' + _JsoupLite._hashStr(html || '');
         },
         selectFirst: function(html, selector) {
-          // 尝试从缓存获取
-          var cacheKey = 'jsoup_sf:' + selector + ':' + (html || '').length;
-          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
-          // 简易实现：用正则匹配常见选择器
-          try {
-            var result = _JsoupLite._selectImpl(html, selector, true);
-            _javaCache[cacheKey] = result;
-            return result;
-          } catch(e) { return ''; }
+          var key = _JsoupLite._cacheKey('jsoup_sf', selector, html);
+          if (_javaCache[key] !== undefined) return _javaCache[key];
+          return _JsoupLite._fallback(html, selector, true);
         },
         selectAll: function(html, selector) {
-          var cacheKey = 'jsoup_sa:' + selector + ':' + (html || '').length;
-          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
-          try {
-            var result = _JsoupLite._selectImpl(html, selector, false);
-            _javaCache[cacheKey] = result;
-            return result;
-          } catch(e) { return []; }
+          var key = _JsoupLite._cacheKey('jsoup_sa', selector, html);
+          if (_javaCache[key] !== undefined) return _javaCache[key];
+          return _JsoupLite._fallback(html, selector, false);
         },
         getAttr: function(html, selector, attr) {
-          var cacheKey = 'jsoup_ga:' + selector + ':' + attr + ':' + (html || '').length;
-          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
-          try {
-            // 先找元素，再提取属性
-            var el = _JsoupLite._selectImpl(html, selector, true);
-            if (!el) return '';
-            // 从元素中提取属性
-            var attrPattern = new RegExp(attr + '=["\\']([^"\\']*)["\\']', 'i');
-            var m = (typeof el === 'string' ? el : '').match(attrPattern);
-            var result = m ? m[1] : '';
-            _javaCache[cacheKey] = result;
-            return result;
-          } catch(e) { return ''; }
+          var key = _JsoupLite._cacheKey('jsoup_ga', selector + ':' + attr, html);
+          if (_javaCache[key] !== undefined) return _javaCache[key];
+          var el = _JsoupLite.selectFirst(html, selector);
+          if (!el) return '';
+          var m = (typeof el === 'string' ? el : '').match(new RegExp(attr + '=["\\']([^"\\']*)["\\']', 'i'));
+          return m ? m[1] : '';
         },
-        _selectImpl: function(html, selector, firstOnly) {
+        _fallback: function(html, selector, firstOnly) {
           if (!html || !selector) return firstOnly ? '' : [];
           var sel = selector.trim();
-
-          // 多选择器: sel1, sel2, sel3
-          if (sel.indexOf(',') > 0) {
-            var parts = sel.split(',');
-            var allResults = [];
-            for (var i = 0; i < parts.length; i++) {
-              var subResults = _JsoupLite._selectImpl(html, parts[i].trim(), false);
-              if (subResults && subResults.length) allResults = allResults.concat(subResults);
-              if (firstOnly && allResults.length > 0) return allResults[0];
-            }
-            return firstOnly ? '' : allResults;
+          // Simple .class
+          if (sel.startsWith('.') && sel.indexOf(' ', 1) < 0 && sel.indexOf('>') < 0) {
+            var cls = sel.substring(1);
+            var re = new RegExp('<([a-zA-Z][a-zA-Z0-9]*)[^>]*class="[^"]*\\\\b' + cls.replace(/[.*+?^\${}()|[\\]\\\\]/g, '\\\\\$&') + '\\\\b[^"]*"[^>]*>([\\\\s\\\\S]*?)</\\\\1>', 'gi');
+            if (firstOnly) { var m = re.exec(html); return m ? m[0] : ''; }
+            var results = []; var m2; while ((m2 = re.exec(html)) !== null) results.push(m2[0]); return results;
           }
-
-          // 子选择器: parent > child
-          var childSelMatch = sel.match(/^(.+?)\\s*>\\s*(.+)\$/);
-          if (childSelMatch) {
-            var parentResults = _JsoupLite._selectImpl(html, childSelMatch[1].trim(), false);
-            if (!parentResults || parentResults.length === 0) return firstOnly ? '' : [];
-            var childResults = [];
-            for (var pi = 0; pi < parentResults.length; pi++) {
-              var innerHtml = parentResults[pi];
-              // 提取直接子标签
-              var innerContent = _getInnerHtml(innerHtml);
-              if (innerContent) {
-                var found = _JsoupLite._selectImpl(innerContent, childSelMatch[2].trim(), false);
-                if (found && found.length) childResults = childResults.concat(found);
-              }
-              if (firstOnly && childResults.length > 0) return childResults[0];
-            }
-            return firstOnly ? '' : childResults;
+          // Simple tag
+          if (/^[a-zA-Z][a-zA-Z0-9]*\$/.test(sel)) {
+            var tagRe = new RegExp('<' + sel + '[^>]*>([\\\\s\\\\S]*?)</' + sel + '>', 'gi');
+            if (firstOnly) { var m = tagRe.exec(html); return m ? m[0] : ''; }
+            var results2 = []; var m3; while ((m3 = tagRe.exec(html)) !== null) results2.push(m3[0]); return results2;
           }
-
-          // 后代选择器: div p (空格分隔，2段)
-          if (sel.indexOf(' ') > 0 && !sel.startsWith(' ')) {
-            var spaceParts = sel.split(/\\s+/);
-            if (spaceParts.length === 2) {
-              var parentResults2 = _JsoupLite._selectImpl(html, spaceParts[0], false);
-              if (!parentResults2 || parentResults2.length === 0) return firstOnly ? '' : [];
-              var childResults2 = [];
-              for (var pi2 = 0; pi2 < parentResults2.length; pi2++) {
-                var inner2 = _getInnerHtml(parentResults2[pi2]);
-                if (inner2) {
-                  var found2 = _JsoupLite._selectImpl(inner2, spaceParts[1], false);
-                  if (found2 && found2.length) childResults2 = childResults2.concat(found2);
-                }
-                if (firstOnly && childResults2.length > 0) return childResults2[0];
-              }
-              return firstOnly ? '' : childResults2;
-            }
-            // 多层后代选择器：递归
-            if (spaceParts.length > 2) {
-              var firstPart = spaceParts[0];
-              var restPart = spaceParts.slice(1).join(' ');
-              var topResults = _JsoupLite._selectImpl(html, firstPart, false);
-              if (!topResults || topResults.length === 0) return firstOnly ? '' : [];
-              var deepResults = [];
-              for (var di = 0; di < topResults.length; di++) {
-                var deepInner = _getInnerHtml(topResults[di]);
-                if (deepInner) {
-                  var deepFound = _JsoupLite._selectImpl(deepInner, restPart, false);
-                  if (deepFound && deepFound.length) deepResults = deepResults.concat(deepFound);
-                }
-                if (firstOnly && deepResults.length > 0) return deepResults[0];
-              }
-              return firstOnly ? '' : deepResults;
-            }
-          }
-
-          // 伪类选择器处理: :first-child, :last-child, :nth-child(n), :not(selector)
-          var pseudoMatch = sel.match(/^(.+?):(first-child|last-child|nth-child\\(([^)]+)\\)|not\\(([^)]+)\\))\$/);
-          if (pseudoMatch) {
-            var baseSel = pseudoMatch[1].trim() || '*';
-            var pseudoType = pseudoMatch[2];
-            var baseElements = _JsoupLite._selectImpl(html, baseSel, false);
-            if (!baseElements || baseElements.length === 0) return firstOnly ? '' : [];
-            var filtered = [];
-            if (pseudoType === 'first-child') {
-              filtered = baseElements.length > 0 ? [baseElements[0]] : [];
-            } else if (pseudoType === 'last-child') {
-              filtered = baseElements.length > 0 ? [baseElements[baseElements.length - 1]] : [];
-            } else if (pseudoType.indexOf('nth-child') === 0) {
-              var nthArg = pseudoMatch[3];
-              var idx = parseInt(nthArg);
-              if (!isNaN(idx) && idx > 0 && idx <= baseElements.length) {
-                filtered = [baseElements[idx - 1]];
-              }
-            } else if (pseudoType.indexOf('not') === 0) {
-              var notSel = pseudoMatch[4];
-              var notElements = _JsoupLite._selectImpl(html, notSel, false) || [];
-              for (var ni = 0; ni < baseElements.length; ni++) {
-                if (notElements.indexOf(baseElements[ni]) < 0) filtered.push(baseElements[ni]);
-              }
-            }
-            return firstOnly ? (filtered.length > 0 ? filtered[0] : '') : filtered;
-          }
-
-          // 通配符: *
-          if (sel === '*') {
-            var allTags = [];
-            var tagRe = /<([a-zA-Z][a-zA-Z0-9]*)[^>]*>/g;
-            var tm;
-            while ((tm = tagRe.exec(html)) !== null) {
-              var fullEl = _extractFullElement(html, tm.index, tm[1]);
-              if (fullEl) allTags.push(fullEl);
-              if (firstOnly && allTags.length > 0) return allTags[0];
-            }
-            return firstOnly ? '' : allTags;
-          }
-
-          // ID 选择器: #myId
+          // Simple #id
           if (sel.startsWith('#')) {
             var id = sel.substring(1);
-            var idPattern = new RegExp('id=["\\']' + _escRe(id) + '["\\']', 'i');
-            var tagMatch = html.match(new RegExp('<([a-zA-Z][a-zA-Z0-9]*)[^>]*' + idPattern.source + '[^>]*>([\\\\s\\\\S]*?)<\\\\/\\\\1>', 'i'));
-            if (tagMatch) return firstOnly ? tagMatch[0] : [tagMatch[0]];
-            return firstOnly ? '' : [];
+            var idRe = new RegExp('<([a-zA-Z][a-zA-Z0-9]*)[^>]*id="' + id.replace(/[.*+?^\${}()|[\\]\\\\]/g, '\\\\\$&') + '"[^>]*>([\\\\s\\\\S]*?)</\\\\1>', 'i');
+            var m4 = idRe.exec(html);
+            if (firstOnly) return m4 ? m4[0] : '';
+            return m4 ? [m4[0]] : [];
           }
-
-          // 多 class 选择器: .class1.class2
-          if (sel.startsWith('.') && sel.indexOf('.', 1) > 0) {
-            var classes = sel.substring(1).split('.');
-            var multiClsPattern = 'class=["\\'][^"\\']*';
-            for (var ci = 0; ci < classes.length; ci++) {
-              multiClsPattern += '\\\\b' + _escRe(classes[ci]) + '\\\\b[^"\\']*';
-            }
-            multiClsPattern += '["\\']';
-            var mClsMatches = _findAllTags(html, new RegExp(multiClsPattern, 'i'), firstOnly);
-            return firstOnly ? (mClsMatches.length > 0 ? mClsMatches[0] : '') : mClsMatches;
-          }
-
-          // 单 class 选择器: .myClass
-          if (sel.startsWith('.')) {
-            var cls = sel.substring(1);
-            var clsPattern = new RegExp('class=["\\'][^"\\']*\\\\b' + _escRe(cls) + '\\\\b[^"\\']*["\\']', 'i');
-            var matches = _findAllTags(html, clsPattern, firstOnly);
-            return firstOnly ? (matches.length > 0 ? matches[0] : '') : matches;
-          }
-
-          // tag.class1.class2 多class组合
-          var tagMultiClsMatch = sel.match(/^([a-zA-Z][a-zA-Z0-9]*)((?:\\.[a-zA-Z_-][a-zA-Z0-9_-]*)+)\$/);
-          if (tagMultiClsMatch) {
-            var mTag = tagMultiClsMatch[1];
-            var mClsList = tagMultiClsMatch[2].substring(1).split('.');
-            var mClsPat = '<' + mTag + '[^>]*class=["\\'][^"\\']*';
-            for (var mci = 0; mci < mClsList.length; mci++) {
-              mClsPat += '\\\\b' + _escRe(mClsList[mci]) + '\\\\b[^"\\']*';
-            }
-            mClsPat += '["\\'][^>]*>';
-            var mClsResults = _findAllTags(html, new RegExp(mClsPat, 'i'), firstOnly);
-            return firstOnly ? (mClsResults.length > 0 ? mClsResults[0] : '') : mClsResults;
-          }
-
-          // tag#id 组合选择器: div#myId
-          var tagIdMatch = sel.match(/^([a-zA-Z][a-zA-Z0-9]*)#([a-zA-Z_-][a-zA-Z0-9_-]*)\$/);
-          if (tagIdMatch) {
-            var tag2 = tagIdMatch[1];
-            var id2 = tagIdMatch[2];
-            var combinedPattern2 = new RegExp('<' + tag2 + '[^>]*id=["\\']' + _escRe(id2) + '["\\'][^>]*>', 'i');
-            var matches3 = _findAllTags(html, combinedPattern2, firstOnly);
-            return firstOnly ? (matches3.length > 0 ? matches3[0] : '') : matches3;
-          }
-
-          // 属性选择器: tag[attr=value], [attr=value], tag[attr~=value], tag[attr^=value], tag[attr\$=value], tag[attr*=value]
-          var attrSelMatch = sel.match(/^(?:([a-zA-Z][a-zA-Z0-9]*))?\\[([^~^\\\\\$*=]+)([~^\\\\\$*]?)=?["\\']?([^"\\'\\]]*)["\\']?\\]\$/);
-          if (attrSelMatch) {
-            var tag3 = attrSelMatch[1] || '[a-zA-Z][a-zA-Z0-9]*';
-            var attrName = attrSelMatch[2];
-            var attrOp = attrSelMatch[3];
-            var attrVal = attrSelMatch[4];
-            var attrPat;
-            if (!attrOp && !attrVal) {
-              // [attr] - 属性存在即可
-              attrPat = new RegExp('<' + tag3 + '[^>]*' + _escRe(attrName) + '=["\\'][^"\\']*["\\'][^>]*>', 'i');
-            } else if (attrOp === '~' && attrVal) {
-              // [attr~=value] - 空格分隔的值列表中包含
-              attrPat = new RegExp('<' + tag3 + '[^>]*' + _escRe(attrName) + '=["\\'][^"\\']*\\\\b' + _escRe(attrVal) + '\\\\b[^"\\']*["\\'][^>]*>', 'i');
-            } else if (attrOp === '^' && attrVal) {
-              // [attr^=value] - 以value开头
-              attrPat = new RegExp('<' + tag3 + '[^>]*' + _escRe(attrName) + '=["\\']' + _escRe(attrVal) + '[^"\\']*["\\'][^>]*>', 'i');
-            } else if (attrOp === '\$' && attrVal) {
-              // [attr\$=value] - 以value结尾
-              attrPat = new RegExp('<' + tag3 + '[^>]*' + _escRe(attrName) + '=["\\'][^"\\']*' + _escRe(attrVal) + '["\\'][^>]*>', 'i');
-            } else if (attrOp === '*' && attrVal) {
-              // [attr*=value] - 包含value
-              attrPat = new RegExp('<' + tag3 + '[^>]*' + _escRe(attrName) + '=["\\'][^"\\']*' + _escRe(attrVal) + '[^"\\']*["\\'][^>]*>', 'i');
-            } else if (attrVal) {
-              // [attr=value] - 精确匹配
-              attrPat = new RegExp('<' + tag3 + '[^>]*' + _escRe(attrName) + '=["\\']' + _escRe(attrVal) + '["\\'][^>]*>', 'i');
-            } else {
-              attrPat = new RegExp('<' + tag3 + '[^>]*' + _escRe(attrName) + '=["\\'][^"\\']*["\\'][^>]*>', 'i');
-            }
-            var matches4 = _findAllTags(html, attrPat, firstOnly);
-            return firstOnly ? (matches4.length > 0 ? matches4[0] : '') : matches4;
-          }
-
-          // 纯 tag 选择器
-          var tagOnly = sel.match(/^[a-zA-Z][a-zA-Z0-9]*\$/);
-          if (tagOnly) {
-            var tagPattern = new RegExp('<' + sel + '[^>]*>([\\\\s\\\\S]*?)<\\\\/' + sel + '>', 'gi');
-            if (firstOnly) {
-              var m = tagPattern.exec(html);
-              return m ? m[0] : '';
-            }
-            var results = [];
-            var m2;
-            while ((m2 = tagPattern.exec(html)) !== null) {
-              results.push(m2[0]);
-            }
-            return results;
-          }
-
-          // 通用：无法识别的选择器
           return firstOnly ? '' : [];
         }
       };
 
-      function _escRe(str) {
-        return str.replace(/[.*+?^\${}()|[\\]\\\\]/g, '\\\\\$&');
-      }
-
-      // 提取元素的内部HTML内容
-      function _getInnerHtml(element) {
-        if (!element || typeof element !== 'string') return '';
-        // 去掉最外层标签，返回内部内容
-        var openTagEnd = element.indexOf('>');
-        if (openTagEnd < 0) return '';
-        var tagMatch = element.substring(0, openTagEnd + 1).match(/^<([a-zA-Z][a-zA-Z0-9]*)/);
-        if (!tagMatch) return element;
-        var tagName = tagMatch[1];
-        var closeTag = '</' + tagName + '>';
-        if (element.endsWith(closeTag)) {
-          return element.substring(openTagEnd + 1, element.length - closeTag.length);
-        }
-        return element.substring(openTagEnd + 1);
-      }
-
-      // 从指定位置提取完整元素（含嵌套）
-      function _extractFullElement(html, startIndex, tagName) {
-        var depth = 0;
-        var pos = startIndex;
-        var openRe = new RegExp('<' + tagName + '[\\\\s>/]', 'gi');
-        var closeRe = new RegExp('<\\\\/' + tagName + '>', 'gi');
-        openRe.lastIndex = startIndex;
-        closeRe.lastIndex = startIndex;
-        var endPos = html.length;
-        // 简易方式：找到匹配的关闭标签
-        var closeMatch = html.indexOf('</' + tagName + '>', startIndex);
-        if (closeMatch >= 0) {
-          return html.substring(startIndex, closeMatch + tagName.length + 3);
-        }
-        // 自闭合标签
-        var selfClose = html.indexOf('/>', startIndex);
-        if (selfClose >= 0 && selfClose < (closeMatch < 0 ? endPos : closeMatch)) {
-          return html.substring(startIndex, selfClose + 2);
-        }
-        return html.substring(startIndex, startIndex + html.substring(startIndex).indexOf('>') + 1);
-      }
-
-      function _findAllTags(html, attrPattern, firstOnly) {
-        var results = [];
-        var tagPattern = /<([a-zA-Z][a-zA-Z0-9]*)[^>]*>/g;
-        var m;
-        while ((m = tagPattern.exec(html)) !== null) {
-          if (attrPattern.test(m[0])) {
-            // 找到匹配的开始标签，尝试提取完整元素
-            var tagName = m[1];
-            var fullEl = _extractFullElement(html, m.index, tagName);
-            results.push(fullEl);
-            if (firstOnly) break;
-          }
-        }
-        return results;
-      }
-
       var java = {
         // ===== HTTP 请求方法（核心，借鉴 legado JsExtensions.ajax）=====
         get: function(url, headers) {
-          var cacheKey = 'http_get:' + url;
+          // 自动拼接 baseUrl：如果 url 是相对路径，拼接 baseUrl
+          var fullUrl = url;
+          if (url && !url.startsWith('http') && typeof baseUrl !== 'undefined' && baseUrl) {
+            fullUrl = baseUrl.replace(/\/+\$/, '') + '/' + url.replace(/^\/+/, '');
+          }
+          var cacheKey = 'http_get:' + fullUrl;
           if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          // fallback: 尝试原始 url
+          if (fullUrl !== url) {
+            var origKey = 'http_get:' + url;
+            if (_javaCache[origKey] !== undefined) return _javaCache[origKey];
+          }
           return '';
         },
         post: function(url, body, headers) {
-          var cacheKey = 'http_post:' + url;
+          var fullUrl = url;
+          if (url && !url.startsWith('http') && typeof baseUrl !== 'undefined' && baseUrl) {
+            fullUrl = baseUrl.replace(/\/+\$/, '') + '/' + url.replace(/^\/+/, '');
+          }
+          var cacheKey = 'http_post:' + fullUrl;
           if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          if (fullUrl !== url) {
+            var origKey = 'http_post:' + url;
+            if (_javaCache[origKey] !== undefined) return _javaCache[origKey];
+          }
           return '';
         },
         ajax: function(url, headers) {
@@ -916,33 +961,73 @@ class JsEngine {
           return _javaCache[key] || (defaultValue || '');
         },
         getString: function(str, ruleStr) {
-          if (!str || !ruleStr) return str || '';
-          // 借鉴 legado 的 JsExtensions.getString：支持 CSS/正则/JSON 规则
-          if (ruleStr.startsWith('@css:') || ruleStr.startsWith('@CSS:')) {
-            return _JsoupLite.selectFirst(str, ruleStr.substring(5));
+          // 借鉴 legado：单参数模式 java.getString(ruleStr)
+          // 此时 str 是规则字符串，内容来自 result 变量
+          // 双参数模式 java.getString(content, ruleStr)
+          // 此时 str 是内容，ruleStr 是规则
+          var content, rule;
+          if (ruleStr === undefined || ruleStr === null) {
+            // 单参数模式：str 是规则，内容来自 result
+            rule = str;
+            content = (typeof result !== 'undefined') ? result : '';
+          } else {
+            // 双参数模式
+            content = str;
+            rule = ruleStr;
           }
-          if (ruleStr.startsWith('@json:') || ruleStr.startsWith('@JSON:')) {
+
+          if (!rule) return content || '';
+
+          // @@ 前缀：去掉 @@ 后作为默认 CSS 规则
+          if (rule.indexOf('@@') === 0) {
+            rule = rule.substring(2);
+          }
+
+          // 借鉴 legado 的 JsExtensions.getString：支持 CSS/正则/JSON 规则
+          if (rule.startsWith('@css:') || rule.startsWith('@CSS:')) {
+            var cssSel = rule.substring(5);
+            // 尝试从缓存获取 text
+            var textKey = 'jsoup_text:' + cssSel + ':' + _JsoupLite._hashStr(content || '');
+            if (_javaCache[textKey] !== undefined) return _javaCache[textKey];
+            // 尝试从缓存获取 href
+            var hrefKey = 'jsoup_href:' + cssSel + ':' + _JsoupLite._hashStr(content || '');
+            if (_javaCache[hrefKey] !== undefined) return _javaCache[hrefKey];
+            return _JsoupLite.selectFirst(content, cssSel);
+          }
+          if (rule.startsWith('@json:') || rule.startsWith('@JSON:')) {
             try {
-              var data = JSON.parse(str);
-              var path = ruleStr.substring(6).trim().replace(/^\\\$\\./, '');
+              var data = (typeof content === 'string') ? JSON.parse(content) : content;
+              var path = rule.substring(6).trim().replace(/^\$\./, '');
               var parts = path.split('.');
-              var result = data;
+              var r = data;
               for (var i = 0; i < parts.length; i++) {
-                if (result == null) return '';
-                result = result[parts[i]];
+                if (r == null) return '';
+                r = r[parts[i]];
               }
-              return result != null ? String(result) : '';
+              return r != null ? String(r) : '';
             } catch(e) { return ''; }
           }
           // 正则规则
-          if (ruleStr.startsWith('@regex:') || ruleStr.startsWith('@Regex:')) {
+          if (rule.startsWith('@regex:') || rule.startsWith('@Regex:')) {
             try {
-              var pattern = ruleStr.substring(7);
-              var m = str.match(new RegExp(pattern));
+              var pattern = rule.substring(7);
+              var m = String(content).match(new RegExp(pattern));
               return m ? (m[1] || m[0]) : '';
             } catch(e) { return ''; }
           }
-          return str;
+          // 默认：CSS 选择器规则（legado 的 Default 模式）
+          // 支持 #id、.class、tag、tag@attr、tag@sub@attr 等格式
+          try {
+            // 尝试从缓存获取 text
+            var textKey2 = 'jsoup_text:' + rule + ':' + _JsoupLite._hashStr(content || '');
+            if (_javaCache[textKey2] !== undefined) return _javaCache[textKey2];
+            // 尝试从缓存获取 href
+            var hrefKey2 = 'jsoup_href:' + rule + ':' + _JsoupLite._hashStr(content || '');
+            if (_javaCache[hrefKey2] !== undefined) return _javaCache[hrefKey2];
+            return _JsoupLite.selectFirst(content, rule);
+          } catch(e) {}
+
+          return String(content);
         },
         getStrResponse: function(url, ruleStr) {
           var html = java.ajax(url);
@@ -956,18 +1041,30 @@ class JsEngine {
           _javaCache[key] = JSON.stringify(value);
         },
 
-        // ===== 加密/解密（桥接到 NativeChannel，同步模式从缓存取）=====
+        // ===== 加密/解密（优先使用纯 JS _AES 引擎，fallback 到缓存）=====
         aesEncode: function(data, key, iv) {
           var cacheKey = 'aes_enc:' + data + ':' + key + ':' + (iv || '');
           if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
-          return '';
+          try {
+            var mode = iv ? 'CBC' : 'ECB';
+            var result = _AES.encrypt(data, key, iv, mode);
+            _javaCache[cacheKey] = result;
+            return result;
+          } catch(e) { return ''; }
         },
         aesDecode: function(data, key, iv) {
           var cacheKey = 'aes_dec:' + data + ':' + key + ':' + (iv || '');
           if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
-          return '';
+          try {
+            var mode = iv ? 'CBC' : 'ECB';
+            var result = _AES.decrypt(data, key, iv, mode);
+            _javaCache[cacheKey] = result;
+            return result;
+          } catch(e) { return ''; }
         },
         md5Encode: function(str) {
+          // 优先使用纯 JS _MD5 引擎，fallback 到缓存
+          if (typeof _MD5 !== 'undefined') return _MD5(str);
           var cacheKey = 'md5:' + str;
           if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
           return '';
@@ -1089,6 +1186,29 @@ class JsEngine {
           },
         },
 
+        // legado 兼容：java.webView(htmlOrJs, baseUrl, extra)
+        // 在 legado 中，java.webView 用于执行包含 JS 的 HTML 并获取渲染结果
+        // QuickJS 同步模式下无法真正渲染 WebView，尝试从缓存获取
+        webView: function(htmlOrJs, baseUrl, extra) {
+          var cacheKey = 'webview:' + (baseUrl || '') + ':' + (htmlOrJs || '').length;
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          // fallback: 如果 htmlOrJs 包含 <script>，尝试直接执行其中的 JS
+          try {
+            if (typeof htmlOrJs === 'string' && htmlOrJs.indexOf('<script') >= 0) {
+              var scripts = htmlOrJs.match(/<script[^>]*>([\\s\\S]*?)<\\/script>/gi);
+              if (scripts && scripts.length > 0) {
+                var lastResult = '';
+                for (var i = 0; i < scripts.length; i++) {
+                  var code = scripts[i].replace(/<script[^>]*>/i, '').replace(/<\\/script>/i, '');
+                  if (code.trim()) lastResult = String(eval(code));
+                }
+                return lastResult;
+              }
+            }
+          } catch(e) {}
+          return '';
+        },
+
         // ===== 缓存管理 =====
         cache: {
           get: function(key) { return _javaCache[key] || ''; },
@@ -1103,12 +1223,32 @@ class JsEngine {
 
         // ===== 元素操作（借鉴 legado JsExtensions）=====
         getElements: function(html, rule) {
-          if (!html || !rule) return [];
-          return _JsoupLite.selectAll(html, rule);
+          // 借鉴 legado：单参数模式 html 是规则，内容来自 result
+          var content, r;
+          if (rule === undefined || rule === null) {
+            r = html;
+            content = (typeof result !== 'undefined') ? result : '';
+          } else {
+            content = html;
+            r = rule;
+          }
+          if (!r) return [];
+          if (r.indexOf('@@') === 0) r = r.substring(2);
+          return _JsoupLite.selectAll(content, r);
         },
         getElement: function(html, rule) {
-          if (!html || !rule) return '';
-          return _JsoupLite.selectFirst(html, rule);
+          // 借鉴 legado：单参数模式 html 是规则，内容来自 result
+          var content, r;
+          if (rule === undefined || rule === null) {
+            r = html;
+            content = (typeof result !== 'undefined') ? result : '';
+          } else {
+            content = html;
+            r = rule;
+          }
+          if (!r) return '';
+          if (r.indexOf('@@') === 0) r = r.substring(2);
+          return _JsoupLite.selectFirst(content, r);
         },
       };
 
@@ -1152,7 +1292,139 @@ class JsEngine {
       };
     ''';
 
-    evaluate(javaBridge);
+    // 3. 注入 HTML 解析辅助函数 + java 对象
+    try {
+      evaluate(helperCode);
+    } catch (e) {
+      debugPrint('JsEngine: java 对象注入失败: $e');
+    }
+
+    // 4. 验证 java 对象是否注入成功
+    final javaCheck = evaluate('typeof java !== "undefined"');
+    if (javaCheck != 'true') {
+      debugPrint('JsEngine: java 对象注入失败，尝试简化版注入');
+      // 简化版：只注入核心方法
+      evaluate('''
+        var java = {
+          get: function(url) { var cacheKey = 'http_get:' + url; if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey]; return ''; },
+          post: function(url, body) { var cacheKey = 'http_post:' + url; if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey]; return ''; },
+          ajax: function(url) { return java.get(url); },
+          put: function(key, value) { _javaCache[key] = typeof value === 'object' ? JSON.stringify(value) : String(value); },
+          getStr: function(key, def) { return _javaCache[key] || (def || ''); },
+          log: function(msg) { console.log('[JavaBridge] ' + msg); },
+          aesEncode: function(data, key, iv) { try { return _AES.encrypt(data, key, iv, iv ? 'CBC' : 'ECB'); } catch(e) { return ''; } },
+          aesDecode: function(data, key, iv) { try { return _AES.decrypt(data, key, iv, iv ? 'CBC' : 'ECB'); } catch(e) { return ''; } },
+          md5Encode: function(str) { var k = 'md5:' + str; if (_javaCache[k] !== undefined) return _javaCache[k]; return ''; },
+          base64Encode: function(str) { try { return btoa(unescape(encodeURIComponent(str))); } catch(e) { return ''; } },
+          base64Decode: function(str) { try { return decodeURIComponent(escape(atob(str))); } catch(e) { return ''; } },
+        };
+      ''');
+    }
+
+    // 4. 注入 CryptoJS（使用纯 JS _AES 引擎，支持 WordArray 格式）
+    final cryptoCode = '''
+      var CryptoJS = {
+        AES: {
+          encrypt: function(data, key, cfg) {
+            var iv = cfg && cfg.iv ? cfg.iv : null;
+            var mode = (cfg && cfg.mode === CryptoJS.mode.ECB) ? 'ECB' : 'CBC';
+            var result = _AES.encrypt(data, key, iv, mode);
+            return { toString: function() { return result; }, ciphertext: { toString: function(enc) { return result; } } };
+          },
+          decrypt: function(data, key, cfg) {
+            var iv = cfg && cfg.iv ? cfg.iv : null;
+            var mode = (cfg && cfg.mode === CryptoJS.mode.ECB) ? 'ECB' : 'CBC';
+            var result = _AES.decrypt(data, key, iv, mode);
+            return { toString: function(enc) { return result; } };
+          },
+        },
+        MD5: function(str) { return { toString: function() { return java.md5Encode(str); } }; },
+        SHA1: function(str) { return { toString: function() { return java.sha1Encode ? java.sha1Encode(str) : ''; } }; },
+        SHA256: function(str) { return { toString: function() { return java.sha256Encode ? java.sha256Encode(str) : ''; } }; },
+        HmacSHA256: function(data, key) { return { toString: function() { return java.hmacSHA256 ? java.hmacSHA256(data, key) : ''; } }; },
+        enc: {
+          Utf8: {
+            parse: function(s) { return _AES.utf8Parse(s); },
+            stringify: function(w) {
+              if (typeof w === 'string') return w;
+              if (w && w.words) {
+                var bytes = [];
+                for (var i = 0; i < w.sigBytes; i++) {
+                  var wi = Math.floor(i/4);
+                  bytes.push((w.words[wi] >> (24 - (i%4)*8)) & 0xff);
+                }
+                var s = '';
+                for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+                return decodeURIComponent(escape(s));
+              }
+              return String(w);
+            }
+          },
+          Base64: {
+            parse: function(s) { return _AES.base64Parse(s); },
+            stringify: function(w) {
+              if (typeof w === 'string') return java.base64Encode(w) || '';
+              if (w && w.words) {
+                var bytes = [];
+                for (var i = 0; i < w.sigBytes; i++) {
+                  var wi = Math.floor(i/4);
+                  bytes.push((w.words[wi] >> (24 - (i%4)*8)) & 0xff);
+                }
+                return java.base64Encode(String.fromCharCode.apply(null, bytes)) || '';
+              }
+              return java.base64Encode(String(w)) || '';
+            }
+          },
+          Hex: {
+            parse: function(s) {
+              var bytes = [];
+              for (var i = 0; i < s.length; i += 2) bytes.push(parseInt(s.substr(i, 2), 16));
+              var words = [];
+              for (var i = 0; i < bytes.length; i += 4) {
+                words.push(((bytes[i]||0)<<24)|((bytes[i+1]||0)<<16)|((bytes[i+2]||0)<<8)|(bytes[i+3]||0));
+              }
+              return { words: words, sigBytes: bytes.length };
+            },
+            stringify: function(w) {
+              if (typeof w === 'string') return w;
+              if (w && w.words) {
+                var hex = '';
+                for (var i = 0; i < w.sigBytes; i++) {
+                  var wi = Math.floor(i/4);
+                  hex += ('0' + ((w.words[wi] >> (24 - (i%4)*8)) & 0xff).toString(16)).slice(-2);
+                }
+                return hex;
+              }
+              return String(w);
+            }
+          },
+          Latin1: { parse: function(s) { return s; }, stringify: function(w) { return typeof w === 'string' ? w : String(w); } },
+        },
+        mode: { ECB: {}, CBC: {} },
+        pad: { Pkcs7: {}, ZeroPadding: {}, NoPadding: {}, Iso97971: {} },
+        lib: {
+          WordArray: {
+            create: function(words, sigBytes) {
+              return { words: words || [], sigBytes: sigBytes !== undefined ? sigBytes : (words ? words.length * 4 : 0), toString: function() { return (words || []).join(''); } };
+            }
+          }
+        },
+        algo: {},
+      };
+    ''';
+    try {
+      evaluate(cryptoCode);
+    } catch (e) {
+      debugPrint('JsEngine: CryptoJS 注入失败: $e');
+    }
+
+    // 5. 最终验证
+    final finalCheck = evaluate('typeof java !== "undefined" && typeof CryptoJS !== "undefined" && typeof _javaCache !== "undefined" && typeof _AES !== "undefined"');
+    if (finalCheck == 'true') {
+      debugPrint('JsEngine: Java 桥接注入成功 (java, CryptoJS, _javaCache, _AES)');
+    } else {
+      debugPrint('JsEngine: Java 桥接注入部分失败！java=${evaluate('typeof java')}, CryptoJS=${evaluate('typeof CryptoJS')}, _javaCache=${evaluate('typeof _javaCache')}, _AES=${evaluate('typeof _AES')}');
+    }
   }
 
   // ===== TypeScript 编译支持 =====
@@ -1311,7 +1583,7 @@ class JsEngine {
   // ===== QuickJS 引擎执行 =====
 
   dynamic evaluate(String script) {
-    if (!_initialized || _jsRuntime == null) return null;
+    if (_jsRuntime == null) return null;
     try {
       final result = _jsRuntime!.evaluate(script);
       if (result.isError) {
@@ -1712,7 +1984,36 @@ class JsEngine {
           var baseUrl = ${jsonEncode(env?['baseUrl'] ?? '')};
           var book = ${jsonEncode(env?['book'] ?? {})};
           var chapter = ${jsonEncode(env?['chapter'] ?? {})};
-          var source = ${jsonEncode(env?['source'] ?? {})};
+          var source = (function() {
+            var _data = ${jsonEncode(env?['source'] ?? {})};
+            var _vars = ${jsonEncode(env?['sourceVars'] ?? {})};
+            // 借鉴 legado：source.getVariable() 无参返回 variable 字段的原始字符串值
+            // source.getVariable(key) 有参返回指定 key 的值
+            // source.setVariable(value) 设置整个 variable 字符串
+            var obj = Object.assign({}, _data);
+            obj.getVariable = function(key) {
+              if (key === undefined) {
+                // 无参：返回 variable 字段的原始值（legado 从 CacheManager 读取）
+                return _data['variable'] || '';
+              }
+              return _vars[key] || _data[key] || '';
+            };
+            obj.setVariable = function(keyOrValue, value) {
+              if (value === undefined) {
+                // 单参数：设置整个 variable 字符串（legado 风格）
+                _data['variable'] = String(keyOrValue);
+              } else {
+                // 双参数：设置指定 key
+                _vars[keyOrValue] = String(value);
+              }
+              return keyOrValue;
+            };
+            obj.putVariable = function(value) {
+              _data['variable'] = String(value);
+              return value;
+            };
+            return obj;
+          })();
           var cookie = ${jsonEncode(env?['cookie'] ?? {})};
           var title = ${jsonEncode(env?['chapter']?['title'] ?? '')};
           var src = result;
@@ -2142,44 +2443,107 @@ class JsEngine {
   /// 通过 NativeChannel 预获取结果，写入 _javaCache
   /// 借鉴 legado 的 preCacheHttpResults 机制，但自动扫描而非手动传入
   Future<void> _preCacheBridgeCalls(String jsCode, {Map<String, dynamic>? env}) async {
-    if (!_initialized || _jsRuntime == null) return;
+    if (_jsRuntime == null) return;
 
     final baseUrl = env?['baseUrl'] as String? ?? '';
-
-    // 1. 扫描 java.ajax/get/post 调用中的 URL
-    final httpPattern = RegExp(
-      r"""java\.(?:ajax|get|post)\s*\(\s*["']([^"']+)["']""",
-      multiLine: true,
-    );
     final httpUrls = <String>{};
-    for (final match in httpPattern.allMatches(jsCode)) {
-      final url = match.group(1);
-      if (url != null && url.isNotEmpty) {
-        // 处理相对URL
-        final absoluteUrl = _resolveUrl(url, baseUrl);
-        httpUrls.add(absoluteUrl);
-      }
-    }
 
-    // 2. 扫描 fetch() 调用中的 URL
-    final fetchPattern = RegExp(
-      r"""fetch\s*\(\s*["']([^"']+)["']""",
+    // 1. 扫描字面量 URL: java.ajax("url"), java.get("url"), java.post("url"), fetch("url")
+    final literalPattern = RegExp(
+      r"""(?:java\.(?:ajax|get|post)|fetch)\s*\(\s*["']([^"']+)["']""",
       multiLine: true,
     );
-    for (final match in fetchPattern.allMatches(jsCode)) {
+    for (final match in literalPattern.allMatches(jsCode)) {
       final url = match.group(1);
       if (url != null && url.isNotEmpty) {
-        final absoluteUrl = _resolveUrl(url, baseUrl);
+        // 处理模板变量 {{key}}, {{page}} 等
+        var resolvedUrl = url;
+        if (env != null) {
+          resolvedUrl = _resolveTemplateVars(url, env);
+        }
+        final absoluteUrl = _resolveUrl(resolvedUrl, baseUrl);
+        if (absoluteUrl.isNotEmpty && absoluteUrl.startsWith('http')) {
+          httpUrls.add(absoluteUrl);
+        }
+      }
+    }
+
+    // 2. 扫描变量拼接 URL: java.ajax(url), java.get(baseUrl + "/api"), fetch(variable)
+    // 先在 QuickJS 中求值变量，获取完整 URL
+    final varPattern = RegExp(
+      r"""(?:java\.(?:ajax|get|post)|fetch)\s*\(\s*([^"')\s][^)]*?)\s*\)""",
+      multiLine: true,
+    );
+    for (final match in varPattern.allMatches(jsCode)) {
+      final expr = match.group(1)?.trim();
+      if (expr == null || expr.isEmpty) continue;
+      // 跳过字面量字符串（已被上面匹配）
+      if (expr.startsWith('"') || expr.startsWith("'")) continue;
+      // 尝试在 QuickJS 中求值表达式
+      try {
+        // 注入 env 变量后求值
+        final varCode = <String>[];
+        if (env != null) {
+          for (final entry in env.entries) {
+            if (entry.value is String) {
+              varCode.add('var ${entry.key} = ${jsonEncode(entry.value)};');
+            } else if (entry.value is num || entry.value is bool) {
+              varCode.add('var ${entry.key} = ${entry.value};');
+            }
+          }
+        }
+        final evalScript = '${varCode.join('\n')} (function() { try { var __url = String($expr); return __url; } catch(e) { return ""; } })()';
+        final urlResult = evaluate(evalScript);
+        if (urlResult != null && urlResult.isNotEmpty && urlResult.startsWith('http')) {
+          httpUrls.add(urlResult);
+        }
+      } catch (_) {
+        // 求值失败，跳过
+      }
+    }
+
+    // 3. 扫描 URL 模板变量: fetch(`https://xxx/${key}`), java.ajax(`${baseUrl}/api`)
+    final templatePattern = RegExp(r'`([^`]*\$\{[^}]+\}[^`]*)`');
+    for (final match in templatePattern.allMatches(jsCode)) {
+      var template = match.group(1);
+      if (template == null) continue;
+      // 替换 ${var} 为 env 中的值
+      if (env != null) {
+        template = template.replaceAllMapped(
+          RegExp(r'\$\{([^}]+)\}'),
+          (m) {
+            final varName = m.group(1)?.trim() ?? '';
+            final val = env[varName];
+            if (val != null) return val.toString();
+            // 尝试点号路径: source.bookSourceUrl
+            final parts = varName.split('.');
+            dynamic current = env;
+            for (final part in parts) {
+              if (current is Map) {
+                current = current[part];
+              } else {
+                current = null;
+                break;
+              }
+            }
+            return current?.toString() ?? '';
+          },
+        );
+      }
+      final absoluteUrl = _resolveUrl(template, baseUrl);
+      if (absoluteUrl.isNotEmpty && absoluteUrl.startsWith('http')) {
         httpUrls.add(absoluteUrl);
       }
     }
 
-    // 3. 并发预缓存 HTTP 结果
+    // 4. 并发预缓存 HTTP 结果
     if (httpUrls.isNotEmpty) {
       AppLogger.instance.debug(LogCategory.js, '预缓存 ${httpUrls.length} 个HTTP请求');
+      // 从 env 中获取自定义 headers（书源配置的 header 字段）
+      final customHeaders = env?['headers'] as Map<String, String>?;
       final futures = httpUrls.map((url) async {
         try {
-          final result = await NativeChannel.instance.httpGet(url);
+          final result = await NativeChannel.instance.httpGet(url, headers: customHeaders);
           if (result != null) {
             return MapEntry('http_get:$url', result);
           }
@@ -2201,36 +2565,13 @@ class JsEngine {
       }
     }
 
-    // 4. 扫描 java.aesEncode/aesDecode 调用
-    final aesPattern = RegExp(
-      r"""java\.aes(?:En|De)code\s*\(\s*["']([^"']+)["']\s*,\s*["']([^"']+)["']""",
-      multiLine: true,
-    );
-    final cryptoResults = <String, String>{};
-    for (final match in aesPattern.allMatches(jsCode)) {
-      final data = match.group(1);
-      final key = match.group(2);
-      if (data != null && key != null) {
-        // AES 加密
-        final encKey = 'aes_enc:$data:$key:';
-        if (!_isCached(encKey)) {
-          final result = await NativeChannel.instance.aesEncrypt(data, key);
-          if (result != null) cryptoResults[encKey] = result;
-        }
-        // AES 解密
-        final decKey = 'aes_dec:$data:$key:';
-        if (!_isCached(decKey)) {
-          final result = await NativeChannel.instance.aesDecrypt(data, key);
-          if (result != null) cryptoResults[decKey] = result;
-        }
-      }
-    }
-
-    // 5. 扫描 java.md5Encode 调用
+    // 5. 扫描 java.aesEncode/aesDecode 调用（已有纯 JS _AES 引擎，不再需要预缓存）
+    // 6. 扫描 java.md5Encode 调用（暂无纯 JS MD5 实现，仍需预缓存）
     final md5Pattern = RegExp(
       r"""java\.md5Encode\s*\(\s*["']([^"']+)["']""",
       multiLine: true,
     );
+    final cryptoResults = <String, String>{};
     for (final match in md5Pattern.allMatches(jsCode)) {
       final str = match.group(1);
       if (str != null) {
@@ -2246,27 +2587,176 @@ class JsEngine {
       await preCacheCryptoResults(cryptoResults);
     }
 
-    // 6. 扫描 java.webview.eval 调用
-    final webviewPattern = RegExp(
-      r"""java\.webview\.eval\s*\(\s*["']([^"']+)["']\s*,\s*["']([^"']+)["']""",
+    // 7. 预缓存 HTML 解析结果（使用 Dart 原生 html 包）
+    final htmlParsePattern = RegExp(
+      r'''(?:_JsoupLite\.(selectFirst|selectAll)|java\.(getString|getElement|getElements))\s*\(\s*([^,)]+)(?:\s*,\s*([^)]+))?\s*\)''',
       multiLine: true,
     );
-    for (final match in webviewPattern.allMatches(jsCode)) {
-      final url = match.group(1);
-      final js = match.group(2);
-      if (url != null && js != null) {
-        final cacheKey = 'webview:$url:${js.length}';
-        if (!_isCached(cacheKey)) {
-          final result = await NativeChannel.instance.executeWebViewJs(
-            url: url,
-            jsCode: js,
-          );
-          if (result != null) {
-            evaluate('_javaCache["$cacheKey"] = ${jsonEncode(result)};');
+
+    // 收集已缓存的 HTTP 内容
+    final knownHtml = <String, String>{};
+    // 从 HTTP 缓存中获取内容
+    for (final url in httpUrls) {
+      final httpCacheKey = 'http_get:$url';
+      final cached = evaluate('_javaCache[${jsonEncode(httpCacheKey)}]');
+      if (cached != null && cached.isNotEmpty && cached != 'undefined' && cached.length > 50) {
+        knownHtml[httpCacheKey] = cached;
+      }
+    }
+
+    for (final match in htmlParsePattern.allMatches(jsCode)) {
+      final method = match.group(1) ?? match.group(2);
+      final firstArg = match.group(3)?.trim() ?? '';
+      final secondArg = match.group(4)?.trim();
+
+      String? htmlContent;
+      String? selector;
+
+      // 解析 HTML 内容来源
+      if (firstArg == 'result' || firstArg == 'content' || firstArg == 'src') {
+        // 内容来自 result 变量 - 从 HTTP 缓存获取
+        for (final entry in knownHtml.entries) {
+          htmlContent = entry.value;
+          break;
+        }
+      } else if (firstArg.startsWith('"') || firstArg.startsWith("'")) {
+        // 字面量字符串内容
+        try {
+          htmlContent = jsonDecode(firstArg) as String;
+        } catch (_) {}
+      } else {
+        // 变量名 - 尝试从 QuickJS 求值
+        try {
+          final evalResult = evaluate('(function(){ try { var __v = $firstArg; return (typeof __v === "string" && __v.length > 50) ? __v : ""; } catch(e) { return ""; } })()');
+          if (evalResult != null && evalResult.isNotEmpty && evalResult.length > 50) {
+            htmlContent = evalResult;
+          }
+        } catch (_) {}
+      }
+
+      // 解析选择器
+      if (secondArg != null) {
+        if (secondArg.startsWith('"') || secondArg.startsWith("'")) {
+          try {
+            selector = jsonDecode(secondArg);
+          } catch (_) {
+            selector = secondArg;
+          }
+        } else {
+          selector = secondArg;
+        }
+        // 清理选择器前缀
+        if (selector?.startsWith('@@') == true) selector = selector!.substring(2);
+        if (selector?.startsWith('@css:') == true) selector = selector!.substring(5);
+      } else if (method == 'getString' || method == 'getElement' || method == 'getElements') {
+        // 单参数模式：firstArg 是选择器，内容来自 result
+        var sel = firstArg;
+        if (sel.startsWith('"') || sel.startsWith("'")) {
+          try {
+            sel = jsonDecode(sel);
+          } catch (_) {}
+        }
+        if (sel.startsWith('@@')) sel = sel.substring(2);
+        if (sel.startsWith('@css:')) sel = sel.substring(5);
+        selector = sel;
+        // 单参数模式需要从 HTTP 缓存获取内容
+        if (htmlContent == null) {
+          for (final entry in knownHtml.entries) {
+            htmlContent = entry.value;
+            break;
           }
         }
       }
+
+      if (htmlContent == null || htmlContent.isEmpty || selector == null || selector.isEmpty) continue;
+
+      // 使用 Dart 原生 html 包解析
+      final parsed = _nativeJsoupParse(htmlContent, selector);
+
+      // 计算与 JS 侧 _hashStr 等价的 hash
+      final htmlHash = _computeJsHash(htmlContent);
+
+      // 缓存结果到 JS 侧 _javaCache
+      final sfKey = 'jsoup_sf:$selector:$htmlHash';
+      final saKey = 'jsoup_sa:$selector:$htmlHash';
+
+      if (!_isCached(sfKey)) {
+        evaluate('_javaCache[${jsonEncode(sfKey)}] = ${jsonEncode(parsed['first'])};');
+      }
+      if (!_isCached(saKey)) {
+        evaluate('_javaCache[${jsonEncode(saKey)}] = ${jsonEncode(parsed['all'])};');
+      }
+      // 缓存 text/href/src 供 java.getString 快速访问
+      final textKey = 'jsoup_text:$selector:$htmlHash';
+      final hrefKey = 'jsoup_href:$selector:$htmlHash';
+      if (parsed['text'] != null && !_isCached(textKey)) {
+        evaluate('_javaCache[${jsonEncode(textKey)}] = ${jsonEncode(parsed['text'])};');
+      }
+      if (parsed['href'] != null && (parsed['href'] as String).isNotEmpty && !_isCached(hrefKey)) {
+        evaluate('_javaCache[${jsonEncode(hrefKey)}] = ${jsonEncode(parsed['href'])};');
+      }
     }
+  }
+
+  /// 替换模板变量 {{key}}, {{page}} 等
+  String _resolveTemplateVars(String url, Map<String, dynamic> env) {
+    return url.replaceAllMapped(
+      RegExp(r'\{\{(\w+)\}\}'),
+      (match) {
+        final varName = match.group(1) ?? '';
+        final val = env[varName];
+        if (val != null) return val.toString();
+        // 尝试点号路径
+        final parts = varName.split('.');
+        dynamic current = env;
+        for (final part in parts) {
+          if (current is Map) {
+            current = current[part];
+          } else {
+            current = null;
+            break;
+          }
+        }
+        return current?.toString() ?? match.group(0)!;
+      },
+    );
+  }
+
+  /// 使用 Dart 原生 html 包解析 HTML（替代 JS 侧正则版 _JsoupLite）
+  Map<String, dynamic> _nativeJsoupParse(String html, String selector) {
+    try {
+      final doc = html_parser.parse(html);
+      final elements = doc.querySelectorAll(selector);
+      if (elements.isEmpty) {
+        return {'first': '', 'all': <String>[], 'attr': ''};
+      }
+      final firstEl = elements.first;
+      final firstHtml = firstEl.outerHtml;
+      final allHtml = elements.map((e) => e.outerHtml).toList();
+      final firstText = firstEl.text.trim();
+      final firstHref = firstEl.attributes['href'] ?? '';
+      final firstSrc = firstEl.attributes['src'] ?? '';
+      return {
+        'first': firstHtml,
+        'all': allHtml,
+        'text': firstText,
+        'href': firstHref,
+        'src': firstSrc,
+        'count': elements.length,
+      };
+    } catch (e) {
+      return {'first': '', 'all': <String>[], 'attr': ''};
+    }
+  }
+
+  /// 计算 JS 侧 _hashStr 等价的 hash 值
+  int _computeJsHash(String s) {
+    int h = 0;
+    for (int i = 0; i < s.length; i++) {
+      h = ((h << 5) - h + s.codeUnitAt(i)) & 0xFFFFFFFF;
+      if (h > 0x7FFFFFFF) h = h - 0x100000000;
+    }
+    return h;
   }
 
   /// 检查缓存键是否已存在

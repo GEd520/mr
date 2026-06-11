@@ -1,4 +1,5 @@
 import 'package:flutter/services.dart';
+import '../app_logger.dart';
 
 /// Android 原生平台通道
 /// 桥接 OkHttp（高性能HTTP）、Jsoup（HTML解析）、加解密、数据持久化等原生库
@@ -316,6 +317,81 @@ class NativeChannel {
         'delayTime': delayTime,
       });
       return result;
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  // ===== 解析规则桥接（直通 Kotlin 原生 AnalyzeRule）=====
+  // 等价于 legado 的 AnalyzeRule.getString/getStringList/getElements
+  // 支持 Default(JSoup/CSS)、@CSS、@XPath、@JSon、{{...}}、@js:、@get:、@put: 等全部 6 种模式
+
+  /// 解析规则取单个字符串
+  /// [content] 原始内容（HTML/JSON/文本）
+  /// [rule] legado 风格规则，如 `class.title@text` 或 `$.data[0].name` 或 `//h1/text()`
+  /// [baseUrl] 基础 URL（用于 isUrl=true 时拼接相对路径）
+  /// [isUrl] 结果是否为 URL（true 时会自动拼接成绝对路径）
+  Future<String?> analyzeRuleGetString(
+    String content,
+    String rule, {
+    String? baseUrl,
+    bool isUrl = false,
+  }) async {
+    try {
+      return await _channel.invokeMethod<String>('analyzeRuleGetString', {
+        'content': content,
+        'rule': rule,
+        'baseUrl': baseUrl,
+        'isUrl': isUrl,
+      });
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  /// 解析规则取字符串列表（章节名列表、图片 URL 列表等）
+  Future<List<String>?> analyzeRuleGetStringList(
+    String content,
+    String rule, {
+    String? baseUrl,
+    bool isUrl = false,
+  }) async {
+    try {
+      final result = await _channel.invokeMethod<Map>('analyzeRuleGetStringList', {
+        'content': content,
+        'rule': rule,
+        'baseUrl': baseUrl,
+        'isUrl': isUrl,
+      });
+      if (result == null) return null;
+      // 解析 JS 日志，写入 AppLogger
+      final logs = result['logs'];
+      if (logs is List && logs.isNotEmpty) {
+        for (final log in logs) {
+          AppLogger.instance.debug(LogCategory.js, '[Rhino] $log');
+        }
+      }
+      final data = result['data'];
+      if (data is List) return data.cast<String>();
+      return null;
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  /// 解析规则取元素列表（HTML 节点 outerHtml 列表，用于二次解析）
+  Future<List<String>?> analyzeRuleGetElements(
+    String content,
+    String rule, {
+    String? baseUrl,
+  }) async {
+    try {
+      final result = await _channel.invokeMethod<List>('analyzeRuleGetElements', {
+        'content': content,
+        'rule': rule,
+        'baseUrl': baseUrl,
+      });
+      return result?.cast<String>();
     } on PlatformException {
       return null;
     }

@@ -17,8 +17,13 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.logging.HttpLoggingInterceptor
 import org.jsoup.Jsoup
+import org.mozilla.javascript.BaseFunction
+import org.mozilla.javascript.Context as RhinoContext
+import org.mozilla.javascript.Scriptable
+import org.mozilla.javascript.ScriptableObject
+import org.mozilla.javascript.Undefined
+import org.mozilla.javascript.json.JsonParser
 import java.io.File
-import java.io.InputStream
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import javax.crypto.Cipher
@@ -41,10 +46,13 @@ class NativePlugin(private val context: Context) {
             MethodChannel(flutterEngine.dartExecutor as BinaryMessenger, CHANNEL)
                 .setMethodCallHandler(NativePlugin(context).handler)
         }
+
+        /** 当前线程的 JS 日志缓存，供 java.log 写入，analyzeRuleGetStringList 返回时读取 */
+        private val jsLogBuffer = ThreadLocal<ArrayList<String>>()
     }
 
     // 协程作用域：网络请求在 IO 线程执行，避免阻塞主线程
-    private val coroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val pluginScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     // 内置 Node.js 运行时
     private val nodeRuntime by lazy { NodeRuntime(context) }
@@ -88,6 +96,10 @@ class NativePlugin(private val context: Context) {
             "jsoupGetAttr" -> jsoupGetAttr(call, result)
             "jsoupClean" -> jsoupClean(call, result)
             "evaluateJavaRule" -> evaluateJavaRule(call, result)
+            // 解析规则桥接（直接对接 Dart AnalyzeRule）
+            "analyzeRuleGetString" -> analyzeRuleGetString(call, result)
+            "analyzeRuleGetStringList" -> analyzeRuleGetStringList(call, result)
+            "analyzeRuleGetElements" -> analyzeRuleGetElements(call, result)
             "jsoupParseUrl" -> jsoupParseUrl(call, result)
             "jsoupGetLinks" -> jsoupGetLinks(call, result)
             "httpDownload" -> httpDownload(call, result)
@@ -122,7 +134,7 @@ class NativePlugin(private val context: Context) {
         val headers = call.argument<Map<String, String>>("headers") ?: emptyMap()
         val timeoutMs = call.argument<Int>("timeoutMs") ?: 10000
 
-        coroutineScope.launch {
+        pluginScope.launch {
             try {
                 val requestBuilder = Request.Builder().url(url)
                 headers.forEach { (key, value) -> requestBuilder.addHeader(key, value) }
@@ -159,7 +171,7 @@ class NativePlugin(private val context: Context) {
         val headers = call.argument<Map<String, String>>("headers") ?: emptyMap()
         val timeoutMs = call.argument<Int>("timeoutMs") ?: 10000
 
-        coroutineScope.launch {
+        pluginScope.launch {
             try {
                 val contentType = headers["Content-Type"]?.toMediaType()
                     ?: "application/x-www-form-urlencoded".toMediaType()
@@ -197,7 +209,7 @@ class NativePlugin(private val context: Context) {
         }
         val headers = call.argument<Map<String, String>>("headers") ?: emptyMap()
 
-        coroutineScope.launch {
+        pluginScope.launch {
             try {
                 val requestBuilder = Request.Builder().url(url)
                     .cacheControl(CacheControl.Builder().maxStale(3600, TimeUnit.SECONDS).build())
@@ -294,7 +306,7 @@ class NativePlugin(private val context: Context) {
         val existingResult = call.argument<String>("result") ?: ""
         val env = call.argument<Map<String, Any>>("env") ?: emptyMap()
 
-        coroutineScope.launch {
+        pluginScope.launch {
             try {
                 // 构建规则执行环境
                 val url = env["url"] as? String
@@ -374,80 +386,542 @@ class NativePlugin(private val context: Context) {
     }
 
     /**
+     * 注入完整的 legado 风格 java 桥接对象到 Rhino 作用域
+     * 借鉴 legado 的 JsExtensions，直接调用原生 JSoup 进行 HTML 解析
+     */
+    @Suppress("ApplySharedPref")
+    private fun injectJavaBridge(
+        cx: RhinoContext,
+        scope: Scriptable,
+        baseUrl: String = ""
+    ) {
+        val javaObj = cx.newObject(scope)
+
+        // ===== 日志 =====
+        val javaLogFn = object : BaseFunction() {
+            override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any?>): Any {
+                val sb = StringBuilder()
+                for (arg in args) { if (sb.isNotEmpty()) sb.append(" "); sb.append(arg?.toString() ?: "null") }
+                val msg = sb.toString()
+                Log.d("RhinoJava", msg)
+                // 同步写入 JS 日志缓存，供 Dart 端 AppLogger 显示
+                jsLogBuffer.get()?.add(msg)
+                return Undefined.instance
+            }
+        }
+        ScriptableObject.putProperty(javaObj, "log", javaLogFn)
+
+        // ===== HTTP 请求 =====
+        val ajaxFn = object : BaseFunction() {
+            override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any?>): Any {
+                val url = args.getOrNull(0)?.toString() ?: return ""
+                val fullUrl = if (!url.startsWith("http") && baseUrl.isNotEmpty()) {
+                    baseUrl.trimEnd('/') + "/" + url.trimStart('/')
+                } else url
+                return try {
+                    val request = Request.Builder().url(fullUrl).build()
+                    val response = okHttpClient.newCall(request).execute()
+                    response.body?.string() ?: ""
+                } catch (e: Exception) {
+                    Log.w(TAG, "java.ajax failed: $fullUrl", e)
+                    ""
+                }
+            }
+        }
+        ScriptableObject.putProperty(javaObj, "ajax", ajaxFn)
+        ScriptableObject.putProperty(javaObj, "get", ajaxFn)
+
+        val postFn = object : BaseFunction() {
+            override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any?>): Any {
+                val url = args.getOrNull(0)?.toString() ?: return ""
+                val body = args.getOrNull(1)?.toString() ?: ""
+                val fullUrl = if (!url.startsWith("http") && baseUrl.isNotEmpty()) {
+                    baseUrl.trimEnd('/') + "/" + url.trimStart('/')
+                } else url
+                return try {
+                    val contentType = "application/x-www-form-urlencoded".toMediaType()
+                    val requestBody = body.toRequestBody(contentType)
+                    val request = Request.Builder().url(fullUrl).post(requestBody).build()
+                    val response = okHttpClient.newCall(request).execute()
+                    response.body?.string() ?: ""
+                } catch (e: Exception) {
+                    Log.w(TAG, "java.post failed: $fullUrl", e)
+                    ""
+                }
+            }
+        }
+        ScriptableObject.putProperty(javaObj, "post", postFn)
+
+        // ===== HTML/JSON/XPath 规则解析（使用完整 AnalyzeRule 引擎）=====
+        // java.getString(content, rule) 或 java.getString(rule) 单参数模式
+        val getStringFn = object : BaseFunction() {
+            override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any?>): Any {
+                var content: String
+                var rule: String
+                if (args.size < 2 || args[1] == null || args[1] == Undefined.instance) {
+                    rule = args.getOrNull(0)?.toString() ?: return ""
+                    content = try {
+                        ScriptableObject.getProperty(scope, "result")?.toString() ?: ""
+                    } catch (_: Exception) { "" }
+                } else {
+                    content = args.getOrNull(0)?.toString() ?: ""
+                    rule = args.getOrNull(1)?.toString() ?: return content
+                }
+                if (rule.isEmpty()) return content
+                try {
+                    val analyzeRule = com.example.dan_shenqi.analyzeRule.AnalyzeRule(
+                        content = content,
+                        baseUrl = baseUrl
+                    )
+                    analyzeRule.jsEvaluator = { jsStr, _ ->
+                        try {
+                            val cx2 = RhinoContext.enter()
+                            try {
+                                val scope2 = cx2.initStandardObjects()
+                                ScriptableObject.putProperty(scope2, "result", content)
+                                ScriptableObject.putProperty(scope2, "baseUrl", baseUrl ?: "")
+                                ScriptableObject.putProperty(scope2, "java", javaObj)
+                                ScriptableObject.putProperty(scope2, "source", ScriptableObject.getProperty(scope, "source"))
+                                ScriptableObject.putProperty(scope2, "key", ScriptableObject.getProperty(scope, "key"))
+                                val evalResult = cx2.evaluateString(scope2, jsStr, "<jsRule>", 1, null)
+                                RhinoContext.toString(evalResult)
+                            } finally {
+                                RhinoContext.exit()
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "AnalyzeRule JS eval failed", e)
+                            null
+                        }
+                    }
+                    return analyzeRule.getString(rule) ?: ""
+                } catch (e: Exception) {
+                    Log.w(TAG, "java.getString AnalyzeRule failed: $rule", e)
+                }
+                return content
+            }
+        }
+        ScriptableObject.putProperty(javaObj, "getString", getStringFn)
+        ScriptableObject.putProperty(javaObj, "getStrResponse", getStringFn)
+
+        // java.getElement(content, rule) 或 java.getElement(rule) 单参数模式
+        val getElementFn = object : BaseFunction() {
+            override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any?>): Any {
+                var content: String
+                var rule: String
+                if (args.size < 2 || args[1] == null || args[1] == Undefined.instance) {
+                    rule = args.getOrNull(0)?.toString() ?: return ""
+                    content = try {
+                        ScriptableObject.getProperty(scope, "result")?.toString() ?: ""
+                    } catch (_: Exception) { "" }
+                } else {
+                    content = args.getOrNull(0)?.toString() ?: ""
+                    rule = args.getOrNull(1)?.toString() ?: return content
+                }
+                if (rule.isEmpty()) return content
+                try {
+                    val analyzeRule = com.example.dan_shenqi.analyzeRule.AnalyzeRule(
+                        content = content,
+                        baseUrl = baseUrl
+                    )
+                    analyzeRule.jsEvaluator = { jsStr, _ ->
+                        try {
+                            val cx2 = RhinoContext.enter()
+                            try {
+                                val scope2 = cx2.initStandardObjects()
+                                ScriptableObject.putProperty(scope2, "result", content)
+                                ScriptableObject.putProperty(scope2, "baseUrl", baseUrl ?: "")
+                                ScriptableObject.putProperty(scope2, "java", javaObj)
+                                ScriptableObject.putProperty(scope2, "source", ScriptableObject.getProperty(scope, "source"))
+                                ScriptableObject.putProperty(scope2, "key", ScriptableObject.getProperty(scope, "key"))
+                                val evalResult = cx2.evaluateString(scope2, jsStr, "<jsRule>", 1, null)
+                                RhinoContext.toString(evalResult)
+                            } finally {
+                                RhinoContext.exit()
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "AnalyzeRule JS eval failed", e)
+                            null
+                        }
+                    }
+                    val elements = analyzeRule.getElements(rule)
+                    return if (elements.isNotEmpty()) elements[0].toString() else ""
+                } catch (e: Exception) {
+                    Log.w(TAG, "java.getElement AnalyzeRule failed: $rule", e)
+                }
+                return content
+            }
+        }
+        ScriptableObject.putProperty(javaObj, "getElement", getElementFn)
+
+        // java.getElements(content, rule) 或 java.getElements(rule) 单参数模式
+        val getElementsFn = object : BaseFunction() {
+            override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any?>): Any {
+                var content: String
+                var rule: String
+                if (args.size < 2 || args[1] == null || args[1] == Undefined.instance) {
+                    rule = args.getOrNull(0)?.toString() ?: return cx.newArray(scope, 0)
+                    content = try {
+                        ScriptableObject.getProperty(scope, "result")?.toString() ?: ""
+                    } catch (_: Exception) { "" }
+                } else {
+                    content = args.getOrNull(0)?.toString() ?: ""
+                    rule = args.getOrNull(1)?.toString() ?: return cx.newArray(scope, 0)
+                }
+                if (rule.isEmpty()) return cx.newArray(scope, 0)
+                try {
+                    val analyzeRule = com.example.dan_shenqi.analyzeRule.AnalyzeRule(
+                        content = content,
+                        baseUrl = baseUrl
+                    )
+                    analyzeRule.jsEvaluator = { jsStr, _ ->
+                        try {
+                            val cx2 = RhinoContext.enter()
+                            try {
+                                val scope2 = cx2.initStandardObjects()
+                                ScriptableObject.putProperty(scope2, "result", content)
+                                ScriptableObject.putProperty(scope2, "baseUrl", baseUrl ?: "")
+                                ScriptableObject.putProperty(scope2, "java", javaObj)
+                                ScriptableObject.putProperty(scope2, "source", ScriptableObject.getProperty(scope, "source"))
+                                ScriptableObject.putProperty(scope2, "key", ScriptableObject.getProperty(scope, "key"))
+                                val evalResult = cx2.evaluateString(scope2, jsStr, "<jsRule>", 1, null)
+                                RhinoContext.toString(evalResult)
+                            } finally {
+                                RhinoContext.exit()
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "AnalyzeRule JS eval failed", e)
+                            null
+                        }
+                    }
+                    val elements = analyzeRule.getElements(rule)
+                    val arr = cx.newArray(scope, elements.size)
+                    for (i in elements.indices) {
+                        ScriptableObject.putProperty(arr as Scriptable, i, elements[i].toString())
+                    }
+                    return arr
+                } catch (e: Exception) {
+                    Log.w(TAG, "java.getElements AnalyzeRule failed: $rule", e)
+                }
+                return cx.newArray(scope, 0)
+            }
+        }
+        ScriptableObject.putProperty(javaObj, "getElements", getElementsFn)
+
+        // ===== JSoup 直接访问 =====
+        val jsoupObj = cx.newObject(scope)
+
+        val jsoupSelectFirstFn = object : BaseFunction() {
+            override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any?>): Any {
+                val html = args.getOrNull(0)?.toString() ?: return ""
+                val selector = args.getOrNull(1)?.toString() ?: return ""
+                return try {
+                    val doc = Jsoup.parse(html)
+                    doc.selectFirst(selector)?.outerHtml() ?: ""
+                } catch (_: Exception) { "" }
+            }
+        }
+        ScriptableObject.putProperty(jsoupObj, "selectFirst", jsoupSelectFirstFn)
+
+        val jsoupSelectAllFn = object : BaseFunction() {
+            override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any?>): Any {
+                val html = args.getOrNull(0)?.toString() ?: return cx.newArray(scope, 0)
+                val selector = args.getOrNull(1)?.toString() ?: return cx.newArray(scope, 0)
+                return try {
+                    val doc = Jsoup.parse(html)
+                    val elements = doc.select(selector)
+                    val arr = cx.newArray(scope, elements.size)
+                    for (i in 0 until elements.size) {
+                        ScriptableObject.putProperty(arr as Scriptable, i, elements[i].outerHtml())
+                    }
+                    arr
+                } catch (_: Exception) { cx.newArray(scope, 0) }
+            }
+        }
+        ScriptableObject.putProperty(jsoupObj, "select", jsoupSelectAllFn)
+        ScriptableObject.putProperty(jsoupObj, "selectAll", jsoupSelectAllFn)
+
+        val jsoupGetAttrFn = object : BaseFunction() {
+            override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any?>): Any {
+                val html = args.getOrNull(0)?.toString() ?: return ""
+                val selector = args.getOrNull(1)?.toString() ?: return ""
+                val attr = args.getOrNull(2)?.toString() ?: return ""
+                return try {
+                    val doc = Jsoup.parse(html)
+                    doc.selectFirst(selector)?.attr(attr) ?: ""
+                } catch (_: Exception) { "" }
+            }
+        }
+        ScriptableObject.putProperty(jsoupObj, "getAttr", jsoupGetAttrFn)
+
+        val jsoupParseFn = object : BaseFunction() {
+            override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any?>): Any {
+                val html = args.getOrNull(0)?.toString() ?: return ""
+                return try {
+                    val doc = Jsoup.parse(html)
+                    doc.body()?.html() ?: ""
+                } catch (_: Exception) { "" }
+            }
+        }
+        ScriptableObject.putProperty(jsoupObj, "parse", jsoupParseFn)
+
+        val jsoupCleanFn = object : BaseFunction() {
+            override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any?>): Any {
+                val html = args.getOrNull(0)?.toString() ?: return ""
+                return try {
+                    val doc = Jsoup.parse(html)
+                    doc.select("script, style, noscript").remove()
+                    doc.body()?.html() ?: ""
+                } catch (_: Exception) { "" }
+            }
+        }
+        ScriptableObject.putProperty(jsoupObj, "clean", jsoupCleanFn)
+
+        ScriptableObject.putProperty(javaObj, "jsoup", jsoupObj)
+
+        // ===== 加解密 =====
+        val aesEncodeFn = object : BaseFunction() {
+            override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any?>): Any {
+                val data = args.getOrNull(0)?.toString() ?: return ""
+                val key = args.getOrNull(1)?.toString() ?: return ""
+                val iv = args.getOrNull(2)?.toString() ?: ""
+                return try {
+                    val keyBytes = padKey(key.toByteArray(Charsets.UTF_8))
+                    val secretKeySpec = SecretKeySpec(keyBytes, "AES")
+                    val cipher = if (iv.isNotEmpty()) {
+                        val ivBytes = padKey(iv.toByteArray(Charsets.UTF_8))
+                        Cipher.getInstance("AES/CBC/PKCS5Padding").apply {
+                            init(Cipher.ENCRYPT_MODE, secretKeySpec, IvParameterSpec(ivBytes))
+                        }
+                    } else {
+                        Cipher.getInstance("AES/ECB/PKCS5Padding").apply {
+                            init(Cipher.ENCRYPT_MODE, secretKeySpec)
+                        }
+                    }
+                    val encrypted = cipher.doFinal(data.toByteArray(Charsets.UTF_8))
+                    Base64.encodeToString(encrypted, Base64.NO_WRAP)
+                } catch (_: Exception) { "" }
+            }
+        }
+        ScriptableObject.putProperty(javaObj, "aesEncode", aesEncodeFn)
+        ScriptableObject.putProperty(javaObj, "aesEncrypt", aesEncodeFn)
+
+        val aesDecodeFn = object : BaseFunction() {
+            override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any?>): Any {
+                val data = args.getOrNull(0)?.toString() ?: return ""
+                val key = args.getOrNull(1)?.toString() ?: return ""
+                val iv = args.getOrNull(2)?.toString() ?: ""
+                return try {
+                    val keyBytes = padKey(key.toByteArray(Charsets.UTF_8))
+                    val secretKeySpec = SecretKeySpec(keyBytes, "AES")
+                    val cipher = if (iv.isNotEmpty()) {
+                        val ivBytes = padKey(iv.toByteArray(Charsets.UTF_8))
+                        Cipher.getInstance("AES/CBC/PKCS5Padding").apply {
+                            init(Cipher.DECRYPT_MODE, secretKeySpec, IvParameterSpec(ivBytes))
+                        }
+                    } else {
+                        Cipher.getInstance("AES/ECB/PKCS5Padding").apply {
+                            init(Cipher.DECRYPT_MODE, secretKeySpec)
+                        }
+                    }
+                    val decoded = Base64.decode(data, Base64.NO_WRAP)
+                    val decrypted = cipher.doFinal(decoded)
+                    String(decrypted, Charsets.UTF_8)
+                } catch (_: Exception) { "" }
+            }
+        }
+        ScriptableObject.putProperty(javaObj, "aesDecode", aesDecodeFn)
+        ScriptableObject.putProperty(javaObj, "aesDecrypt", aesDecodeFn)
+
+        val md5EncodeFn = object : BaseFunction() {
+            override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any?>): Any {
+                val str = args.getOrNull(0)?.toString() ?: return ""
+                return try {
+                    val digest = MessageDigest.getInstance("MD5")
+                    val hashBytes = digest.digest(str.toByteArray(Charsets.UTF_8))
+                    hashBytes.joinToString("") { "%02x".format(it) }
+                } catch (_: Exception) { "" }
+            }
+        }
+        ScriptableObject.putProperty(javaObj, "md5Encode", md5EncodeFn)
+
+        val base64EncodeFn = object : BaseFunction() {
+            override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any?>): Any {
+                val str = args.getOrNull(0)?.toString() ?: return ""
+                return Base64.encodeToString(str.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+            }
+        }
+        ScriptableObject.putProperty(javaObj, "base64Encode", base64EncodeFn)
+
+        val base64DecodeFn = object : BaseFunction() {
+            override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any?>): Any {
+                val str = args.getOrNull(0)?.toString() ?: return ""
+                return try {
+                    val decoded = Base64.decode(str, Base64.NO_WRAP)
+                    String(decoded, Charsets.UTF_8)
+                } catch (_: Exception) { "" }
+            }
+        }
+        ScriptableObject.putProperty(javaObj, "base64Decode", base64DecodeFn)
+
+        // ===== WebView（同步模式下无法真正渲染，返回空）=====
+        val webViewFn = object : BaseFunction() {
+            override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any?>): Any {
+                // Rhino 同步执行无法使用 WebView，返回空字符串
+                // 如果需要 WebView，应通过 Dart 侧的 executeWebViewJs 方法
+                return ""
+            }
+        }
+        ScriptableObject.putProperty(javaObj, "webView", webViewFn)
+
+        // ===== 缓存管理 =====
+        val cacheObj = cx.newObject(scope)
+        val cacheGetFn = object : BaseFunction() {
+            override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any?>): Any {
+                val key = args.getOrNull(0)?.toString() ?: return ""
+                return sharedPreferences.getString("rhino_cache_$key", "") ?: ""
+            }
+        }
+        ScriptableObject.putProperty(cacheObj, "get", cacheGetFn)
+        val cachePutFn = object : BaseFunction() {
+            override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any?>): Any {
+                val key = args.getOrNull(0)?.toString() ?: return Undefined.instance
+                val value = args.getOrNull(1)?.toString() ?: ""
+                sharedPreferences.edit().putString("rhino_cache_$key", value).apply()
+                return Undefined.instance
+            }
+        }
+        ScriptableObject.putProperty(cacheObj, "put", cachePutFn)
+        ScriptableObject.putProperty(javaObj, "cache", cacheObj)
+
+        // ===== 变量存取（legado 兼容）=====
+        val putFn = object : BaseFunction() {
+            override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any?>): Any {
+                val key = args.getOrNull(0)?.toString() ?: return Undefined.instance
+                val value = args.getOrNull(1)?.toString() ?: ""
+                sharedPreferences.edit().putString("rhino_var_$key", value).apply()
+                return Undefined.instance
+            }
+        }
+        ScriptableObject.putProperty(javaObj, "put", putFn)
+
+        val getStrFn = object : BaseFunction() {
+            override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any?>): Any {
+                val key = args.getOrNull(0)?.toString() ?: return ""
+                val default = args.getOrNull(1)?.toString() ?: ""
+                return sharedPreferences.getString("rhino_var_$key", default) ?: default
+            }
+        }
+        ScriptableObject.putProperty(javaObj, "getStr", getStrFn)
+
+        // ===== JSON 工具 =====
+        val getJsonFn = object : BaseFunction() {
+            override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any?>): Any {
+                val str = args.getOrNull(0)?.toString() ?: return cx.newObject(scope)
+                return try {
+                    JsonParser(cx, scope).parseValue(str)
+                } catch (_: Exception) { cx.newObject(scope) }
+            }
+        }
+        ScriptableObject.putProperty(javaObj, "getJson", getJsonFn)
+
+        // ===== 时间工具 =====
+        val getTimeFn = object : BaseFunction() {
+            override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any?>): Any {
+                return System.currentTimeMillis()
+            }
+        }
+        ScriptableObject.putProperty(javaObj, "getTime", getTimeFn)
+
+        // ===== 编码工具 =====
+        val encodeURIFn = object : BaseFunction() {
+            override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any?>): Any {
+                val str = args.getOrNull(0)?.toString() ?: return ""
+                return java.net.URLEncoder.encode(str, "UTF-8")
+            }
+        }
+        ScriptableObject.putProperty(javaObj, "encodeURI", encodeURIFn)
+
+        // ===== hex 编码 =====
+        val hexEncodeToStringFn = object : BaseFunction() {
+            override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any?>): Any {
+                val str = args.getOrNull(0)?.toString() ?: return ""
+                return str.toByteArray(Charsets.UTF_8).joinToString("") { "%02x".format(it) }
+            }
+        }
+        ScriptableObject.putProperty(javaObj, "hexEncodeToString", hexEncodeToStringFn)
+
+        val hexDecodeToStringFn = object : BaseFunction() {
+            override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any?>): Any {
+                val hex = args.getOrNull(0)?.toString() ?: return ""
+                return try {
+                    val bytes = ByteArray(hex.length / 2) { i -> Integer.parseInt(hex.substring(i * 2, i * 2 + 2), 16).toByte() }
+                    String(bytes, Charsets.UTF_8)
+                } catch (_: Exception) { "" }
+            }
+        }
+        ScriptableObject.putProperty(javaObj, "hexDecodeToString", hexDecodeToStringFn)
+
+        // 注入到作用域
+        ScriptableObject.putProperty(scope, "java", javaObj)
+    }
+
+    /**
      * 简易 JS 规则执行（通过 Rhino 引擎）
      */
     private fun executeJsRule(jsCode: String, html: String, currentResult: String, env: Map<String, Any>): String {
-        // 基础变量替换
-        var code = jsCode
-            .replace("\${result}", currentResult)
-            .replace("\${html}", html)
-        env.forEach { (key, value) ->
-            code = code.replace("\${$key}", value.toString())
-        }
-
-        // 通过 Rhino 执行 JS
         try {
-            val cx = org.mozilla.javascript.Context.enter()
+            val cx = RhinoContext.enter()
             val scope = cx.initStandardObjects()
-            org.mozilla.javascript.ScriptableObject.putProperty(scope, "result", currentResult)
-            org.mozilla.javascript.ScriptableObject.putProperty(scope, "html", html)
+            ScriptableObject.putProperty(scope, "result", currentResult)
+            ScriptableObject.putProperty(scope, "html", html)
             env.forEach { (key, value) ->
-                org.mozilla.javascript.ScriptableObject.putProperty(scope, key, value)
+                ScriptableObject.putProperty(scope, key, value)
             }
-            // 注入 console 对象（日志输出到 Android Log）
+            // 注入 console 对象
             val consoleObj = cx.newObject(scope)
-            val logFn = object : org.mozilla.javascript.BaseFunction() {
-                override fun call(cx: org.mozilla.javascript.Context, scope: org.mozilla.javascript.Scriptable, thisObj: org.mozilla.javascript.Scriptable?, args: Array<Any?>): Any {
+            val logFn = object : BaseFunction() {
+                override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any?>): Any {
                     val sb = StringBuilder()
                     for (arg in args) { if (sb.isNotEmpty()) sb.append(" "); sb.append(arg?.toString() ?: "null") }
                     Log.d("RhinoConsole", sb.toString())
-                    return org.mozilla.javascript.Undefined.instance
+                    return Undefined.instance
                 }
             }
             for (method in listOf("log", "info", "debug")) {
-                org.mozilla.javascript.ScriptableObject.putProperty(consoleObj, method, logFn)
+                ScriptableObject.putProperty(consoleObj, method, logFn)
             }
-            val warnFn = object : org.mozilla.javascript.BaseFunction() {
-                override fun call(cx: org.mozilla.javascript.Context, scope: org.mozilla.javascript.Scriptable, thisObj: org.mozilla.javascript.Scriptable?, args: Array<Any?>): Any {
+            val warnFn = object : BaseFunction() {
+                override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any?>): Any {
                     val sb = StringBuilder()
                     for (arg in args) { if (sb.isNotEmpty()) sb.append(" "); sb.append(arg?.toString() ?: "null") }
                     Log.w("RhinoConsole", sb.toString())
-                    return org.mozilla.javascript.Undefined.instance
+                    return Undefined.instance
                 }
             }
-            org.mozilla.javascript.ScriptableObject.putProperty(consoleObj, "warn", warnFn)
-            val errorFn = object : org.mozilla.javascript.BaseFunction() {
-                override fun call(cx: org.mozilla.javascript.Context, scope: org.mozilla.javascript.Scriptable, thisObj: org.mozilla.javascript.Scriptable?, args: Array<Any?>): Any {
+            ScriptableObject.putProperty(consoleObj, "warn", warnFn)
+            val errorFn = object : BaseFunction() {
+                override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any?>): Any {
                     val sb = StringBuilder()
                     for (arg in args) { if (sb.isNotEmpty()) sb.append(" "); sb.append(arg?.toString() ?: "null") }
                     Log.e("RhinoConsole", sb.toString())
-                    return org.mozilla.javascript.Undefined.instance
+                    return Undefined.instance
                 }
             }
-            org.mozilla.javascript.ScriptableObject.putProperty(consoleObj, "error", errorFn)
-            org.mozilla.javascript.ScriptableObject.putProperty(scope, "console", consoleObj)
-            // 注入 java.log（兼容 legado 书源）
-            val javaObj = cx.newObject(scope)
-            val javaLogFn = object : org.mozilla.javascript.BaseFunction() {
-                override fun call(cx: org.mozilla.javascript.Context, scope: org.mozilla.javascript.Scriptable, thisObj: org.mozilla.javascript.Scriptable?, args: Array<Any?>): Any {
-                    val sb = StringBuilder()
-                    for (arg in args) { if (sb.isNotEmpty()) sb.append(" "); sb.append(arg?.toString() ?: "null") }
-                    Log.d("RhinoJava", sb.toString())
-                    return org.mozilla.javascript.Undefined.instance
-                }
-            }
-            org.mozilla.javascript.ScriptableObject.putProperty(javaObj, "log", javaLogFn)
-            org.mozilla.javascript.ScriptableObject.putProperty(scope, "java", javaObj)
-            val evalResult = cx.evaluateString(scope, code, "<jsRule>", 1, null)
-            return org.mozilla.javascript.Context.toString(evalResult)
+            ScriptableObject.putProperty(consoleObj, "error", errorFn)
+            ScriptableObject.putProperty(scope, "console", consoleObj)
+
+            // 注入完整的 java 桥接对象（使用原生 JSoup）
+            val baseUrl = env["baseUrl"]?.toString() ?: ""
+            injectJavaBridge(cx, scope, baseUrl)
+
+            val evalResult = cx.evaluateString(scope, jsCode, "<jsRule>", 1, null)
+            return RhinoContext.toString(evalResult)
         } catch (e: Exception) {
             Log.w(TAG, "executeJsRule: rhino eval failed", e)
         } finally {
-            org.mozilla.javascript.Context.exit()
+            RhinoContext.exit()
         }
-
-        // 降级：返回替换后的字符串
-        return code
+        return ""
     }
 
     /**
@@ -461,7 +935,7 @@ class NativePlugin(private val context: Context) {
         }
         val headers = call.argument<Map<String, String>>("headers") ?: emptyMap()
 
-        coroutineScope.launch {
+        pluginScope.launch {
             try {
                 val connection = Jsoup.connect(url)
                     .userAgent("Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Mobile Safari/537.36")
@@ -676,60 +1150,53 @@ class NativePlugin(private val context: Context) {
             val script = call.argument<String>("script") ?: return result.error("ERROR", "script is required", null)
             val bindings = call.argument<Map<String, Any>>("bindings") ?: emptyMap()
 
-            val cx = org.mozilla.javascript.Context.enter()
+            val cx = RhinoContext.enter()
             try {
                 val scope = cx.initStandardObjects()
                 bindings.forEach { (key, value) ->
-                    org.mozilla.javascript.ScriptableObject.putProperty(scope, key, value)
+                    ScriptableObject.putProperty(scope, key, value)
                 }
                 // 注入 console 对象
                 val consoleObj = cx.newObject(scope)
-                val logFn = object : org.mozilla.javascript.BaseFunction() {
-                    override fun call(cx: org.mozilla.javascript.Context, scope: org.mozilla.javascript.Scriptable, thisObj: org.mozilla.javascript.Scriptable?, args: Array<Any?>): Any {
+                val logFn = object : BaseFunction() {
+                    override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any?>): Any {
                         val sb = StringBuilder()
                         for (arg in args) { if (sb.isNotEmpty()) sb.append(" "); sb.append(arg?.toString() ?: "null") }
                         Log.d("RhinoConsole", sb.toString())
-                        return org.mozilla.javascript.Undefined.instance
+                        return Undefined.instance
                     }
                 }
                 for (method in listOf("log", "info", "debug")) {
-                    org.mozilla.javascript.ScriptableObject.putProperty(consoleObj, method, logFn)
+                    ScriptableObject.putProperty(consoleObj, method, logFn)
                 }
-                val warnFn = object : org.mozilla.javascript.BaseFunction() {
-                    override fun call(cx: org.mozilla.javascript.Context, scope: org.mozilla.javascript.Scriptable, thisObj: org.mozilla.javascript.Scriptable?, args: Array<Any?>): Any {
+                val warnFn = object : BaseFunction() {
+                    override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any?>): Any {
                         val sb = StringBuilder()
                         for (arg in args) { if (sb.isNotEmpty()) sb.append(" "); sb.append(arg?.toString() ?: "null") }
                         Log.w("RhinoConsole", sb.toString())
-                        return org.mozilla.javascript.Undefined.instance
+                        return Undefined.instance
                     }
                 }
-                org.mozilla.javascript.ScriptableObject.putProperty(consoleObj, "warn", warnFn)
-                val errorFn = object : org.mozilla.javascript.BaseFunction() {
-                    override fun call(cx: org.mozilla.javascript.Context, scope: org.mozilla.javascript.Scriptable, thisObj: org.mozilla.javascript.Scriptable?, args: Array<Any?>): Any {
+                ScriptableObject.putProperty(consoleObj, "warn", warnFn)
+                val errorFn = object : BaseFunction() {
+                    override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any?>): Any {
                         val sb = StringBuilder()
                         for (arg in args) { if (sb.isNotEmpty()) sb.append(" "); sb.append(arg?.toString() ?: "null") }
                         Log.e("RhinoConsole", sb.toString())
-                        return org.mozilla.javascript.Undefined.instance
+                        return Undefined.instance
                     }
                 }
-                org.mozilla.javascript.ScriptableObject.putProperty(consoleObj, "error", errorFn)
-                org.mozilla.javascript.ScriptableObject.putProperty(scope, "console", consoleObj)
-                // 注入 java.log
-                val javaObj = cx.newObject(scope)
-                val javaLogFn = object : org.mozilla.javascript.BaseFunction() {
-                    override fun call(cx: org.mozilla.javascript.Context, scope: org.mozilla.javascript.Scriptable, thisObj: org.mozilla.javascript.Scriptable?, args: Array<Any?>): Any {
-                        val sb = StringBuilder()
-                        for (arg in args) { if (sb.isNotEmpty()) sb.append(" "); sb.append(arg?.toString() ?: "null") }
-                        Log.d("RhinoJava", sb.toString())
-                        return org.mozilla.javascript.Undefined.instance
-                    }
-                }
-                org.mozilla.javascript.ScriptableObject.putProperty(javaObj, "log", javaLogFn)
-                org.mozilla.javascript.ScriptableObject.putProperty(scope, "java", javaObj)
+                ScriptableObject.putProperty(consoleObj, "error", errorFn)
+                ScriptableObject.putProperty(scope, "console", consoleObj)
+
+                // 注入完整的 java 桥接对象（使用原生 JSoup）
+                val baseUrl = bindings["baseUrl"]?.toString() ?: ""
+                injectJavaBridge(cx, scope, baseUrl)
+
                 val evalResult = cx.evaluateString(scope, script, "<script>", 1, null)
-                result.success(org.mozilla.javascript.Context.toString(evalResult))
+                result.success(RhinoContext.toString(evalResult))
             } finally {
-                org.mozilla.javascript.Context.exit()
+                RhinoContext.exit()
             }
         } catch (e: Exception) {
             result.error("ERROR", e.message, null)
@@ -741,6 +1208,7 @@ class NativePlugin(private val context: Context) {
     /**
      * 存储键值对
      */
+    @Suppress("ApplySharedPref")
     private fun putData(call: MethodCall, result: MethodChannel.Result) {
         try {
             val key = call.argument<String>("key") ?: return result.error("ERROR", "key is required", null)
@@ -771,6 +1239,7 @@ class NativePlugin(private val context: Context) {
     /**
      * 删除键值对
      */
+    @Suppress("ApplySharedPref")
     private fun deleteData(call: MethodCall, result: MethodChannel.Result) {
         try {
             val key = call.argument<String>("key") ?: return result.error("ERROR", "key is required", null)
@@ -949,6 +1418,7 @@ class NativePlugin(private val context: Context) {
     /**
      * 启动内置 Node.js 代理服务（直接启动，无需解压二进制）
      */
+    @Suppress("UNUSED_PARAMETER")
     private fun nodeStartProxy(call: MethodCall, result: MethodChannel.Result) {
         try {
             val success = nodeRuntime.startProxy()
@@ -992,6 +1462,163 @@ class NativePlugin(private val context: Context) {
             ))
         } catch (e: Exception) {
             result.error("NODE_ERROR", e.message, null)
+        }
+    }
+
+    // ===== 解析规则桥接（直接对接 Dart AnalyzeRule）=====
+
+    /**
+     * 构建一个带 Rhino jsEvaluator 的 AnalyzeRule 实例
+     * Dart 端只要传 content + baseUrl + rule，即可调用完整 legado 解析能力
+     */
+    private fun buildAnalyzeRule(content: String, baseUrl: String?): com.example.dan_shenqi.analyzeRule.AnalyzeRule {
+        val rule = com.example.dan_shenqi.analyzeRule.AnalyzeRule(content = content, baseUrl = baseUrl)
+        rule.jsEvaluator = { jsStr, res ->
+            try {
+                val cx = RhinoContext.enter()
+                try {
+                    val scope = cx.initStandardObjects()
+                    // 关键修复：Java List 在 Rhino 中没有 .length 属性！
+                    // 必须转成 NativeArray，这样 JS 中 result.length / result[0] 才能正常工作
+                    // 否则 ArrayList 被包装为 NativeJavaObject，result.length = undefined
+                    val jsResult = when (res) {
+                        is List<*> -> {
+                            val arr = cx.newArray(scope, res.size)
+                            for ((i, item) in res.withIndex()) {
+                                arr.put(i, arr, item ?: "")
+                            }
+                            arr
+                        }
+                        else -> res ?: content
+                    }
+                    ScriptableObject.putProperty(scope, "result", jsResult)
+                    ScriptableObject.putProperty(scope, "baseUrl", baseUrl ?: "")
+                    // 关键修复：用 injectJavaBridge 替换 JsJavaBridge！
+                    // JsJavaBridge 通过 Context.javaToJS() 包装为 NativeJavaObject，
+                    // 当 JS 调用 java.log(NativeArray) 时，Rhino 的 Java 方法解析会失败，
+                    // 导致整个 JS eval 抛异常被 catch 吞掉返回 null。
+                    // injectJavaBridge 使用 BaseFunction 实现，直接处理参数，更可靠。
+                    injectJavaBridge(cx, scope, baseUrl ?: "")
+                    val evalResult = cx.evaluateString(scope, jsStr, "<jsRule>", 1, null)
+                    Log.d(TAG, "JS eval: rule=[${jsStr.take(60)}...] resultType=${evalResult?.javaClass?.simpleName} resultPreview=${when(evalResult) { is List<*> -> "List(${evalResult.size})"; is org.mozilla.javascript.NativeArray -> "Array(${evalResult.length})"; else -> evalResult?.toString()?.take(80) }}")
+                    // 关键：JS 返回数组时必须保留为 List 而非 toString，
+                    // 否则 NativeArray.toString 会用逗号拼接，破坏 getStringList 的后续处理
+                    when (evalResult) {
+                        null -> null
+                        org.mozilla.javascript.Undefined.instance -> null
+                        is org.mozilla.javascript.NativeArray -> {
+                            val list = ArrayList<String>(evalResult.length.toInt())
+                            for (i in 0 until evalResult.length.toInt()) {
+                                val item = evalResult.get(i, evalResult)
+                                if (item != null && item != org.mozilla.javascript.Undefined.instance) {
+                                    list.add(RhinoContext.toString(item))
+                                }
+                            }
+                            list
+                        }
+                        is org.mozilla.javascript.NativeJavaObject -> evalResult.unwrap()
+                        is List<*> -> evalResult
+                        else -> RhinoContext.toString(evalResult)
+                    }
+                } finally {
+                    RhinoContext.exit()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "analyzeRule JS eval failed: js=[${jsStr.take(100)}] resultType=${res?.javaClass?.simpleName} resultPreview=${res?.toString()?.take(80)}", e)
+                null
+            }
+        }
+        return rule
+    }
+
+    /** legado JS 桥的最小实现：java.log/get/post —— 当前只实现 log（最常用） */
+    private class JsJavaBridge {
+        fun log(msg: Any?): String {
+            val s = msg?.toString() ?: "null"
+            Log.d("AnalyzeRule.js", s)
+            return s
+        }
+        fun toast(msg: Any?) { Log.i("AnalyzeRule.js", "toast: $msg") }
+    }
+
+    /** 单字符串提取：content + rule → String */
+    private fun analyzeRuleGetString(call: MethodCall, result: MethodChannel.Result) {
+        val content = call.argument<String>("content") ?: ""
+        val rule = call.argument<String>("rule") ?: ""
+        val baseUrl = call.argument<String>("baseUrl")
+        val isUrl = call.argument<Boolean>("isUrl") ?: false
+        if (rule.isEmpty()) {
+            result.success(content)
+            return
+        }
+        pluginScope.launch {
+            val r: String = try {
+                val ret = buildAnalyzeRule(content, baseUrl).getString(rule, isUrl = isUrl)
+                // 强保证：必须返回 String，避免 MethodChannel 类型错误
+                ret as? String ?: ret.toString()
+            } catch (e: Throwable) {
+                Log.e(TAG, "analyzeRuleGetString failed: rule=[$rule] baseUrl=[$baseUrl] contentLen=${content.length}", e)
+                ""
+            }
+            withContext(Dispatchers.Main) { result.success(r) }
+        }
+    }
+
+    /** 字符串列表提取：content + rule → List<String> */
+    private fun analyzeRuleGetStringList(call: MethodCall, result: MethodChannel.Result) {
+        val content = call.argument<String>("content") ?: ""
+        val rule = call.argument<String>("rule") ?: ""
+        val baseUrl = call.argument<String>("baseUrl")
+        val isUrl = call.argument<Boolean>("isUrl") ?: false
+        if (rule.isEmpty()) {
+            result.success(mapOf("data" to emptyList<String>(), "logs" to emptyList<String>()))
+            return
+        }
+        pluginScope.launch {
+            // 初始化当前线程的 JS 日志缓存
+            jsLogBuffer.set(ArrayList())
+            val r: List<String> = try {
+                val analyzeRule = buildAnalyzeRule(content, baseUrl)
+                val ret = analyzeRule.getStringList(rule, isUrl = isUrl)
+                // 诊断日志：规则提取结果
+                if (ret == null || ret.isEmpty()) {
+                    Log.w(TAG, "analyzeRuleGetStringList EMPTY: rule=[$rule] baseUrl=[$baseUrl] contentLen=${content.length} contentPreview=${content.take(200)}")
+                } else {
+                    Log.d(TAG, "analyzeRuleGetStringList OK: rule=[$rule] count=${ret.size} first=${ret.firstOrNull()?.take(80)}")
+                }
+                // 强保证：必须返回 List<String>，避免 MethodChannel 类型错误
+                when (ret) {
+                    null -> emptyList()
+                    is List<*> -> ret.mapNotNull { it?.toString() }
+                    else -> listOf(ret.toString())
+                }
+            } catch (e: Throwable) {
+                Log.e(TAG, "analyzeRuleGetStringList failed: rule=[$rule] baseUrl=[$baseUrl] contentLen=${content.length}", e)
+                emptyList()
+            }
+            val logs = jsLogBuffer.get() ?: emptyList()
+            jsLogBuffer.remove()
+            withContext(Dispatchers.Main) { result.success(mapOf("data" to r, "logs" to logs)) }
+        }
+    }
+
+    /** 元素列表提取：content + rule → List<String>（每个元素 toString/outerHtml） */
+    private fun analyzeRuleGetElements(call: MethodCall, result: MethodChannel.Result) {
+        val content = call.argument<String>("content") ?: ""
+        val rule = call.argument<String>("rule") ?: ""
+        val baseUrl = call.argument<String>("baseUrl")
+        if (rule.isEmpty()) {
+            result.success(emptyList<String>())
+            return
+        }
+        pluginScope.launch {
+            val r: List<String> = try {
+                buildAnalyzeRule(content, baseUrl).getElements(rule).map { it.toString() }
+            } catch (e: Exception) {
+                Log.w(TAG, "analyzeRuleGetElements failed: $rule", e)
+                emptyList()
+            }
+            withContext(Dispatchers.Main) { result.success(r) }
         }
     }
 }

@@ -757,7 +757,7 @@ class WebBook {
 
       AppLogger.instance.logParse('搜索列表', actualBookListRule);
 
-      var bookElements = analyzer.getElements(actualBookListRule);
+      var bookElements = await analyzer.getElementsAsync(actualBookListRule);
       AppLogger.instance.logParseResult('搜索列表', bookElements.length);
 
       // 调试：记录元素类型
@@ -796,8 +796,8 @@ class WebBook {
           ..putVariable('key', keyword)
           ..putVariable('page', page);
 
-        var name = itemAnalyzer.getString(searchRule.name ?? '');
-        var author = itemAnalyzer.getString(searchRule.author ?? '');
+        var name = await itemAnalyzer.getStringAsync(searchRule.name ?? '');
+        var author = await itemAnalyzer.getStringAsync(searchRule.author ?? '');
 
         // 调试日志：记录字段提取结果
         if (name == null || name.isEmpty) {
@@ -805,14 +805,14 @@ class WebBook {
             detail: 'name规则: ${searchRule.name ?? ""}, 元素类型: ${element.runtimeType}, 元素文本: ${element is dom.Element ? (element.text.length > 100 ? "${element.text.substring(0, 100)}..." : element.text) : "$element"}');
         }
         final coverUrl =
-            itemAnalyzer.getString(searchRule.coverUrl ?? '', isUrl: true);
-        var intro = itemAnalyzer.getString(searchRule.intro ?? '');
+            await itemAnalyzer.getStringAsync(searchRule.coverUrl ?? '', isUrl: true);
+        var intro = await itemAnalyzer.getStringAsync(searchRule.intro ?? '');
         final bookUrl =
-            itemAnalyzer.getString(searchRule.bookUrl ?? '', isUrl: true);
-        final kind = itemAnalyzer.getString(searchRule.kind ?? '');
+            await itemAnalyzer.getStringAsync(searchRule.bookUrl ?? '', isUrl: true);
+        final kind = await itemAnalyzer.getStringAsync(searchRule.kind ?? '');
         final lastChapter =
-            itemAnalyzer.getString(searchRule.lastChapter ?? '');
-        final wordCount = itemAnalyzer.getString(searchRule.wordCount ?? '');
+            await itemAnalyzer.getStringAsync(searchRule.lastChapter ?? '');
+        final wordCount = await itemAnalyzer.getStringAsync(searchRule.wordCount ?? '');
 
         if (name != null && name.isNotEmpty) {
           // 借鉴 legado：书名/作者格式化
@@ -929,7 +929,7 @@ class WebBook {
         ..putVariable('page', 1);
 
       final results = <Map<String, dynamic>>[];
-      final bookElements = analyzer.getElements(bookListRule);
+      final bookElements = await analyzer.getElementsAsync(bookListRule);
       for (var element in bookElements) {
         // 关键修复：处理非 HTML 字符串元素
         if (element is String && element.isNotEmpty && !element.trim().startsWith('<')) {
@@ -940,40 +940,40 @@ class WebBook {
           ..setContent(element, baseUrl: response.url)
           ..setSourceEngine(source.engineType)
           ..setSourceInfo(_sourceToMap(source));
-        final name = itemAnalyzer.getString(
+        final name = await itemAnalyzer.getStringAsync(
             useSearchFallback ? (searchRule?.name ?? '') : exploreRule.name);
         if (name == null || name.isEmpty) continue;
         results.add({
           'name': name,
-          'author': itemAnalyzer.getString(useSearchFallback
+          'author': await itemAnalyzer.getStringAsync(useSearchFallback
                   ? (searchRule?.author ?? '')
                   : exploreRule.author) ??
               '',
-          'coverUrl': itemAnalyzer.getString(
+          'coverUrl': await itemAnalyzer.getStringAsync(
                   useSearchFallback
                       ? (searchRule?.coverUrl ?? '')
                       : exploreRule.coverUrl,
                   isUrl: true) ??
               '',
-          'intro': itemAnalyzer.getString(useSearchFallback
+          'intro': await itemAnalyzer.getStringAsync(useSearchFallback
                   ? (searchRule?.intro ?? '')
                   : exploreRule.intro) ??
               '',
-          'bookUrl': itemAnalyzer.getString(
+          'bookUrl': await itemAnalyzer.getStringAsync(
                   useSearchFallback
                       ? (searchRule?.bookUrl ?? '')
                       : exploreRule.bookUrl,
                   isUrl: true) ??
               '',
-          'kind': itemAnalyzer.getString(useSearchFallback
+          'kind': await itemAnalyzer.getStringAsync(useSearchFallback
                   ? (searchRule?.kind ?? '')
                   : exploreRule.kind) ??
               '',
-          'lastChapter': itemAnalyzer.getString(useSearchFallback
+          'lastChapter': await itemAnalyzer.getStringAsync(useSearchFallback
                   ? (searchRule?.lastChapter ?? '')
                   : exploreRule.lastChapter) ??
               '',
-          'wordCount': itemAnalyzer.getString(useSearchFallback
+          'wordCount': await itemAnalyzer.getStringAsync(useSearchFallback
                   ? (searchRule?.wordCount ?? '')
                   : exploreRule.wordCount) ??
               '',
@@ -1031,14 +1031,14 @@ class WebBook {
       lastBookInfoHtml = html;
 
       // 直接使用 init 处理后的 analyzer（无需重新创建）
-      final name = analyzer.getString(bookInfoRule.name ?? '');
-      final author = analyzer.getString(bookInfoRule.author ?? '');
-      final rawCoverUrl = analyzer.getString(bookInfoRule.coverUrl ?? '');
-      final intro = analyzer.getString(bookInfoRule.intro ?? '');
-      final kind = analyzer.getString(bookInfoRule.kind ?? '');
-      final lastChapter = analyzer.getString(bookInfoRule.lastChapter ?? '');
-      final wordCount = analyzer.getString(bookInfoRule.wordCount ?? '');
-      final rawTocUrl = analyzer.getString(bookInfoRule.tocUrl ?? '');
+      final name = await analyzer.getStringAsync(bookInfoRule.name ?? '');
+      final author = await analyzer.getStringAsync(bookInfoRule.author ?? '');
+      final rawCoverUrl = await analyzer.getStringAsync(bookInfoRule.coverUrl ?? '');
+      final intro = await analyzer.getStringAsync(bookInfoRule.intro ?? '');
+      final kind = await analyzer.getStringAsync(bookInfoRule.kind ?? '');
+      final lastChapter = await analyzer.getStringAsync(bookInfoRule.lastChapter ?? '');
+      final wordCount = await analyzer.getStringAsync(bookInfoRule.wordCount ?? '');
+      final rawTocUrl = await analyzer.getStringAsync(bookInfoRule.tocUrl ?? '');
 
       // 拼接相对链接：用详情页URL作为基准
       final resolvedCoverUrl = resolveUrl(rawCoverUrl, bookUrl);
@@ -1072,12 +1072,25 @@ class WebBook {
   }
 
   /// 获取章节目录
-  Future<List<Chapter>> getChapterList(String tocUrl, {Book? book}) async {
+  Future<List<Chapter>> getChapterList(String tocUrl,
+      {Book? book,
+      Set<String>? visitedTocUrls,
+      int depth = 0}) async {
     final tocRule = source.ruleToc;
     if (tocRule == null) return [];
 
     // 加载书源 JS 库
     await _loadJsLib();
+
+    // 防死循环：记录已访问的目录页 URL
+    final visited = visitedTocUrls ?? <String>{};
+    visited.add(tocUrl);
+    // legado 默认最多 20 页目录（少数书的目录确实很长）
+    if (depth >= 20) {
+      AppLogger.instance.warn(LogCategory.parse, '目录翻页超过 20 层，强制终止',
+          detail: 'URL: $tocUrl');
+      return [];
+    }
 
     try {
       final response = await _executeRequest(_parseUrlWithOption(tocUrl));
@@ -1126,7 +1139,12 @@ class WebBook {
         chapterListRule = chapterListRule.substring(1);
       }
 
-      final chapterElements = analyzer.getElements(chapterListRule);
+      final chapterElements = await analyzer.getElementsAsync(chapterListRule);
+      // #region debug-point H1: chapterList 选择器返回元素数
+      AppLogger.instance.info(LogCategory.parse,
+          '[DBG-H1] chapterList 选择器返回 ${chapterElements.length} 个元素',
+          detail: 'rule: $chapterListRule\nfirstElement(200): ${chapterElements.isEmpty ? "(空)" : chapterElements[0].toString().substring(0, chapterElements[0].toString().length.clamp(0, 200))}');
+      // #endregion
       var chapterNames = <String>[];
       var chapterUrls = <String>[];
       final chapterVolumes = <bool>[];
@@ -1139,17 +1157,27 @@ class WebBook {
           ..setSourceEngine(source.engineType)
           ..setSourceInfo(_sourceToMap(source))
           ..setBookInfo(book != null ? _bookToMap(book) : null);
-        chapterNames
-            .add(itemAnalyzer.getString(tocRule.chapterName ?? '') ?? '');
-        chapterUrls.add(itemAnalyzer.getString(tocRule.chapterUrl ?? '') ?? '');
+        final _name =
+            await itemAnalyzer.getStringAsync(tocRule.chapterName ?? '') ?? '';
+        final _url =
+            await itemAnalyzer.getStringAsync(tocRule.chapterUrl ?? '') ?? '';
+        // #region debug-point H2: 每个章节 element 解析出的 name / href
+        if (chapterNames.length < 3) {
+          AppLogger.instance.info(LogCategory.parse,
+              '[DBG-H2] chapter[${chapterNames.length}] name=[$_name] href=[$_url]',
+              detail: 'nameRule: ${tocRule.chapterName}\nurlRule: ${tocRule.chapterUrl}');
+        }
+        // #endregion
+        chapterNames.add(_name);
+        chapterUrls.add(_url);
         chapterVolumes.add(
-          _isRuleTrue(itemAnalyzer.getString(tocRule.isVolume ?? '')),
+          _isRuleTrue(await itemAnalyzer.getStringAsync(tocRule.isVolume ?? '')),
         );
         chapterVip
-            .add(_isRuleTrue(itemAnalyzer.getString(tocRule.isVip ?? '')));
+            .add(_isRuleTrue(await itemAnalyzer.getStringAsync(tocRule.isVip ?? '')));
         chapterPay
-            .add(_isRuleTrue(itemAnalyzer.getString(tocRule.isPay ?? '')));
-        chapterTags.add(itemAnalyzer.getString(tocRule.updateTime ?? ''));
+            .add(_isRuleTrue(await itemAnalyzer.getStringAsync(tocRule.isPay ?? '')));
+        chapterTags.add(await itemAnalyzer.getStringAsync(tocRule.updateTime ?? ''));
       }
 
       AppLogger.instance.logParseResult('目录', chapterNames.length);
@@ -1187,8 +1215,8 @@ class WebBook {
       for (int i = 0; i < chapterNames.length; i++) {
         final name = chapterNames[i];
         final rawUrl = i < chapterUrls.length ? chapterUrls[i] : null;
-        // 拼接相对链接：用目录页URL作为基准
-        final resolvedUrl = resolveUrl(rawUrl, tocUrl);
+        // 对齐 legado：用当前页实际 URL 作为基准拼接章节 URL
+        final resolvedUrl = resolveUrl(rawUrl, response.url);
 
         chapters.add(Chapter(
           id: '${tocUrl}_$i',
@@ -1203,25 +1231,153 @@ class WebBook {
         ));
       }
 
-      // 借鉴 legado 的 BookChapterList.kt：默认反转章节列表
-      // reverse=true（-前缀）表示保持原始顺序，不反转
-      // reverse=false（无前缀或+前缀）表示反转列表
-      if (!reverse && chapters.isNotEmpty) {
-        final reversed = chapters.reversed.toList();
-        chapters.clear();
-        for (int i = 0; i < reversed.length; i++) {
-          chapters.add(reversed[i].copyWith(index: i));
+      // 注意：不在这里反转！对齐 legado，所有页面章节收集完毕后再统一排序
+
+      // 处理 nextTocUrl（目录多页合并）
+      // 完全对齐 legado BookChapterList.kt 的三分支逻辑：
+      //   size == 0: 无分页
+      //   size == 1: 串行 while 循环翻页（典型"下一页"按钮）
+      //              每页重新提取 nextUrl，直到 nextUrl 为空或已访问
+      //   size > 1: 并发批量获取（JS 返回所有页码 URL）
+      //              子页面不再递归提取 nextUrl
+      if (tocRule.nextTocUrl != null && tocRule.nextTocUrl!.isNotEmpty) {
+        final rawNextUrls = await analyzer.getStringListAsync(
+            tocRule.nextTocUrl!, isUrl: true);
+
+        // 过滤掉与当前页相同的 URL，去重
+        final nextUrls = <String>[];
+        for (final raw in rawNextUrls) {
+          if (raw.isEmpty) continue;
+          final absUrl = resolveUrl(raw, tocUrl);
+          if (absUrl.isEmpty || absUrl == tocUrl) continue;
+          if (!nextUrls.contains(absUrl)) nextUrls.add(absUrl);
         }
+
+        // 诊断日志
+        if (nextUrls.isEmpty) {
+          AppLogger.instance.warn(LogCategory.parse,
+              '目录下页规则提取为空',
+              detail: 'rule: ${tocRule.nextTocUrl}\nhtml length: ${html.length}\nurl: $tocUrl');
+        } else {
+          AppLogger.instance.info(LogCategory.parse,
+              '目录下页提取到 ${nextUrls.length} 个URL',
+              detail: 'urls: ${nextUrls.take(5).join(", ")}');
+        }
+
+        if (nextUrls.length == 1) {
+          // ===== 串行翻页模式（legado: size == 1）=====
+          // 对齐 legado: while 循环，每页重新提取 nextUrl
+          final nextUrlList = <String>[tocUrl]; // 已访问 URL 列表
+          var nextUrl = nextUrls[0];
+          while (nextUrl.isNotEmpty && !nextUrlList.contains(nextUrl)) {
+            nextUrlList.add(nextUrl);
+            try {
+              // 请求下一页
+              final nextResponse = await _executeRequest(_parseUrlWithOption(nextUrl));
+              final nextHtml = nextResponse.body;
+              if (nextHtml.isEmpty) break;
+
+              // 解析下一页的章节
+              final nextAnalyzer = AnalyzeRule()
+                ..setContent(nextHtml, baseUrl: nextResponse.url)
+                ..setSourceEngine(source.engineType)
+                ..setSourceInfo(_sourceToMap(source))
+                ..setBookInfo(book != null ? _bookToMap(book) : null);
+
+              var nextChapterListRule = chapterListRule;
+              final nextChapterElements = await nextAnalyzer.getElementsAsync(nextChapterListRule);
+              for (final element in nextChapterElements) {
+                final itemAnalyzer = AnalyzeRule()
+                  ..setContent(element, baseUrl: nextResponse.url)
+                  ..setSourceEngine(source.engineType)
+                  ..setSourceInfo(_sourceToMap(source))
+                  ..setBookInfo(book != null ? _bookToMap(book) : null);
+                final name = await itemAnalyzer.getStringAsync(tocRule.chapterName ?? '') ?? '';
+                final rawUrl = await itemAnalyzer.getStringAsync(tocRule.chapterUrl ?? '') ?? '';
+                // 对齐 legado：用当前页实际 URL 作为基准拼接章节 URL
+                // legado BookChapter.baseUrl = 当前页的 redirectUrl
+                final resolvedUrl = resolveUrl(rawUrl, nextResponse.url);
+                if (name.isNotEmpty) {
+                  chapters.add(Chapter(
+                    id: '${nextUrl}_${chapters.length}',
+                    bookId: book?.bookUrl ?? nextUrl,
+                    title: name,
+                    index: chapters.length,
+                    url: resolvedUrl.isEmpty ? null : resolvedUrl,
+                  ));
+                }
+              }
+
+              // 对齐 legado: 从下一页重新提取 nextTocUrl
+              final newNextUrls = await nextAnalyzer.getStringListAsync(
+                  tocRule.nextTocUrl!, isUrl: true);
+              if (newNextUrls.isNotEmpty) {
+                final newAbsUrl = resolveUrl(newNextUrls[0], nextUrl);
+                nextUrl = (newAbsUrl.isNotEmpty && newAbsUrl != nextUrl)
+                    ? newAbsUrl : '';
+              } else {
+                nextUrl = '';
+              }
+            } catch (e) {
+              AppLogger.instance.warn(LogCategory.parse,
+                  '目录串行翻页失败 [$nextUrl]: $e');
+              break;
+            }
+          }
+          AppLogger.instance.info(LogCategory.parse,
+              '目录串行翻页完成，总页数: ${nextUrlList.length}');
+        } else if (nextUrls.length > 1) {
+          // ===== 并发批量获取模式（legado: size > 1）=====
+          // JS 返回所有页码 URL，并发请求，子页面不再递归提取 nextUrl
+          AppLogger.instance.info(LogCategory.parse,
+              '目录并发抓取 [count=${nextUrls.length}]');
+          const concurrency = 4;
+          final allResults = <List<Chapter>>[];
+          for (int i = 0; i < nextUrls.length; i += concurrency) {
+            final batch = nextUrls.skip(i).take(concurrency).toList();
+            final batchResults = await Future.wait(batch.map((u) =>
+                _fetchTocPage(u, book: book)
+                    .catchError((e) {
+                  AppLogger.instance.warn(LogCategory.parse,
+                      '目录并发页失败 [$u]: $e');
+                  return <Chapter>[];
+                })));
+            allResults.addAll(batchResults);
+          }
+          // 合并章节（去重）
+          final existingUrls = <String?>{};
+          for (final c in chapters) {
+            if (c.url != null) existingUrls.add(c.url);
+          }
+          for (final list in allResults) {
+            for (final c in list) {
+              if (c.url == null || existingUrls.add(c.url)) {
+                chapters.add(c);
+              }
+            }
+          }
+        }
+        // size == 0: 无分页，直接跳过
       }
 
-      // 处理 nextTocUrl（目录下一页，支持 JS）
-      if (tocRule.nextTocUrl != null && tocRule.nextTocUrl!.isNotEmpty) {
-        final rawNextUrl = analyzer.getString(tocRule.nextTocUrl!, isUrl: true);
-        final nextUrl = resolveUrl(rawNextUrl, tocUrl);
-        if (nextUrl.isNotEmpty && nextUrl != tocUrl) {
-          AppLogger.instance.info(LogCategory.parse, '目录下一页: $nextUrl');
-          final nextChapters = await getChapterList(nextUrl, book: book);
-          chapters.addAll(nextChapters);
+      // 合并后处理：按提取顺序 URL 去重 + 处理 reverse 前缀 + 重新分配 index
+      if (chapters.isNotEmpty) {
+        // 1. URL 去重（保留先出现的，保持解析顺序）
+        final seen = <String?>{};
+        final deduped = <Chapter>[];
+        for (final c in chapters) {
+          if (c.url == null || seen.add(c.url)) {
+            deduped.add(c);
+          }
+        }
+
+        // 2. 处理 reverse 前缀（- 前缀表示网站本身倒序，反转回正序）
+        final ordered = reverse ? deduped.reversed.toList() : deduped;
+
+        // 3. 重新分配连续 index
+        chapters.clear();
+        for (int i = 0; i < ordered.length; i++) {
+          chapters.add(ordered[i].copyWith(index: i));
         }
       }
 
@@ -1229,6 +1385,59 @@ class WebBook {
     } catch (e) {
       AppLogger.instance
           .error(LogCategory.parse, '获取目录失败', detail: e.toString());
+      return [];
+    }
+  }
+
+  /// 获取单页目录章节（并发模式用，不递归提取 nextTocUrl）
+  /// 借鉴 legado：并发模式下 getNextPageUrl = false
+  Future<List<Chapter>> _fetchTocPage(String url, {Book? book}) async {
+    final tocRule = source.ruleToc;
+    if (tocRule == null) return [];
+
+    await _loadJsLib();
+
+    try {
+      final response = await _executeRequest(_parseUrlWithOption(url));
+      var html = response.body;
+      if (html.isEmpty) return [];
+
+      final analyzer = AnalyzeRule()
+        ..setContent(html, baseUrl: response.url)
+        ..setSourceEngine(source.engineType)
+        ..setSourceInfo(_sourceToMap(source))
+        ..setBookInfo(book != null ? _bookToMap(book) : null);
+
+      var chapterListRule = tocRule.chapterList ?? '';
+      if (chapterListRule.startsWith('-') || chapterListRule.startsWith('+')) {
+        chapterListRule = chapterListRule.substring(1);
+      }
+
+      final chapterElements = await analyzer.getElementsAsync(chapterListRule);
+      final chapters = <Chapter>[];
+      for (final element in chapterElements) {
+        final itemAnalyzer = AnalyzeRule()
+          ..setContent(element, baseUrl: response.url)
+          ..setSourceEngine(source.engineType)
+          ..setSourceInfo(_sourceToMap(source))
+          ..setBookInfo(book != null ? _bookToMap(book) : null);
+        final name = await itemAnalyzer.getStringAsync(tocRule.chapterName ?? '') ?? '';
+        final rawUrl = await itemAnalyzer.getStringAsync(tocRule.chapterUrl ?? '') ?? '';
+        // 对齐 legado：用当前页实际 URL 作为基准拼接章节 URL
+        final resolvedUrl = resolveUrl(rawUrl, response.url);
+        if (name.isNotEmpty) {
+          chapters.add(Chapter(
+            id: '${url}_${chapters.length}',
+            bookId: book?.bookUrl ?? url,
+            title: name,
+            index: chapters.length,
+            url: resolvedUrl.isEmpty ? null : resolvedUrl,
+          ));
+        }
+      }
+      return chapters;
+    } catch (e) {
+      AppLogger.instance.warn(LogCategory.parse, '获取目录页失败', detail: '$url: $e');
       return [];
     }
   }
@@ -1243,12 +1452,25 @@ class WebBook {
   }
 
   Future<String?> getContent(String chapterUrl,
-      {Book? book, Chapter? chapter}) async {
+      {Book? book, Chapter? chapter,
+      String? nextChapterUrl,
+      Set<String>? visitedUrls,
+      int depth = 0}) async {
     final contentRule = source.ruleContent;
     if (contentRule == null) return null;
 
     // 加载书源 JS 库
     await _loadJsLib();
+
+    // 防死循环：记录已访问的 URL
+    final visited = visitedUrls ?? <String>{};
+    visited.add(chapterUrl);
+    // legado 默认最多 10 页（防止某些书源无限翻页）
+    if (depth >= 10) {
+      AppLogger.instance.warn(LogCategory.parse, '正文翻页超过 10 层，强制终止',
+          detail: 'URL: $chapterUrl');
+      return null;
+    }
 
     try {
       final response = await _executeRequest(_parseUrlWithOption(chapterUrl));
@@ -1294,32 +1516,186 @@ class WebBook {
         ..setSourceInfo(_sourceToMap(source))
         ..setBookInfo(book != null ? _bookToMap(book) : null)
         ..setChapterInfo(chapter != null ? _chapterToMap(chapter) : null);
-      var content = analyzer.getString(contentRule.content ?? '');
-      final subContent = analyzer.getString(contentRule.subContent ?? '');
+      var content = await analyzer.getStringAsync(contentRule.content ?? '');
+      // #region debug-point H3: 正文规则解析返回的原始 HTML 长度
+      AppLogger.instance.info(LogCategory.parse,
+          '[DBG-H3] 正文规则解析: rawLen=${content?.length ?? 0}',
+          detail: 'rule: ${contentRule.content}\npreview(200): ${(content ?? "").substring(0, (content ?? "").length.clamp(0, 200))}');
+      // #endregion
+      // 正文 HTML 格式化（对齐 legado HtmlFormatter.formatKeepImg）
+      // 将 <p>/<div>/<br> 等块级标签替换为换行符，移除非 img 标签，补全 img URL
+      if (content != null && content.isNotEmpty) {
+        final _beforeFmtLen = content.length;
+        content = _formatContentHtml(content, response.url);
+        // #region debug-point H4: 格式化前后长度对比
+        AppLogger.instance.info(LogCategory.parse,
+            '[DBG-H4] 正文格式化: $_beforeFmtLen → ${content.length}',
+            detail: 'preview(200): ${content.substring(0, content.length.clamp(0, 200))}');
+        // #endregion
+      }
+      // 诊断日志：正文规则执行结果（空时打印规则便于排查）
+      if (content == null || content.isEmpty) {
+        AppLogger.instance.warn(LogCategory.parse,
+            '正文规则提取为空',
+            detail: 'rule: ${contentRule.content}\nhtml length: ${html.length}\nurl: $chapterUrl');
+      } else {
+        debugPrint('✅ 正文提取成功: ${content.length} chars (rule: ${contentRule.content})');
+      }
+      final subContent = await analyzer.getStringAsync(contentRule.subContent ?? '');
       if (subContent != null && subContent.isNotEmpty) {
         content = '${content ?? ''}\n$subContent'.trim();
       }
 
       AppLogger.instance.logParseResult('正文', content != null ? 1 : 0);
 
-      // 执行 replaceRegex（正文替换规则，支持 JS 替换逻辑）
+      // 执行 replaceRegex（正文替换规则）
+      // 借鉴 legado BookContent.kt：replaceRegex 通过 AnalyzeRule 引擎执行
+      // 支持多组 \n 分隔，每组 ## 分隔 pattern##replacement
+      // 优先走 Kotlin 原生引擎（支持 @js: 替换等复杂规则），fallback 到 Dart 简单正则
       if (contentRule.replaceRegex != null &&
-          contentRule.replaceRegex!.isNotEmpty) {
-        content = _applyContentReplace(content, contentRule.replaceRegex!);
+          contentRule.replaceRegex!.isNotEmpty &&
+          content != null) {
+        content = await _applyContentReplaceNative(content, contentRule.replaceRegex!);
       }
 
-      // 处理 nextContentUrl（正文下一页，支持 JS）
+      // 处理 nextContentUrl（正文下一页）
+      // 对齐 legado BookContent.kt 的三分支逻辑 + 熔断机制：
+      //   size == 0: 无分页
+      //   size == 1: 串行 while 循环翻页，每页重新提取 nextUrl
+      //   size > 1: 并发批量获取（子页面不再递归提取 nextUrl）
+      //   熔断：nextUrl 命中 nextChapterUrl 或任意目录章节 URL 即终止
+      //   兜底：最大翻页 100 页，防止无限循环
       if (contentRule.nextContentUrl != null &&
           contentRule.nextContentUrl!.isNotEmpty) {
-        final nextUrl =
-            analyzer.getString(contentRule.nextContentUrl!, isUrl: true);
-        if (nextUrl != null && nextUrl.isNotEmpty && nextUrl != chapterUrl) {
-          debugPrint('📖 发现正文下一页: $nextUrl');
-          final nextContent =
-              await getContent(nextUrl, book: book, chapter: chapter);
-          if (nextContent != null && nextContent.isNotEmpty) {
-            content = (content ?? '') + '\n' + nextContent;
+        final rawNextUrls = await analyzer.getStringListAsync(
+            contentRule.nextContentUrl!, isUrl: true);
+
+        // 过滤：去空、去自环、去重、熔断检查（命中下一章 URL 即终止）
+        final nextUrls = <String>[];
+        for (final raw in rawNextUrls) {
+          if (raw.isEmpty) continue;
+          final absUrl = resolveUrl(raw, chapterUrl);
+          if (absUrl.isEmpty || absUrl == chapterUrl) continue;
+          if (nextChapterUrl != null && absUrl == nextChapterUrl) {
+            AppLogger.instance.info(LogCategory.parse,
+                '正文下页命中下一章，熔断终止: $absUrl');
+            break;
           }
+          if (!nextUrls.contains(absUrl)) nextUrls.add(absUrl);
+        }
+
+        if (nextUrls.isEmpty) {
+          AppLogger.instance.warn(LogCategory.parse,
+              '正文下页规则提取为空',
+              detail: 'rule: ${contentRule.nextContentUrl}\nhtml length: ${html.length}\nurl: $chapterUrl');
+        } else if (nextUrls.length == 1) {
+          // ===== 串行翻页模式（legado: size == 1）=====
+          var nextUrl = nextUrls[0];
+          final visitedList = <String>[chapterUrl];
+          final contentList = <String>[];
+          if (content != null && content.isNotEmpty) contentList.add(content);
+          const maxPages = 100; // 兜底：最多翻 100 页
+          int pageCount = 0;
+
+          while (nextUrl.isNotEmpty && !visitedList.contains(nextUrl) && pageCount < maxPages) {
+            // 熔断：命中下一章 URL
+            if (nextChapterUrl != null && nextUrl == nextChapterUrl) {
+              AppLogger.instance.info(LogCategory.parse,
+                  '正文串行翻页命中下一章，熔断终止: $nextUrl');
+              break;
+            }
+            visitedList.add(nextUrl);
+            pageCount++;
+            try {
+              final nextResponse = await _executeRequest(_parseUrlWithOption(nextUrl));
+              final nextHtml = nextResponse.body;
+              if (nextHtml.isEmpty) break;
+
+              final nextAnalyzer = AnalyzeRule()
+                ..setContent(nextHtml, baseUrl: nextResponse.url)
+                ..setSourceEngine(source.engineType)
+                ..setSourceInfo(_sourceToMap(source))
+                ..setBookInfo(book != null ? _bookToMap(book) : null)
+                ..setChapterInfo(chapter != null ? _chapterToMap(chapter) : null);
+
+              // 提取正文
+              var nextContent = await nextAnalyzer.getStringAsync(contentRule.content ?? '');
+              if (nextContent != null && nextContent.isNotEmpty) {
+                nextContent = _formatContentHtml(nextContent, nextResponse.url);
+                contentList.add(nextContent);
+              }
+              // 提取副内容
+              final nextSubContent = await nextAnalyzer.getStringAsync(contentRule.subContent ?? '');
+              if (nextSubContent != null && nextSubContent.isNotEmpty) {
+                contentList.add(nextSubContent);
+              }
+
+              // 对齐 legado: 从下一页重新提取 nextContentUrl
+              final newNextUrls = await nextAnalyzer.getStringListAsync(
+                  contentRule.nextContentUrl!, isUrl: true);
+              if (newNextUrls.isNotEmpty) {
+                final newAbsUrl = resolveUrl(newNextUrls[0], nextUrl);
+                // 熔断：命中下一章 URL
+                if (nextChapterUrl != null && newAbsUrl == nextChapterUrl) {
+                  AppLogger.instance.info(LogCategory.parse,
+                      '正文串行翻页命中下一章，熔断终止: $newAbsUrl');
+                  break;
+                }
+                nextUrl = (newAbsUrl.isNotEmpty && newAbsUrl != nextUrl)
+                    ? newAbsUrl : '';
+              } else {
+                nextUrl = '';
+              }
+            } catch (e) {
+              AppLogger.instance.warn(LogCategory.parse,
+                  '正文串行翻页失败 [$nextUrl]: $e');
+              break;
+            }
+          }
+          if (pageCount >= maxPages) {
+            AppLogger.instance.warn(LogCategory.parse,
+                '正文串行翻页达到上限 $maxPages 页，强制终止');
+          }
+          if (contentList.length > 1) {
+            content = contentList.join('\n');
+            AppLogger.instance.info(LogCategory.parse,
+                '正文串行翻页合并: ${contentList.length}页, ${content!.length} chars');
+          }
+        } else {
+          // ===== 并发批量获取模式（legado: size > 1）=====
+          // 并发模式也需要熔断：过滤掉命中下一章的 URL
+          final filteredUrls = <String>[];
+          for (final u in nextUrls) {
+            if (nextChapterUrl != null && u == nextChapterUrl) {
+              AppLogger.instance.info(LogCategory.parse,
+                  '正文并发翻页命中下一章，熔断截断: $u');
+              break;
+            }
+            filteredUrls.add(u);
+          }
+          AppLogger.instance.info(LogCategory.parse,
+              '正文并发抓取 [count=${filteredUrls.length}]');
+          const concurrency = 4;
+          final allParts = <String?>[];
+          for (int i = 0; i < filteredUrls.length; i += concurrency) {
+            final batch = filteredUrls.skip(i).take(concurrency).toList();
+            final batchResults = await Future.wait(batch.map((u) =>
+                _fetchContentPage(u, book: book, chapter: chapter)
+                    .catchError((e) {
+                  AppLogger.instance.warn(LogCategory.parse,
+                      '正文并发页失败 [$u]: $e');
+                  return null;
+                })));
+            allParts.addAll(batchResults);
+          }
+          final sb = StringBuffer(content ?? '');
+          for (final part in allParts) {
+            if (part != null && part.isNotEmpty) {
+              if (sb.isNotEmpty) sb.write('\n');
+              sb.write(part);
+            }
+          }
+          content = sb.toString();
         }
       }
 
@@ -1374,20 +1750,166 @@ class WebBook {
     }
   }
 
-  /// 应用正文替换规则
-  /// 支持多组 ## 分隔的替换规则
+  /// 获取单页正文内容（并发/串行翻页用，不递归提取 nextContentUrl）
+  /// 借鉴 legado：并发模式下 getNextPageUrl = false
+  Future<String?> _fetchContentPage(String url,
+      {Book? book, Chapter? chapter}) async {
+    final contentRule = source.ruleContent;
+    if (contentRule == null) return null;
+
+    await _loadJsLib();
+
+    try {
+      final response = await _executeRequest(_parseUrlWithOption(url));
+      var html = response.body;
+      if (html.isEmpty) return null;
+
+      if (contentRule.webJs != null && contentRule.webJs!.isNotEmpty) {
+        try {
+          final webJsResult = await JsAdvancedService.instance.executeWebJs(
+            url: response.url,
+            webJs: contentRule.webJs!,
+            source: source,
+            sourceRegex: contentRule.sourceRegex,
+            html: html,
+          );
+          if (webJsResult != null && webJsResult.isNotEmpty) {
+            html = webJsResult;
+          }
+        } catch (_) {}
+      }
+
+      final analyzer = AnalyzeRule()
+        ..setContent(html, baseUrl: response.url)
+        ..setSourceEngine(source.engineType)
+        ..setSourceInfo(_sourceToMap(source))
+        ..setBookInfo(book != null ? _bookToMap(book) : null)
+        ..setChapterInfo(chapter != null ? _chapterToMap(chapter) : null);
+      var content = await analyzer.getStringAsync(contentRule.content ?? '');
+      if (content != null && content.isNotEmpty) {
+        content = _formatContentHtml(content, response.url);
+      }
+      final subContent = await analyzer.getStringAsync(contentRule.subContent ?? '');
+      if (subContent != null && subContent.isNotEmpty) {
+        content = '${content ?? ''}\n$subContent'.trim();
+      }
+      // 执行 replaceRegex
+      if (contentRule.replaceRegex != null &&
+          contentRule.replaceRegex!.isNotEmpty &&
+          content != null) {
+        content = await _applyContentReplaceNative(content, contentRule.replaceRegex!);
+      }
+      return content;
+    } catch (e) {
+      AppLogger.instance.warn(LogCategory.parse, '获取正文页失败', detail: '$url: $e');
+      return null;
+    }
+  }
+
+  /// 应用正文替换规则（走 Kotlin AnalyzeRule 引擎）
+  /// 借鉴 legado BookContent.kt：replaceRegex 通过 AnalyzeRule.getString 执行
+  /// 支持多组 \n 分隔，每组 ## 分隔 pattern##replacement
+  /// 优先走 Kotlin 原生引擎（支持 @js: 替换等复杂规则），fallback 到 Dart 简单正则
+  Future<String> _applyContentReplaceNative(String content, String replaceRegex) async {
+    var result = content;
+    final lines = replaceRegex.split('\n');
+    for (final line in lines) {
+      if (line.isEmpty) continue;
+
+      // 构造 AnalyzeRule 规则格式：##pattern##replacement 或 ##pattern##replacement###（replaceFirst）
+      // Kotlin AnalyzeRule.SourceRule 的 splitRegex 用 ## 分割：
+      //   parts[0]=空(因为以##开头) → parts[1]=pattern → parts[2]=replacement → parts[3]=replaceFirst标记
+      String rule;
+      final idx = line.indexOf('##');
+      if (idx < 0) {
+        // 无 ## → 整条作为 pattern，替换为空
+        rule = '##$line';
+      } else if (idx == 0) {
+        // ## 开头 → 后面是 pattern，替换为空
+        rule = line;
+      } else {
+        // xxx##yyy → pattern=xxx, replacement=yyy
+        rule = '##$line';
+      }
+
+      // 优先走 Kotlin 原生引擎
+      try {
+        final nativeResult = await NativeChannel.instance.analyzeRuleGetString(
+          result, rule, baseUrl: source.bookSourceUrl,
+        );
+        if (nativeResult != null) {
+          result = nativeResult;
+          continue;
+        }
+      } catch (e) {
+        debugPrint('⚠️ replaceRegex 原生引擎失败，fallback: $e');
+      }
+
+      // Fallback：Dart 端简单正则替换
+      result = _applyContentReplaceLine(result, line);
+    }
+    return result;
+  }
+
+  /// 单行替换规则的 Dart fallback
+  String _applyContentReplaceLine(String content, String line) {
+    String pattern;
+    String replacement;
+    final idx = line.indexOf('##');
+    if (idx < 0) {
+      pattern = line;
+      replacement = '';
+    } else if (idx == 0) {
+      pattern = line.substring(2);
+      replacement = '';
+    } else {
+      pattern = line.substring(0, idx);
+      final rest = line.substring(idx + 2);
+      final jsIdx = rest.indexOf('##');
+      replacement = jsIdx < 0 ? rest : rest.substring(0, jsIdx);
+    }
+    if (pattern.isEmpty) return content;
+
+    try {
+      final regex = RegExp(pattern, multiLine: true, dotAll: true);
+      return content.replaceAll(regex, replacement);
+    } catch (e) {
+      debugPrint('❌ 替换规则执行失败: $pattern → $e');
+      return content;
+    }
+  }
+
+  /// 应用正文替换规则（旧版 Dart 简单实现，保留兼容）
   String? _applyContentReplace(String? content, String replaceRegex) {
     if (content == null || replaceRegex.isEmpty) return content;
 
-    // 按 ## 分割多组替换规则
-    final parts = replaceRegex.split('##');
-    if (parts.isEmpty) return content;
-
+    // legado 规则：多组用 `\n` 分隔，每组用 `##` 分隔 pattern##replacement
+    //   - `xxx##yyy` → 把 xxx 替换为 yyy
+    //   - `##xxx`   → 把 xxx 替换为空（pattern 为空时取 replacement 当作 pattern，目标是空字符串）
+    //   - `xxx`     → 把 xxx 替换为空（无 ##）
+    //   - 多组之间用 `\n` 分隔（按 legado 5.x 规范）
     var result = content;
-    for (int i = 0; i < parts.length; i += 2) {
-      final pattern = parts[i];
-      final replacement = i + 1 < parts.length ? parts[i + 1] : '';
-
+    final lines = replaceRegex.split('\n');
+    for (final line in lines) {
+      if (line.isEmpty) continue;
+      String pattern;
+      String replacement;
+      final idx = line.indexOf('##');
+      if (idx < 0) {
+        // 无 ## → 整条作为 pattern，替换为空
+        pattern = line;
+        replacement = '';
+      } else if (idx == 0) {
+        // ## 开头 → 后面是 pattern，替换为空
+        pattern = line.substring(2);
+        replacement = '';
+      } else {
+        pattern = line.substring(0, idx);
+        // 支持二级 ## 分隔 replacement##js（暂只取前一段）
+        final rest = line.substring(idx + 2);
+        final jsIdx = rest.indexOf('##');
+        replacement = jsIdx < 0 ? rest : rest.substring(0, jsIdx);
+      }
       if (pattern.isEmpty) continue;
 
       try {
@@ -1524,12 +2046,62 @@ class WebBook {
     return result;
   }
 
-  /// 正文 HTML 格式化（借鉴 legado 的 HtmlFormatter.formatKeepImg）
-  // ignore: unused_element
-  static String _formatContent(String content, String? baseUrl) {
+  /// 正文 HTML 格式化（对齐 legado HtmlFormatter.formatKeepImg）
+  /// 核心逻辑：块级标签 → 换行符，移除非 img 标签，补全 img URL，段落缩进
+  static String _formatContentHtml(String content, String? baseUrl) {
     var result = content;
 
-    // HTML 实体解码
+    // 1. 保护 <img> 标签（避免后续被误删）
+    final imgPlaceholders = <String, String>{};
+    result = result.replaceAllMapped(
+      RegExp(r'<img\s[^>]*>', caseSensitive: false),
+      (match) {
+        final img = match.group(0)!;
+        // 补全 img 中的相对 URL
+        var processedImg = img;
+        if (baseUrl != null && baseUrl.isNotEmpty) {
+          processedImg = processedImg.replaceAllMapped(
+            RegExp(r'''(src=["'])([^"']+)(["'])''', caseSensitive: false),
+            (m) {
+              final src = m.group(2)!;
+              if (src.startsWith('http') || src.startsWith('data:')) return m.group(0)!;
+              return '${m.group(1)}${resolveUrl(src, baseUrl)}${m.group(3)}';
+            },
+          );
+          processedImg = processedImg.replaceAllMapped(
+            RegExp(r'''(data-src=["'])([^"']+)(["'])''', caseSensitive: false),
+            (m) {
+              final src = m.group(2)!;
+              if (src.startsWith('http') || src.startsWith('data:')) return m.group(0)!;
+              return '${m.group(1)}${resolveUrl(src, baseUrl)}${m.group(3)}';
+            },
+          );
+        }
+        final key = '{IMG_${imgPlaceholders.length}}';
+        imgPlaceholders[key] = processedImg;
+        return key;
+      },
+    );
+
+    // 2. 块级标签 → 换行符（对齐 legado wrapHtmlRegex）
+    // legado: </?(?:div|p|br|hr|h\d|article|dd|dl)[^>]*>
+    result = result.replaceAllMapped(
+      RegExp(r'</?(?:div|p|br|hr|h[1-9]|article|dd|dl|section|aside|header|footer|main|ul|ol|li|table|tr|td|th|blockquote|pre|figcaption|figure)[^>]*>', caseSensitive: false),
+      (match) => '\n',
+    );
+
+    // 3. 移除 HTML 注释
+    result = result.replaceAll(RegExp(r'<!--[\s\S]*?-->'), '');
+
+    // 4. 移除剩余 HTML 标签（保留 img 占位符）
+    result = result.replaceAll(RegExp(r'<[^>]+>'), '');
+
+    // 5. 还原 <img> 标签
+    imgPlaceholders.forEach((key, img) {
+      result = result.replaceAll(key, img);
+    });
+
+    // 6. HTML 实体解码
     if (result.contains('&')) {
       result = result
           .replaceAll('&amp;', '&')
@@ -1537,8 +2109,9 @@ class WebBook {
           .replaceAll('&gt;', '>')
           .replaceAll('&quot;', '"')
           .replaceAll('&#39;', "'")
-          .replaceAll('&nbsp;', ' ');
-      // 数字实体解码
+          .replaceAll('&nbsp;', ' ')
+          .replaceAll('&ensp;', ' ')
+          .replaceAll('&emsp;', ' ');
       result = result.replaceAllMapped(
         RegExp(r'&#(\d+);'),
         (match) => String.fromCharCode(int.parse(match.group(1)!)),
@@ -1549,20 +2122,13 @@ class WebBook {
       );
     }
 
-    // 将相对图片URL转为绝对URL
-    if (baseUrl != null && baseUrl.isNotEmpty) {
-      result = result.replaceAllMapped(
-        RegExp(r'''(src=["'])([^"']+)(["'])''', caseSensitive: false),
-        (match) {
-          final src = match.group(2)!;
-          if (src.startsWith('http') || src.startsWith('data:')) {
-            return match.group(0)!;
-          }
-          final absoluteUrl = resolveUrl(src, baseUrl);
-          return '${match.group(1)}$absoluteUrl${match.group(3)}';
-        },
-      );
-    }
+    // 7. 规范化换行 + 段落缩进（对齐 legado indent1Regex/indent2Regex）
+    // 连续换行+空白 → 单换行+缩进
+    result = result.replaceAll(RegExp(r'\s*\n+\s*'), '\n\u3000\u3000');
+    // 行首缩进
+    result = result.replaceFirst(RegExp(r'^[\n\s]+'), '\u3000\u3000');
+    // 去掉尾部空白
+    result = result.replaceFirst(RegExp(r'[\n\s]+$'), '');
 
     return result;
   }

@@ -169,7 +169,8 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
     });
 
     try {
-      final content = await _dataProvider!.getContent(_book!, chapter);
+      final content = await _dataProvider!.getContent(_book!, chapter,
+          allChapters: _chapters);
       final images = _extractImageUrls(
         content ?? '',
         baseUrl: chapter.url ?? _book!.bookUrl,
