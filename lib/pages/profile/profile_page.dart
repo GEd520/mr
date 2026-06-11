@@ -120,7 +120,7 @@ class _ProfilePageState extends State<ProfilePage> {
                   Consumer<AppProvider>(
                     builder: (context, provider, child) {
                       return _buildListItem(
-                        icon: Icons.checkroom_outlined,
+                        leading: const _LegacyThemeIcon(),
                         title: '主题模式',
                         subtitle: _getThemeModeText(provider.themeMode),
                         onTap: () => _showThemeDialog(provider),
@@ -147,7 +147,7 @@ class _ProfilePageState extends State<ProfilePage> {
                         Navigator.pushNamed(context, AppRoutes.backupRestore),
                   ),
                   _buildListItem(
-                    icon: Icons.checkroom_outlined,
+                    leading: const _LegacyThemeIcon(),
                     title: '主题设置',
                     subtitle: '自定义主题颜色和样式',
                     onTap: () => Navigator.push(
@@ -263,7 +263,8 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   Widget _buildListItem({
-    required IconData icon,
+    IconData? icon,
+    Widget? leading,
     required String title,
     String? subtitle,
     VoidCallback? onTap,
@@ -286,7 +287,12 @@ class _ProfilePageState extends State<ProfilePage> {
               children: [
                 Padding(
                   padding: const EdgeInsets.only(top: 1),
-                  child: Icon(icon, color: colorScheme.secondary, size: 24),
+                  child: leading ??
+                      Icon(
+                        icon ?? Icons.circle_outlined,
+                        color: colorScheme.secondary,
+                        size: 24,
+                      ),
                 ),
                 const SizedBox(width: 16),
                 Expanded(
@@ -534,6 +540,278 @@ class _ProfilePageState extends State<ProfilePage> {
         );
       },
     );
+  }
+}
+
+class _LegacyThemeIcon extends StatelessWidget {
+  final Color? color;
+
+  const _LegacyThemeIcon({this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    final resolvedColor = color ?? Theme.of(context).colorScheme.secondary;
+    return SizedBox(
+      width: 24,
+      height: 24,
+      child: CustomPaint(
+        painter: _LegacyThemeIconPainter(resolvedColor),
+      ),
+    );
+  }
+}
+
+class _LegacyThemeIconPainter extends CustomPainter {
+  final Color color;
+
+  _LegacyThemeIconPainter(this.color);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (size.isEmpty) return;
+    final scaleX = size.width / 24.0;
+    final scaleY = size.height / 24.0;
+
+    canvas.save();
+    canvas.scale(scaleX, scaleY);
+
+    final paint = Paint()
+      ..style = PaintingStyle.fill
+      ..color = color;
+    canvas.drawPath(_cfgThemePath, paint);
+
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(covariant _LegacyThemeIconPainter oldDelegate) {
+    return oldDelegate.color != color;
+  }
+
+  static final Path _cfgThemePath = _parseSvgPathData(
+    'M20.37,4.75 L16,3H14.29A2.5,2.5 0,0 1,9.71 3H8L3.63,4.75A1,1 0,0 0,3 5.68V10a1.05,1.05 0,0 0,1 1.05,1 1,0 0,0 0.3,-0.05L6.5,10v9a2,2 0,0 0,2 2h7a2,2 0,0 0,2 -2V10l2.18,1A1,1 0,0 0,21 10V5.68A1,1 0,0 0,20.37 4.75ZM19.5,9.27 L16.72,8a0.51,0.51 0,0 0,-0.72 0.46V19a0.5,0.5 0,0 1,-0.5 0.5h-7A0.5,0.5 0,0 1,8 19V8.45A0.5,0.5 0,0 0,7.29 8L4.5,9.27V6L8.29,4.5H8.9a4,4 0,0 0,6.2 0h0.61L19.5,6Z',
+  );
+
+}
+
+Path _parseSvgPathData(String data) {
+  final parser = _SvgPathParser(data);
+  return parser.parse();
+}
+
+class _SvgPathParser {
+  final String data;
+  int _index = 0;
+  final Path _path = Path();
+  Offset _current = Offset.zero;
+  Offset _subpathStart = Offset.zero;
+
+  _SvgPathParser(this.data);
+
+  Path parse() {
+    String? command;
+    while (_skipSeparators()) {
+      final ch = _peekChar();
+      if (_isCommandLetter(ch)) {
+        command = _nextChar();
+      } else if (command == null) {
+        throw FormatException('Invalid SVG path data');
+      }
+      _parseCommand(command!);
+    }
+    return _path;
+  }
+
+  void _parseCommand(String command) {
+    switch (command) {
+      case 'M':
+      case 'm':
+        _parseMoveTo(command == 'm');
+        break;
+      case 'L':
+      case 'l':
+        _parseLineTo(command == 'l');
+        break;
+      case 'H':
+      case 'h':
+        _parseHorizontal(command == 'h');
+        break;
+      case 'V':
+      case 'v':
+        _parseVertical(command == 'v');
+        break;
+      case 'C':
+      case 'c':
+        _parseCubic(command == 'c');
+        break;
+      case 'A':
+      case 'a':
+        _parseArc(command == 'a');
+        break;
+      case 'Z':
+      case 'z':
+        _path.close();
+        _current = _subpathStart;
+        break;
+      default:
+        throw FormatException('Unsupported SVG command: $command');
+    }
+  }
+
+  void _parseMoveTo(bool relative) {
+    final first = _readPoint(relative);
+    _path.moveTo(first.dx, first.dy);
+    _current = first;
+    _subpathStart = first;
+    while (_hasNumberAhead()) {
+      final point = _readPoint(relative);
+      _path.lineTo(point.dx, point.dy);
+      _current = point;
+    }
+  }
+
+  void _parseLineTo(bool relative) {
+    while (_hasNumberAhead()) {
+      final point = _readPoint(relative);
+      _path.lineTo(point.dx, point.dy);
+      _current = point;
+    }
+  }
+
+  void _parseHorizontal(bool relative) {
+    while (_hasNumberAhead()) {
+      final x = _readNumber();
+      final targetX = relative ? _current.dx + x : x;
+      _path.lineTo(targetX, _current.dy);
+      _current = Offset(targetX, _current.dy);
+    }
+  }
+
+  void _parseVertical(bool relative) {
+    while (_hasNumberAhead()) {
+      final y = _readNumber();
+      final targetY = relative ? _current.dy + y : y;
+      _path.lineTo(_current.dx, targetY);
+      _current = Offset(_current.dx, targetY);
+    }
+  }
+
+  void _parseCubic(bool relative) {
+    while (_hasNumberAhead()) {
+      final c1 = _readPoint(relative);
+      final c2 = _readPoint(relative);
+      final end = _readPoint(relative);
+      _path.cubicTo(c1.dx, c1.dy, c2.dx, c2.dy, end.dx, end.dy);
+      _current = end;
+    }
+  }
+
+  void _parseArc(bool relative) {
+    while (_hasNumberAhead()) {
+      final rx = _readNumber().abs();
+      final ry = _readNumber().abs();
+      final rotation = _readNumber();
+      final largeArc = _readFlag();
+      final sweep = _readFlag();
+      final end = _readPoint(relative);
+      _path.arcToPoint(
+        end,
+        radius: Radius.elliptical(rx, ry),
+        rotation: rotation,
+        largeArc: largeArc,
+        clockwise: sweep,
+      );
+      _current = end;
+    }
+  }
+
+  Offset _readPoint(bool relative) {
+    final x = _readNumber();
+    final y = _readNumber();
+    return relative ? Offset(_current.dx + x, _current.dy + y) : Offset(x, y);
+  }
+
+  bool _readFlag() {
+    _skipSeparators();
+    final ch = _nextChar();
+    if (ch == '0') return false;
+    if (ch == '1') return true;
+    throw FormatException('Invalid arc flag in SVG path data');
+  }
+
+  double _readNumber() {
+    _skipSeparators();
+    final start = _index;
+    var seenDot = false;
+    var seenExp = false;
+    if (_peekChar() == '+' || _peekChar() == '-') {
+      _index++;
+    }
+    while (_index < data.length) {
+      final code = data.codeUnitAt(_index);
+      if (code >= 0x30 && code <= 0x39) {
+        _index++;
+        continue;
+      }
+      if (code == 0x2E && !seenDot) {
+        seenDot = true;
+        _index++;
+        continue;
+      }
+      if ((code == 0x65 || code == 0x45) && !seenExp) {
+        seenExp = true;
+        _index++;
+        if (_index < data.length) {
+          final nextCode = data.codeUnitAt(_index);
+          if (nextCode == 0x2B || nextCode == 0x2D) {
+            _index++;
+          }
+        }
+        continue;
+      }
+      if ((code == 0x2B || code == 0x2D) && _index == start) {
+        _index++;
+        continue;
+      }
+      break;
+    }
+    final value = data.substring(start, _index);
+    return double.parse(value);
+  }
+
+  bool _hasNumberAhead() {
+    var i = _index;
+    while (i < data.length) {
+      final ch = data[i];
+      if (ch == ',' || ch == ' ' || ch == '\n' || ch == '\r' || ch == '\t') {
+        i++;
+        continue;
+      }
+      return !_isCommandLetter(ch);
+    }
+    return false;
+  }
+
+  bool _skipSeparators() {
+    var moved = false;
+    while (_index < data.length) {
+      final ch = data[_index];
+      if (ch == ',' || ch == ' ' || ch == '\n' || ch == '\r' || ch == '\t') {
+        _index++;
+        moved = true;
+        continue;
+      }
+      break;
+    }
+    return _index < data.length;
+  }
+
+  String _peekChar() => data[_index];
+
+  String _nextChar() => data[_index++];
+
+  bool _isCommandLetter(String ch) {
+    return ch.length == 1 && RegExp(r'[A-Za-z]').hasMatch(ch);
   }
 }
 
