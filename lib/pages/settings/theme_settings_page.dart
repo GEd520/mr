@@ -79,8 +79,8 @@ class _ThemeSettingsPageState extends State<ThemeSettingsPage> {
               onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ThemeManagePage())),
             ),
             _buildListItem(
-              title: '导航栏管理',
-              subtitle: '自定义底部导航栏样式',
+              title: '底栏管理',
+              subtitle: '管理日间/夜间底栏样式和布局',
               onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const NavigationBarManagePage())),
             ),
             _buildListItem(
@@ -1888,10 +1888,13 @@ class _ThemeEditDialogState extends State<_ThemeEditDialog> {
                   value: value,
                   min: min,
                   max: max,
-                  divisions: ((max - min) * 10).round(),
+                  divisions: (max - min).round(), // 每次变化 1
                   onChanged: (v) => setState(() => value = v),
                 ),
-                Text(isPercentage ? '${value.round()}%' : value.toStringAsFixed(1)),
+                Text(
+                  isPercentage ? '${value.round()}%' : value.round().toString(),
+                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
               ],
             ),
             actions: [
@@ -2135,7 +2138,95 @@ class ThemeConfig {
   }
 }
 
-// 导航栏管理页面
+/// 底栏配置类 - 参考 legado-main 的 NavigationBarIconConfig.Config
+class NavigationBarConfig {
+  String id;
+  String name;
+  bool isNight;
+  bool isBuiltin;
+  String layoutMode; // floating, standard, sidebar
+  String effectMode; // solid, glass, frosted
+  int opacity;
+  int? borderColor;
+  int borderAlpha;
+  String? wallpaperPath;
+  String? sidebarBackgroundPath;
+  String sidebarGravity; // start, end
+  Map<String, String> icons; // 自定义图标
+  DateTime updatedAt;
+
+  NavigationBarConfig({
+    required this.id,
+    required this.name,
+    required this.isNight,
+    this.isBuiltin = false,
+    this.layoutMode = 'floating',
+    this.effectMode = 'glass',
+    this.opacity = 72,
+    this.borderColor,
+    this.borderAlpha = 100,
+    this.wallpaperPath,
+    this.sidebarBackgroundPath,
+    this.sidebarGravity = 'start',
+    Map<String, String>? icons,
+    DateTime? updatedAt,
+  }) : icons = icons ?? {}, updatedAt = updatedAt ?? DateTime.now();
+
+  String toJson() {
+    final iconsJson = icons.entries.map((e) => '${e.key}=${e.value}').join(',');
+    return '$id|$name|$isNight|$isBuiltin|$layoutMode|$effectMode|$opacity|${borderColor ?? 0}|$borderAlpha|${wallpaperPath ?? ''}|${sidebarBackgroundPath ?? ''}|$sidebarGravity|$iconsJson|${updatedAt.millisecondsSinceEpoch}';
+  }
+
+  factory NavigationBarConfig.fromJson(String json) {
+    final parts = json.split('|');
+    final icons = <String, String>{};
+    if (parts.length > 12 && parts[12].isNotEmpty) {
+      for (final entry in parts[12].split(',')) {
+        if (entry.contains('=')) {
+          final kv = entry.split('=');
+          icons[kv[0]] = kv[1];
+        }
+      }
+    }
+    return NavigationBarConfig(
+      id: parts[0],
+      name: parts[1],
+      isNight: parts[2] == 'true',
+      isBuiltin: parts[3] == 'true',
+      layoutMode: parts[4],
+      effectMode: parts[5],
+      opacity: int.parse(parts[6]),
+      borderColor: int.parse(parts[7]) == 0 ? null : int.parse(parts[7]),
+      borderAlpha: int.parse(parts[8]),
+      wallpaperPath: parts[9].isEmpty ? null : parts[9],
+      sidebarBackgroundPath: parts[10].isEmpty ? null : parts[10],
+      sidebarGravity: parts[11],
+      icons: icons,
+      updatedAt: parts.length > 13 ? DateTime.fromMillisecondsSinceEpoch(int.parse(parts[13])) : DateTime.now(),
+    );
+  }
+
+  NavigationBarConfig copy() {
+    return NavigationBarConfig(
+      id: id,
+      name: name,
+      isNight: isNight,
+      isBuiltin: isBuiltin,
+      layoutMode: layoutMode,
+      effectMode: effectMode,
+      opacity: opacity,
+      borderColor: borderColor,
+      borderAlpha: borderAlpha,
+      wallpaperPath: wallpaperPath,
+      sidebarBackgroundPath: sidebarBackgroundPath,
+      sidebarGravity: sidebarGravity,
+      icons: Map.from(icons),
+      updatedAt: updatedAt,
+    );
+  }
+}
+
+// 底栏管理页面 - 参考 legado-main 的 NavigationBarManageActivity
 class NavigationBarManagePage extends StatefulWidget {
   const NavigationBarManagePage({super.key});
   @override
@@ -2144,34 +2235,100 @@ class NavigationBarManagePage extends StatefulWidget {
 
 class _NavigationBarManagePageState extends State<NavigationBarManagePage> {
   bool _isNightMode = false;
-  
-  // 导航栏配置
-  String _layoutMode = 'floating';
-  String _sidebarGravity = 'start';
-  bool _showSearchButton = false;
+  final List<NavigationBarConfig> _configs = [];
+  String? _activeConfigId;
 
   @override
   void initState() {
     super.initState();
-    _loadSettings();
+    _loadConfigs();
   }
 
-  Future<void> _loadSettings() async {
+  Future<void> _loadConfigs() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
-      _isNightMode = prefs.getBool('navIsNightMode') ?? false;
-      _layoutMode = prefs.getString('navLayoutMode') ?? 'floating';
-      _sidebarGravity = prefs.getString('navSidebarGravity') ?? 'start';
-      _showSearchButton = prefs.getBool('navShowSearchButton') ?? false;
+      _isNightMode = prefs.getBool('navBarIsNight') ?? false;
+      _activeConfigId = prefs.getString(_isNightMode ? 'activeNightNavBarId' : 'activeDayNavBarId');
+      
+      // 加载内置底栏包
+      _configs.clear();
+      // 日间默认底栏包
+      _configs.add(NavigationBarConfig(
+        id: 'builtin_default_day',
+        name: '默认',
+        isNight: false,
+        isBuiltin: true,
+        layoutMode: 'floating',
+        effectMode: 'glass',
+        opacity: 72,
+      ));
+      // 夜间默认底栏包
+      _configs.add(NavigationBarConfig(
+        id: 'builtin_default_night',
+        name: '默认',
+        isNight: true,
+        isBuiltin: true,
+        layoutMode: 'floating',
+        effectMode: 'glass',
+        opacity: 72,
+      ));
+      
+      // 加载自定义底栏包
+      final customConfigs = prefs.getStringList('customNavBarConfigs') ?? [];
+      for (final json in customConfigs) {
+        try {
+          _configs.add(NavigationBarConfig.fromJson(json));
+        } catch (e) {
+          debugPrint('加载底栏包失败: $e');
+        }
+      }
+      
+      // 如果没有激活的底栏包，默认激活第一个对应模式的底栏包
+      if (_activeConfigId == null || _activeConfigId!.isEmpty) {
+        final defaultConfig = _filteredConfigs.firstOrNull;
+        if (defaultConfig != null) {
+          _activeConfigId = defaultConfig.id;
+        }
+      }
     });
   }
 
-  Future<void> _saveSettings() async {
+  List<NavigationBarConfig> get _filteredConfigs => _configs.where((c) => c.isNight == _isNightMode).toList();
+
+  Future<void> _saveConfigs() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('navIsNightMode', _isNightMode);
-    await prefs.setString('navLayoutMode', _layoutMode);
-    await prefs.setString('navSidebarGravity', _sidebarGravity);
-    await prefs.setBool('navShowSearchButton', _showSearchButton);
+    await prefs.setBool('navBarIsNight', _isNightMode);
+    await prefs.setString(_isNightMode ? 'activeNightNavBarId' : 'activeDayNavBarId', _activeConfigId ?? '');
+    
+    final customConfigs = _configs.where((c) => !c.isBuiltin).map((c) => c.toJson()).toList();
+    await prefs.setStringList('customNavBarConfigs', customConfigs);
+  }
+
+  Future<void> _applyConfig(NavigationBarConfig config) async {
+    setState(() => _activeConfigId = config.id);
+    await _saveConfigs();
+
+    // 应用底栏配置到 AppProvider
+    final appProvider = Provider.of<AppProvider>(context, listen: false);
+    await appProvider.setNavBarConfig(
+      layoutMode: config.layoutMode,
+      effectMode: config.effectMode,
+      opacity: config.opacity,
+      borderColor: config.borderColor ?? 0,
+      borderAlpha: config.borderAlpha,
+      wallpaperPath: config.wallpaperPath ?? '',
+      sidebarBackgroundPath: config.sidebarBackgroundPath ?? '',
+      sidebarGravity: config.sidebarGravity,
+    );
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('已应用底栏包: ${config.name}'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
   }
 
   @override
@@ -2180,27 +2337,13 @@ class _NavigationBarManagePageState extends State<NavigationBarManagePage> {
     
     return Scaffold(
       appBar: AppBar(
-        title: const Text('导航栏管理'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.save),
-            tooltip: '保存',
-            onPressed: () async {
-              await _saveSettings();
-              if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('设置已保存，重启应用生效')),
-                );
-              }
-            },
-          ),
-        ],
+        title: const Text('底栏管理'),
       ),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
+      body: Column(
         children: [
-          // 日间/夜间切换
+          // TabBar - 日间/夜间切换
           Container(
+            margin: const EdgeInsets.fromLTRB(16, 10, 16, 0),
             height: 42,
             decoration: BoxDecoration(
               color: colorScheme.surfaceContainerHighest,
@@ -2210,7 +2353,13 @@ class _NavigationBarManagePageState extends State<NavigationBarManagePage> {
               children: [
                 Expanded(
                   child: GestureDetector(
-                    onTap: () => setState(() => _isNightMode = false),
+                    onTap: () async {
+                      if (_isNightMode) {
+                        setState(() => _isNightMode = false);
+                        _activeConfigId = _filteredConfigs.firstOrNull?.id;
+                        await _saveConfigs();
+                      }
+                    },
                     child: Container(
                       margin: const EdgeInsets.all(4),
                       decoration: BoxDecoration(
@@ -2232,7 +2381,13 @@ class _NavigationBarManagePageState extends State<NavigationBarManagePage> {
                 ),
                 Expanded(
                   child: GestureDetector(
-                    onTap: () => setState(() => _isNightMode = true),
+                    onTap: () async {
+                      if (!_isNightMode) {
+                        setState(() => _isNightMode = true);
+                        _activeConfigId = _filteredConfigs.firstOrNull?.id;
+                        await _saveConfigs();
+                      }
+                    },
                     child: Container(
                       margin: const EdgeInsets.all(4),
                       decoration: BoxDecoration(
@@ -2256,107 +2411,1329 @@ class _NavigationBarManagePageState extends State<NavigationBarManagePage> {
             ),
           ),
           
-          const SizedBox(height: 16),
-          
-          // 布局设置
-          _buildCategoryTitle('布局设置'),
-          _buildSection([
-            ListTile(
-              title: const Text('布局模式'),
-              subtitle: Text(_getLayoutModeText()),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: _showLayoutModePicker,
+          // 摘要文本
+          Container(
+            width: double.infinity,
+            margin: const EdgeInsets.fromLTRB(18, 10, 18, 0),
+            constraints: const BoxConstraints(minHeight: 18),
+            child: Text(
+              _filteredConfigs.isEmpty 
+                ? '暂无${_isNightMode ? "夜间" : "日间"}底栏包，点击下方添加'
+                : '点击应用按钮应用底栏包，点击编辑按钮编辑底栏包',
+              style: TextStyle(
+                fontSize: 13,
+                color: colorScheme.onSurfaceVariant,
+              ),
             ),
-            if (_layoutMode == 'sidebar')
-              ListTile(
-                title: const Text('侧边栏位置'),
-                subtitle: Text(_sidebarGravity == 'start' ? '左侧' : '右侧'),
-                trailing: Switch(
-                  value: _sidebarGravity == 'end',
-                  onChanged: (v) => setState(() => _sidebarGravity = v ? 'end' : 'start'),
+          ),
+          
+          const SizedBox(height: 8),
+          
+          // 底栏包列表
+          Expanded(
+            child: ListView.builder(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              itemCount: _filteredConfigs.length,
+              itemBuilder: (context, index) {
+                final config = _filteredConfigs[index];
+                final isActive = config.id == _activeConfigId;
+                return _buildNavBarCard(config, isActive);
+              },
+            ),
+          ),
+          
+          // 添加按钮
+          Container(
+            margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+            width: double.infinity,
+            height: 48,
+            decoration: BoxDecoration(
+              color: colorScheme.surface.withOpacity(0.87),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: colorScheme.onSurface.withOpacity(0.4),
+                width: 1,
+              ),
+            ),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(8),
+              onTap: _showAddOptions,
+              child: Center(
+                child: Text(
+                  '添加底栏包',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.bold,
+                    color: colorScheme.onSurface,
+                  ),
                 ),
               ),
-          ]),
-          
-          const SizedBox(height: 16),
-          
-          // 其他设置
-          _buildCategoryTitle('其他设置'),
-          _buildSection([
-            SwitchListTile(
-              title: const Text('显示搜索按钮'),
-              subtitle: const Text('在导航栏右侧显示独立的搜索按钮'),
-              value: _showSearchButton,
-              onChanged: (v) => setState(() => _showSearchButton = v),
             ),
-          ]),
-          
-          const SizedBox(height: 24),
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildCategoryTitle(String title) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Text(title, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Theme.of(context).colorScheme.primary)),
+  void _showAddOptions() {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('添加底栏包'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _buildDialogItem('手动配置', () {
+              Navigator.pop(ctx);
+              _addConfig();
+            }),
+            _buildDialogItem('导入底栏包', () async {
+              Navigator.pop(ctx);
+              final result = await FilePicker.platform.pickFiles(
+                type: FileType.custom,
+                allowedExtensions: ['zip'],
+                allowCompression: false,
+              );
+              if (result != null && result.files.isNotEmpty) {
+                final path = result.files.first.path;
+                if (path != null) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('选择文件: $path')),
+                  );
+                }
+              }
+            }),
+          ],
+        ),
+      ),
     );
   }
 
-  Widget _buildSection(List<Widget> children) {
+  Widget _buildDialogItem(String text, VoidCallback onTap, {bool isDestructive = false}) {
+    return InkWell(
+      onTap: onTap,
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 24),
+        child: Text(
+          text,
+          style: TextStyle(
+            fontSize: 16,
+            color: isDestructive ? Theme.of(context).colorScheme.error : null,
+          ),
+        ),
+      ),
+    );
+  }
+
+  // 底栏包卡片
+  Widget _buildNavBarCard(NavigationBarConfig config, bool isActive) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final dateFormat = '${config.updatedAt.year}-${config.updatedAt.month.toString().padLeft(2, '0')}-${config.updatedAt.day.toString().padLeft(2, '0')}';
+    
+    // 构建信息文本
+    String infoText = _getLayoutModeText(config.layoutMode);
+    if (config.layoutMode == 'floating') {
+      infoText += ' · ${_getEffectModeText(config.effectMode)}';
+    }
+    if (config.layoutMode != 'sidebar') {
+      infoText += ' · 不透明度 ${config.opacity}%';
+      if (config.layoutMode == 'standard' && config.wallpaperPath != null && config.wallpaperPath!.isNotEmpty) {
+        infoText += ' · 底栏壁纸';
+      }
+    }
+    infoText += ' · $dateFormat';
+    
     return Container(
-      decoration: BoxDecoration(color: Theme.of(context).colorScheme.surface, borderRadius: BorderRadius.circular(12)),
-      child: Column(children: children),
+      margin: const EdgeInsets.symmetric(vertical: 6),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: colorScheme.surface,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 名称 + 内置标签
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  config.name,
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: colorScheme.onSurface,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              if (config.isBuiltin)
+                Container(
+                  margin: const EdgeInsets.only(left: 8),
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: colorScheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(13),
+                  ),
+                  child: Text(
+                    '内置',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: colorScheme.onSurface,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          
+          // 信息文本
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text(
+              '${isActive ? "当前应用 · " : ""}$infoText',
+              style: TextStyle(
+                fontSize: 12,
+                color: colorScheme.onSurfaceVariant,
+              ),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          
+          const SizedBox(height: 8),
+          
+          // 底部按钮
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                _buildActionButton(
+                  isActive ? '已应用' : '应用',
+                  () => _applyConfig(config),
+                  isPrimary: !isActive,
+                ),
+                const SizedBox(width: 8),
+                if (!config.isBuiltin)
+                  _buildActionButton('编辑', () => _editConfig(config)),
+                if (!config.isBuiltin) const SizedBox(width: 8),
+                _buildActionButton('更多', () => _showMoreOptions(config)),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 
-  String _getLayoutModeText() {
-    switch (_layoutMode) {
-      case 'floating': return '悬浮导航栏';
-      case 'standard': return '标准导航栏';
+  Widget _buildActionButton(String text, VoidCallback onTap, {bool isPrimary = false}) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        height: 34,
+        constraints: const BoxConstraints(minWidth: 56),
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        decoration: BoxDecoration(
+          color: isPrimary ? colorScheme.primaryContainer : colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Center(
+          child: Text(
+            text,
+            style: TextStyle(
+              fontSize: 13,
+              color: isPrimary ? colorScheme.onPrimaryContainer : colorScheme.onSurface,
+              fontWeight: isPrimary ? FontWeight.bold : FontWeight.normal,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _getLayoutModeText(String mode) {
+    switch (mode) {
+      case 'floating': return '悬浮';
+      case 'standard': return '标准';
       case 'sidebar': return '侧边栏';
-      default: return '悬浮导航栏';
+      default: return '悬浮';
+    }
+  }
+
+  String _getEffectModeText(String mode) {
+    switch (mode) {
+      case 'solid': return '实心';
+      case 'glass': return '玻璃';
+      case 'frosted': return '磨砂';
+      default: return '玻璃';
+    }
+  }
+
+  void _addConfig() {
+    _editConfig(null);
+  }
+
+  void _editConfig(NavigationBarConfig? existing) {
+    final isEdit = existing != null;
+    final config = existing ?? NavigationBarConfig(
+      id: 'custom_${DateTime.now().millisecondsSinceEpoch}',
+      name: _getNextConfigName(),
+      isNight: _isNightMode,
+      isBuiltin: false,
+      layoutMode: 'floating',
+      effectMode: 'glass',
+      opacity: 100,
+    );
+
+    showDialog(
+      context: context,
+      builder: (ctx) => _NavBarEditDialog(
+        config: config,
+        isEdit: isEdit,
+        onSave: (updatedConfig) async {
+          if (isEdit) {
+            setState(() {});
+          } else {
+            setState(() => _configs.add(updatedConfig));
+          }
+          await _saveConfigs();
+        },
+      ),
+    );
+  }
+
+  String _getNextConfigName() {
+    const base = '自定义底栏';
+    final usedNames = _configs.map((c) => c.name).toSet();
+    if (!usedNames.contains(base)) return base;
+    for (int index = 2; index <= 999; index++) {
+      final name = '$base $index';
+      if (!usedNames.contains(name)) return name;
+    }
+    return '$base ${DateTime.now().millisecondsSinceEpoch}';
+  }
+
+  void _showMoreOptions(NavigationBarConfig config) {
+    final items = <Widget>[];
+    
+    // 应用
+    items.add(_buildDialogItem('应用', () {
+      Navigator.pop(context);
+      _applyConfig(config);
+    }));
+    
+    // 非内置主题可以编辑和导出
+    if (!config.isBuiltin) {
+      items.add(_buildDialogItem('编辑', () {
+        Navigator.pop(context);
+        _editConfig(config);
+      }));
+      items.add(_buildDialogItem('导出底栏包', () {
+        Navigator.pop(context);
+        _exportConfig(config);
+      }));
+    }
+    
+    // 非内置主题且非当前应用的主题可以删除
+    if (!config.isBuiltin && config.id != _activeConfigId) {
+      items.add(_buildDialogItem('删除底栏包', () {
+        Navigator.pop(context);
+        _deleteConfig(config);
+      }, isDestructive: true));
+    }
+    
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(config.name),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: items,
+        ),
+      ),
+    );
+  }
+
+  void _exportConfig(NavigationBarConfig config) {
+    final json = config.toJson();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('底栏包配置已生成\n$json'),
+        duration: const Duration(seconds: 5),
+      ),
+    );
+  }
+
+  void _deleteConfig(NavigationBarConfig config) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('确认删除'),
+        content: Text('确定要删除底栏包 "${config.name}" 吗？'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+          TextButton(
+            onPressed: () async {
+              setState(() => _configs.remove(config));
+              await _saveConfigs();
+              Navigator.pop(ctx);
+            },
+            child: const Text('删除', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// 底栏包编辑对话框 - 参考 legado-main 的编辑对话框
+class _NavBarEditDialog extends StatefulWidget {
+  final NavigationBarConfig config;
+  final bool isEdit;
+  final Future<void> Function(NavigationBarConfig) onSave;
+
+  const _NavBarEditDialog({
+    required this.config,
+    required this.isEdit,
+    required this.onSave,
+  });
+
+  @override
+  State<_NavBarEditDialog> createState() => _NavBarEditDialogState();
+}
+
+class _NavBarEditDialogState extends State<_NavBarEditDialog> {
+  late NavigationBarConfig _config;
+  final TextEditingController _nameController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _config = widget.config;
+    _nameController.text = _config.name;
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+    final dialogWidth = screenWidth * 0.94;
+    final dialogHeight = screenHeight < 1600 ? screenHeight * 0.74 : screenHeight * 0.68;
+
+    return Dialog(
+      insetPadding: EdgeInsets.zero,
+      alignment: Alignment.center,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Container(
+        width: dialogWidth,
+        height: dialogHeight,
+        padding: const EdgeInsets.symmetric(vertical: 16),
+        child: Column(
+          children: [
+            // 标题
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Text(
+                widget.isEdit ? '编辑底栏包' : '添加底栏包',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: colorScheme.onSurface,
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 12),
+
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(2, 0, 2, 16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // 名称输入框
+                    _buildOptionRow(
+                      child: TextField(
+                        controller: _nameController,
+                        decoration: const InputDecoration(
+                          hintText: '底栏包名称',
+                          border: InputBorder.none,
+                          contentPadding: EdgeInsets.symmetric(horizontal: 14),
+                        ),
+                        style: const TextStyle(fontSize: 15),
+                        onChanged: (v) => _config.name = v,
+                      ),
+                    ),
+
+                    const SizedBox(height: 10),
+
+                    // 布局模式
+                    _buildSelectOption(
+                      '布局模式',
+                      _getLayoutModeText(_config.layoutMode),
+                      () => _showLayoutModePicker(),
+                    ),
+
+                    // 材质模式 - 仅悬浮模式
+                    if (_config.layoutMode == 'floating')
+                      _buildSelectOption(
+                        '材质模式',
+                        _getEffectModeText(_config.effectMode),
+                        () => _showEffectModePicker(),
+                      ),
+
+                    // 底栏壁纸 - 仅标准模式
+                    if (_config.layoutMode == 'standard')
+                      _buildSelectOption(
+                        '底栏壁纸',
+                        _config.wallpaperPath != null && _config.wallpaperPath!.isNotEmpty ? '已设置' : '选择图片',
+                        () => _showWallpaperPicker(),
+                      ),
+
+                    // 不透明度 - 非侧边栏模式
+                    if (_config.layoutMode != 'sidebar')
+                      _buildSliderOption(
+                        '不透明度',
+                        _config.opacity.toDouble(),
+                        0,
+                        100,
+                        (v) => setState(() => _config.opacity = v.round()),
+                        isPercentage: true,
+                      ),
+
+                    // 边框颜色 - 非侧边栏模式
+                    if (_config.layoutMode != 'sidebar')
+                      _buildColorOption(
+                        '边框颜色',
+                        _config.borderColor != null ? Color(_config.borderColor!) : Colors.transparent,
+                        (c) => setState(() => _config.borderColor = c.value),
+                        canDisable: true,
+                      ),
+
+                    // 边框透明度 - 非侧边栏模式
+                    if (_config.layoutMode != 'sidebar')
+                      _buildSliderOption(
+                        '边框透明度',
+                        _config.borderAlpha.toDouble(),
+                        0,
+                        100,
+                        (v) => setState(() => _config.borderAlpha = v.round()),
+                        isPercentage: true,
+                      ),
+
+                    // 侧边栏背景 - 仅侧边栏模式
+                    if (_config.layoutMode == 'sidebar')
+                      _buildSelectOption(
+                        '侧边栏背景',
+                        _config.sidebarBackgroundPath != null && _config.sidebarBackgroundPath!.isNotEmpty ? '已设置' : '选择图片',
+                        () => _showSidebarBackgroundPicker(),
+                      ),
+
+                    // 侧边栏位置 - 仅侧边栏模式
+                    if (_config.layoutMode == 'sidebar')
+                      _buildSelectOption(
+                        '侧边栏位置',
+                        _config.sidebarGravity == 'start' ? '左侧' : '右侧',
+                        () => _showSidebarGravityPicker(),
+                      ),
+
+                    // 图标配置
+                    ..._buildIconRows(),
+                  ],
+                ),
+              ),
+            ),
+
+            // 底部按钮栏
+            Container(
+              padding: const EdgeInsets.fromLTRB(2, 8, 2, 6),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  SizedBox(
+                    width: 96,
+                    height: 40,
+                    child: TextButton(
+                      style: TextButton.styleFrom(
+                        backgroundColor: colorScheme.surfaceContainerHighest,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                      ),
+                      onPressed: () => Navigator.pop(context),
+                      child: Text(
+                        '取消',
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                  ),
+
+                  const SizedBox(width: 8),
+
+                  SizedBox(
+                    width: 96,
+                    height: 40,
+                    child: TextButton(
+                      style: TextButton.styleFrom(
+                        backgroundColor: colorScheme.surfaceContainerHighest,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                      ),
+                      onPressed: () async {
+                        await widget.onSave(_config);
+                        Navigator.pop(context);
+                      },
+                      child: Text(
+                        '确定',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                          color: colorScheme.primary,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildOptionRow({required Widget child}) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Container(
+      height: 44,
+      margin: const EdgeInsets.symmetric(vertical: 1),
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: BoxDecoration(
+        color: colorScheme.surface,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: child,
+    );
+  }
+
+  Widget _buildSelectOption(String title, String value, VoidCallback onTap) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return _buildOptionRow(
+      child: GestureDetector(
+        onTap: onTap,
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                title,
+                style: TextStyle(
+                  fontSize: 14,
+                  color: colorScheme.onSurface,
+                ),
+              ),
+            ),
+            SizedBox(
+              width: 132,
+              child: Text(
+                value,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: colorScheme.onSurfaceVariant,
+                ),
+                textAlign: TextAlign.end,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSliderOption(String title, double value, double min, double max, ValueChanged<double> onChanged, {bool isPercentage = false}) {
+    final colorScheme = Theme.of(context).colorScheme;
+    String valueText = isPercentage ? '${value.round()}%' : value.toStringAsFixed(1);
+
+    return _buildOptionRow(
+      child: GestureDetector(
+        onTap: () => _showNumberPickerDialog(title, value, min, max, onChanged, isPercentage: isPercentage),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                title,
+                style: TextStyle(
+                  fontSize: 14,
+                  color: colorScheme.onSurface,
+                ),
+              ),
+            ),
+            SizedBox(
+              width: 132,
+              child: Text(
+                valueText,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: colorScheme.onSurfaceVariant,
+                ),
+                textAlign: TextAlign.end,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildColorOption(String title, Color color, ValueChanged<Color> onChanged, {bool canDisable = false}) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final colorHex = color != Colors.transparent 
+        ? '#${color.value.toRadixString(16).padLeft(8, '0').substring(2).toUpperCase()}'
+        : '禁用';
+
+    return _buildOptionRow(
+      child: GestureDetector(
+        onTap: () => _showColorPicker(title, color, onChanged, canDisable: canDisable),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                title,
+                style: TextStyle(
+                  fontSize: 14,
+                  color: colorScheme.onSurface,
+                ),
+              ),
+            ),
+            if (color != Colors.transparent)
+              Container(
+                width: 22,
+                height: 22,
+                margin: const EdgeInsets.only(left: 10),
+                decoration: BoxDecoration(
+                  color: color,
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(
+                    color: colorScheme.onSurface.withOpacity(0.16),
+                    width: 1,
+                  ),
+                ),
+              ),
+            SizedBox(
+              width: 132,
+              child: Text(
+                colorHex,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: colorScheme.onSurfaceVariant,
+                ),
+                textAlign: TextAlign.end,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // 导航项列表 - 参考原版 NavigationBarIconConfig.items
+  static const _navItems = [
+    _NavItem('bookshelf', '书架', Icons.menu_book),
+    _NavItem('discovery', '发现', Icons.explore),
+    _NavItem('rss', '订阅', Icons.rss_feed),
+    _NavItem('my', '我的', Icons.person),
+    _NavItem('ai', '助手', Icons.smart_toy),
+  ];
+
+  List<Widget> _buildIconRows() {
+    final colorScheme = Theme.of(context).colorScheme;
+    final items = _navItems.where((item) {
+      // 非侧边栏模式不显示AI助手
+      if (_config.layoutMode != 'sidebar' && item.key == 'ai') {
+        return false;
+      }
+      return true;
+    }).toList();
+
+    return items.map((item) {
+      return Container(
+        margin: const EdgeInsets.only(top: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: colorScheme.surface,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                item.title,
+                style: TextStyle(
+                  fontSize: 15,
+                  color: colorScheme.onSurface,
+                ),
+              ),
+            ),
+            // 正常状态图标按钮
+            _buildIconButton(item, false),
+            const SizedBox(width: 8),
+            // 选中状态图标按钮
+            _buildIconButton(item, true),
+          ],
+        ),
+      );
+    }).toList();
+  }
+
+  Widget _buildIconButton(_NavItem item, bool selected) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final iconKey = '${item.key}_${selected ? 'selected' : 'normal'}';
+    final hasCustomIcon = _config.icons.containsKey(iconKey);
+
+    return GestureDetector(
+      onTap: () => _showIconOptions(item, selected),
+      child: Container(
+        width: 44,
+        height: 44,
+        decoration: BoxDecoration(
+          color: colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Icon(
+          hasCustomIcon ? Icons.image : item.icon,
+          size: 24,
+          color: selected ? colorScheme.primary : colorScheme.onSurfaceVariant,
+        ),
+      ),
+    );
+  }
+
+  void _showIconOptions(_NavItem item, bool selected) {
+    final iconKey = '${item.key}_${selected ? 'selected' : 'normal'}';
+    final hasCustomIcon = _config.icons.containsKey(iconKey);
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('${item.title} - ${selected ? '选中' : '正常'}'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _buildDialogItem('选择图片', () {
+              Navigator.pop(ctx);
+              _pickIconImage(item, selected);
+            }),
+            if (hasCustomIcon)
+              _buildDialogItem('删除', () {
+                Navigator.pop(ctx);
+                setState(() {
+                  _config.icons.remove(iconKey);
+                });
+              }, isDestructive: true),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDialogItem(String text, VoidCallback onTap, {bool isDestructive = false}) {
+    return InkWell(
+      onTap: onTap,
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 24),
+        child: Text(
+          text,
+          style: TextStyle(
+            fontSize: 16,
+            color: isDestructive ? Theme.of(context).colorScheme.error : null,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _pickIconImage(_NavItem item, bool selected) async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['png', 'jpg', 'jpeg', 'svg', 'ico'],
+    );
+    if (result != null && result.files.isNotEmpty) {
+      final path = result.files.first.path;
+      if (path != null) {
+        final iconKey = '${item.key}_${selected ? 'selected' : 'normal'}';
+        setState(() {
+          _config.icons[iconKey] = path;
+        });
+      }
+    }
+  }
+
+  String _getLayoutModeText(String mode) {
+    switch (mode) {
+      case 'floating': return '悬浮';
+      case 'standard': return '标准';
+      case 'sidebar': return '侧边栏';
+      default: return '悬浮';
+    }
+  }
+
+  String _getEffectModeText(String mode) {
+    switch (mode) {
+      case 'solid': return '实心';
+      case 'glass': return '玻璃';
+      case 'frosted': return '磨砂';
+      default: return '玻璃';
     }
   }
 
   void _showLayoutModePicker() {
-    showModalBottomSheet(
+    showDialog(
       context: context,
-      builder: (ctx) => SafeArea(
-        child: Column(
+      builder: (ctx) => AlertDialog(
+        title: const Text('布局模式'),
+        content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
-              title: const Text('悬浮导航栏'),
-              subtitle: const Text('玻璃效果 + 悬浮在底部'),
-              trailing: _layoutMode == 'floating' ? Icon(Icons.check, color: Theme.of(context).colorScheme.primary) : null,
+              title: const Text('悬浮'),
+              subtitle: const Text('悬浮在底部，支持玻璃效果'),
+              trailing: _config.layoutMode == 'floating' ? Icon(Icons.check, color: Theme.of(context).colorScheme.primary) : null,
               onTap: () {
-                setState(() => _layoutMode = 'floating');
+                setState(() => _config.layoutMode = 'floating');
                 Navigator.pop(ctx);
               },
             ),
             ListTile(
-              title: const Text('标准导航栏'),
+              title: const Text('标准'),
               subtitle: const Text('传统底部导航栏样式'),
-              trailing: _layoutMode == 'standard' ? Icon(Icons.check, color: Theme.of(context).colorScheme.primary) : null,
+              trailing: _config.layoutMode == 'standard' ? Icon(Icons.check, color: Theme.of(context).colorScheme.primary) : null,
               onTap: () {
-                setState(() => _layoutMode = 'standard');
+                setState(() {
+                  _config.layoutMode = 'standard';
+                  _config.effectMode = 'solid';
+                });
                 Navigator.pop(ctx);
               },
             ),
             ListTile(
               title: const Text('侧边栏'),
               subtitle: const Text('侧边抽屉式导航'),
-              trailing: _layoutMode == 'sidebar' ? Icon(Icons.check, color: Theme.of(context).colorScheme.primary) : null,
+              trailing: _config.layoutMode == 'sidebar' ? Icon(Icons.check, color: Theme.of(context).colorScheme.primary) : null,
               onTap: () {
-                setState(() => _layoutMode = 'sidebar');
+                setState(() => _config.layoutMode = 'sidebar');
                 Navigator.pop(ctx);
               },
             ),
           ],
         ),
       ),
+    );
+  }
+
+  void _showEffectModePicker() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('材质模式'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              title: const Text('实心'),
+              trailing: _config.effectMode == 'solid' ? Icon(Icons.check, color: Theme.of(context).colorScheme.primary) : null,
+              onTap: () {
+                setState(() => _config.effectMode = 'solid');
+                Navigator.pop(ctx);
+              },
+            ),
+            ListTile(
+              title: const Text('玻璃'),
+              trailing: _config.effectMode == 'glass' ? Icon(Icons.check, color: Theme.of(context).colorScheme.primary) : null,
+              onTap: () {
+                setState(() => _config.effectMode = 'glass');
+                Navigator.pop(ctx);
+              },
+            ),
+            ListTile(
+              title: const Text('磨砂'),
+              trailing: _config.effectMode == 'frosted' ? Icon(Icons.check, color: Theme.of(context).colorScheme.primary) : null,
+              onTap: () {
+                setState(() => _config.effectMode = 'frosted');
+                Navigator.pop(ctx);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showSidebarGravityPicker() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('侧边栏位置'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              title: const Text('左侧'),
+              trailing: _config.sidebarGravity == 'start' ? Icon(Icons.check, color: Theme.of(context).colorScheme.primary) : null,
+              onTap: () {
+                setState(() => _config.sidebarGravity = 'start');
+                Navigator.pop(ctx);
+              },
+            ),
+            ListTile(
+              title: const Text('右侧'),
+              trailing: _config.sidebarGravity == 'end' ? Icon(Icons.check, color: Theme.of(context).colorScheme.primary) : null,
+              onTap: () {
+                setState(() => _config.sidebarGravity = 'end');
+                Navigator.pop(ctx);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showWallpaperPicker() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.image,
+      allowCompression: false,
+    );
+    if (result != null && result.files.isNotEmpty) {
+      final path = result.files.first.path;
+      if (path != null) {
+        setState(() => _config.wallpaperPath = path);
+      }
+    }
+  }
+
+  void _showSidebarBackgroundPicker() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.image,
+      allowCompression: false,
+    );
+    if (result != null && result.files.isNotEmpty) {
+      final path = result.files.first.path;
+      if (path != null) {
+        setState(() => _config.sidebarBackgroundPath = path);
+      }
+    }
+  }
+
+  void _showNumberPickerDialog(String title, double currentValue, double min, double max, ValueChanged<double> onChanged, {bool isPercentage = false}) {
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setState) {
+          double value = currentValue;
+          return AlertDialog(
+            title: Text(title),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Slider(
+                  value: value,
+                  min: min,
+                  max: max,
+                  divisions: (max - min).round(), // 每次变化 1
+                  onChanged: (v) => setState(() => value = v),
+                ),
+                Text(
+                  isPercentage ? '${value.round()}%' : value.round().toString(),
+                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('取消'),
+              ),
+              TextButton(
+                onPressed: () {
+                  onChanged(value);
+                  Navigator.pop(ctx);
+                },
+                child: const Text('确定'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  void _showColorPicker(String title, Color currentColor, ValueChanged<Color> onChanged, {bool canDisable = false}) {
+    if (canDisable) {
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                title: const Text('禁用'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  onChanged(Colors.transparent);
+                },
+              ),
+              ListTile(
+                title: const Text('选择颜色'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _showColorPickerDialog(title, currentColor, onChanged);
+                },
+              ),
+            ],
+          ),
+        ),
+      );
+    } else {
+      _showColorPickerDialog(title, currentColor, onChanged);
+    }
+  }
+
+  void _showColorPickerDialog(String title, Color currentColor, ValueChanged<Color> onChanged) {
+    final colorScheme = Theme.of(context).colorScheme;
+    
+    double hue = HSVColor.fromColor(currentColor).hue;
+    double saturation = HSVColor.fromColor(currentColor).saturation;
+    double value = HSVColor.fromColor(currentColor).value;
+    
+    final colorController = TextEditingController(
+      text: '#${currentColor.value.toRadixString(16).padLeft(8, '0').substring(2).toUpperCase()}',
+    );
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          final selectedColor = HSVColor.fromAHSV(1.0, hue, saturation, value).toColor();
+          
+          final colorHex = '#${selectedColor.value.toRadixString(16).padLeft(8, '0').substring(2).toUpperCase()}';
+          if (colorController.text != colorHex) {
+            colorController.text = colorHex;
+            colorController.selection = TextSelection.collapsed(offset: colorHex.length);
+          }
+          
+          return Dialog(
+            insetPadding: const EdgeInsets.symmetric(horizontal: 24),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Container(
+              width: 320,
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    title,
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: colorScheme.onSurface,
+                    ),
+                  ),
+                  
+                  const SizedBox(height: 16),
+                  
+                  Container(
+                    width: double.infinity,
+                    height: 80,
+                    decoration: BoxDecoration(
+                      color: selectedColor,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: colorScheme.outline,
+                        width: 1,
+                      ),
+                    ),
+                  ),
+                  
+                  const SizedBox(height: 16),
+                  
+                  // 色相滑块
+                  _buildColorSlider(
+                    label: '色相',
+                    value: hue,
+                    min: 0,
+                    max: 360,
+                    onChanged: (v) => setDialogState(() => hue = v),
+                    displayValue: hue.round().toString(),
+                    gradientColors: [
+                      const Color(0xFFFF0000),
+                      const Color(0xFFFFFF00),
+                      const Color(0xFF00FF00),
+                      const Color(0xFF00FFFF),
+                      const Color(0xFF0000FF),
+                      const Color(0xFFFF00FF),
+                      const Color(0xFFFF0000),
+                    ],
+                  ),
+                  
+                  const SizedBox(height: 12),
+                  
+                  // 饱和度滑块
+                  _buildColorSlider(
+                    label: '饱和度',
+                    value: saturation,
+                    min: 0,
+                    max: 1,
+                    onChanged: (v) => setDialogState(() => saturation = v),
+                    displayValue: '${(saturation * 100).round()}%',
+                    gradientColors: [
+                      HSVColor.fromAHSV(1.0, hue, 0, value).toColor(),
+                      HSVColor.fromAHSV(1.0, hue, 1, value).toColor(),
+                    ],
+                  ),
+                  
+                  const SizedBox(height: 12),
+                  
+                  // 明度滑块
+                  _buildColorSlider(
+                    label: '明度',
+                    value: value,
+                    min: 0,
+                    max: 1,
+                    onChanged: (v) => setDialogState(() => value = v),
+                    displayValue: '${(value * 100).round()}%',
+                    gradientColors: [
+                      HSVColor.fromAHSV(1.0, hue, saturation, 0).toColor(),
+                      HSVColor.fromAHSV(1.0, hue, saturation, 1).toColor(),
+                    ],
+                  ),
+                  
+                  const SizedBox(height: 20),
+                  
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: colorController,
+                          decoration: InputDecoration(
+                            hintText: '#RRGGBB',
+                            isDense: true,
+                            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                          ),
+                          style: const TextStyle(fontSize: 14, fontFamily: 'monospace'),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      TextButton(
+                        onPressed: () => Navigator.pop(ctx),
+                        child: Text(
+                          '取消',
+                          style: TextStyle(color: colorScheme.onSurfaceVariant),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      TextButton(
+                        onPressed: () {
+                          onChanged(selectedColor);
+                          Navigator.pop(ctx);
+                        },
+                        child: Text(
+                          '确定',
+                          style: TextStyle(
+                            color: colorScheme.primary,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildColorSlider({
+    required String label,
+    required double value,
+    required double min,
+    required double max,
+    required ValueChanged<double> onChanged,
+    required String displayValue,
+    required List<Color> gradientColors,
+  }) {
+    return Row(
+      children: [
+        SizedBox(
+          width: 50,
+          child: Text(
+            label,
+            style: const TextStyle(fontSize: 13),
+          ),
+        ),
+        Expanded(
+          child: Stack(
+            children: [
+              Container(
+                height: 24,
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(colors: gradientColors),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+              ),
+              SliderTheme(
+                data: SliderThemeData(
+                  trackHeight: 24,
+                  thumbColor: Colors.white,
+                  thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8),
+                  overlayColor: Colors.white.withOpacity(0.2),
+                  activeTrackColor: Colors.transparent,
+                  inactiveTrackColor: Colors.transparent,
+                ),
+                child: Slider(
+                  value: value,
+                  min: min,
+                  max: max,
+                  onChanged: onChanged,
+                ),
+              ),
+            ],
+          ),
+        ),
+        SizedBox(
+          width: 50,
+          child: Text(
+            displayValue,
+            style: const TextStyle(fontSize: 12),
+            textAlign: TextAlign.right,
+          ),
+        ),
+      ],
     );
   }
 }
@@ -2781,4 +4158,13 @@ class _CoverConfigPageState extends State<CoverConfigPage> {
       ),
     );
   }
+}
+
+/// 导航项数据类 - 参考原版 NavigationBarIconConfig.NavItem
+class _NavItem {
+  final String key;
+  final String title;
+  final IconData icon;
+
+  const _NavItem(this.key, this.title, this.icon);
 }

@@ -4,26 +4,46 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/app_provider.dart';
 
-/// 全局背景图片组件 - 参考 legados 的背景图片应用方式
-/// legados 使用 Bitmap.resizeAndRecycle 将图片缩放到屏幕大小
-/// Flutter 中使用 BoxFit.cover 实现类似效果
-///
-/// 优化说明：
-/// 1. 使用 context.select 只监听需要的属性，避免不必要的重建
-/// 2. 使用 RepaintBoundary 优化重绘
-class ThemedBackground extends StatelessWidget {
+/// 全局背景图片组件 - 使用 GlobalKey 保持状态
+class ThemedBackground extends StatefulWidget {
   final Widget child;
-  final bool applyOverlay; // 是否应用半透明遮罩
 
   const ThemedBackground({
     super.key,
     required this.child,
-    this.applyOverlay = true,
   });
 
   @override
+  State<ThemedBackground> createState() => ThemedBackgroundState();
+}
+
+class ThemedBackgroundState extends State<ThemedBackground> {
+  // 使用静态 GlobalKey 确保背景图片不会被重建
+  static final GlobalKey _backgroundKey = GlobalKey();
+
+  @override
   Widget build(BuildContext context) {
-    // 使用 context.select 只监听需要的属性，避免不必要的重建
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        // 背景图片层 - 使用 GlobalKey 保持状态
+        Positioned.fill(
+          key: _backgroundKey,
+          child: const _BackgroundLayer(),
+        ),
+        // 内容层
+        widget.child,
+      ],
+    );
+  }
+}
+
+/// 背景层组件
+class _BackgroundLayer extends StatelessWidget {
+  const _BackgroundLayer();
+
+  @override
+  Widget build(BuildContext context) {
     final backgroundImage = context.select<AppProvider, String?>(
       (provider) => provider.currentBackgroundImage,
     );
@@ -36,40 +56,20 @@ class ThemedBackground extends StatelessWidget {
           : Brightness.light,
     );
 
-    // 如果没有背景图片，直接返回子组件
     if (backgroundImage == null || backgroundImage.isEmpty) {
-      return child;
+      return const SizedBox.shrink();
     }
 
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        // 背景图片层 - 使用 RepaintBoundary 优化重绘
-        Positioned.fill(
-          child: RepaintBoundary(
-            child: _BackgroundImageWidget(
-              imagePath: backgroundImage,
-              blur: backgroundBlur,
-              brightness: brightness,
-            ),
-          ),
-        ),
-        // 半透明遮罩层 - 使用 RepaintBoundary 优化重绘
-        if (applyOverlay)
-          Positioned.fill(
-            child: RepaintBoundary(
-              child: _OverlayWidget(brightness: brightness),
-            ),
-          ),
-        // 内容层
-        child,
-      ],
+    return _BackgroundImageWidget(
+      imagePath: backgroundImage,
+      blur: backgroundBlur,
+      brightness: brightness,
     );
   }
 }
 
-/// 背景图片组件 - 独立出来避免不必要的重建
-class _BackgroundImageWidget extends StatelessWidget {
+/// 背景图片组件 - 使用 StatefulWidget 和 didUpdateWidget 避免重建
+class _BackgroundImageWidget extends StatefulWidget {
   final String imagePath;
   final int blur;
   final Brightness brightness;
@@ -81,94 +81,102 @@ class _BackgroundImageWidget extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-
-    ImageProvider imageProvider;
-
-    try {
-      if (imagePath.startsWith('http://') || imagePath.startsWith('https://')) {
-        // 网络图片
-        imageProvider = NetworkImage(imagePath);
-      } else if (imagePath.startsWith('assets://')) {
-        // 资源图片
-        imageProvider = AssetImage(imagePath.replaceFirst('assets://', ''));
-      } else {
-        // 本地文件
-        imageProvider = FileImage(File(imagePath));
-      }
-
-      Widget imageWidget = Image(
-        image: imageProvider,
-        fit: BoxFit.cover, // 关键：使用 cover 填充整个屏幕，保持比例
-        alignment: Alignment.center, // 居中对齐
-        errorBuilder: (context, error, stackTrace) {
-          return Container(
-            color: colorScheme.background,
-          );
-        },
-        loadingBuilder: (context, child, loadingProgress) {
-          if (loadingProgress == null) return child;
-          return Container(
-            color: colorScheme.background,
-            child: Center(
-              child: CircularProgressIndicator(
-                value: loadingProgress.expectedTotalBytes != null
-                    ? loadingProgress.cumulativeBytesLoaded /
-                        loadingProgress.expectedTotalBytes!
-                    : null,
-                strokeWidth: 2,
-              ),
-            ),
-          );
-        },
-      );
-
-      // 如果有模糊度，应用模糊效果
-      if (blur > 0) {
-        return ImageFiltered(
-          imageFilter: ImageFilter.blur(
-            sigmaX: blur.toDouble(),
-            sigmaY: blur.toDouble(),
-          ),
-          child: imageWidget,
-        );
-      }
-
-      return imageWidget;
-    } catch (e) {
-      return Container(
-        color: colorScheme.background,
-      );
-    }
-  }
+  State<_BackgroundImageWidget> createState() => _BackgroundImageWidgetState();
 }
 
-/// 遮罩层组件 - 独立出来避免不必要的重建
-class _OverlayWidget extends StatelessWidget {
-  final Brightness brightness;
+class _BackgroundImageWidgetState extends State<_BackgroundImageWidget> {
+  // 静态缓存 ImageProvider
+  static final Map<String, ImageProvider> _imageProviderCache = {};
+  // 当前显示的图片路径
+  String? _currentImagePath;
+  ImageProvider? _currentImageProvider;
 
-  const _OverlayWidget({required this.brightness});
+  @override
+  void initState() {
+    super.initState();
+    _updateImageProvider();
+  }
+
+  @override
+  void didUpdateWidget(_BackgroundImageWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 只有图片路径变化时才更新 ImageProvider
+    if (oldWidget.imagePath != widget.imagePath) {
+      _updateImageProvider();
+    }
+  }
+
+  void _updateImageProvider() {
+    if (_currentImagePath == widget.imagePath && _currentImageProvider != null) {
+      return; // 没有变化，不需要更新
+    }
+
+    _currentImagePath = widget.imagePath;
+
+    if (_imageProviderCache.containsKey(widget.imagePath)) {
+      _currentImageProvider = _imageProviderCache[widget.imagePath]!;
+    } else {
+      if (widget.imagePath.startsWith('http://') ||
+          widget.imagePath.startsWith('https://')) {
+        _currentImageProvider = NetworkImage(widget.imagePath);
+      } else if (widget.imagePath.startsWith('assets://')) {
+        _currentImageProvider =
+            AssetImage(widget.imagePath.replaceFirst('assets://', ''));
+      } else {
+        _currentImageProvider = FileImage(File(widget.imagePath));
+      }
+      _imageProviderCache[widget.imagePath] = _currentImageProvider!;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: _getOverlayGradientColors(),
-          stops: const [0.0, 0.3, 0.7, 1.0],
+    final colorScheme = Theme.of(context).colorScheme;
+
+    if (_currentImageProvider == null) {
+      return Container(color: colorScheme.background);
+    }
+
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        // 背景图片
+        Image(
+          image: _currentImageProvider!,
+          fit: BoxFit.cover,
+          alignment: Alignment.center,
+          gaplessPlayback: true,
+          filterQuality: FilterQuality.medium,
+          errorBuilder: (context, error, stackTrace) {
+            return Container(color: colorScheme.background);
+          },
         ),
-      ),
+        // 渐变遮罩
+        Container(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: _getOverlayGradientColors(),
+              stops: const [0.0, 0.3, 0.7, 1.0],
+            ),
+          ),
+        ),
+        // 模糊效果
+        if (widget.blur > 0)
+          ImageFiltered(
+            imageFilter: ImageFilter.blur(
+              sigmaX: widget.blur.toDouble(),
+              sigmaY: widget.blur.toDouble(),
+            ),
+            child: Container(color: Colors.transparent),
+          ),
+      ],
     );
   }
 
-  /// 获取遮罩渐变颜色 - 参考 legados 的背景图片遮罩效果
-  /// 使用渐变遮罩，使内容更易读
   List<Color> _getOverlayGradientColors() {
-    if (brightness == Brightness.dark) {
-      // 夜间模式：使用深色渐变遮罩
+    if (widget.brightness == Brightness.dark) {
       return [
         Colors.black.withOpacity(0.15),
         Colors.black.withOpacity(0.20),
@@ -176,7 +184,6 @@ class _OverlayWidget extends StatelessWidget {
         Colors.black.withOpacity(0.30),
       ];
     } else {
-      // 日间模式：使用浅色渐变遮罩
       return [
         Colors.white.withOpacity(0.10),
         Colors.white.withOpacity(0.15),

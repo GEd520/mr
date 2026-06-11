@@ -4,7 +4,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import '../bookshelf/bookshelf_page.dart';
 import '../discovery/discovery_page.dart';
 import '../miniprogram/miniprogram_page.dart';
@@ -26,11 +25,6 @@ class _MainPageState extends State<MainPage> {
   String? _error;
   late PageController _pageController;
   
-  // 导航栏配置
-  String _layoutMode = 'floating'; // floating, standard, sidebar
-  String _sidebarGravity = 'start'; // start, end
-  bool _showSearchButton = false;  // 默认不显示搜索按钮
-  
   // 侧边栏状态
   bool _sidebarOpen = false;
   
@@ -40,22 +34,12 @@ class _MainPageState extends State<MainPage> {
     _pageController = PageController(initialPage: 0);
     _loadData();
     _requestPermissions();
-    _loadNavConfig();
   }
 
   @override
   void dispose() {
     _pageController.dispose();
     super.dispose();
-  }
-  
-  Future<void> _loadNavConfig() async {
-    final prefs = await SharedPreferences.getInstance();
-    setState(() {
-      _layoutMode = prefs.getString('navLayoutMode') ?? 'floating';
-      _sidebarGravity = prefs.getString('navSidebarGravity') ?? 'start';
-      _showSearchButton = prefs.getBool('navShowSearchButton') ?? false;
-    });
   }
   
   void _navigateToDiscovery() {
@@ -109,6 +93,11 @@ class _MainPageState extends State<MainPage> {
 
   @override
   Widget build(BuildContext context) {
+    // 从 AppProvider 获取底栏配置
+    final appProvider = Provider.of<AppProvider>(context);
+    final layoutMode = appProvider.navBarLayoutMode;
+    final sidebarGravity = appProvider.navBarSidebarGravity;
+
     if (_isLoading) {
       return Scaffold(
         body: Center(
@@ -151,21 +140,21 @@ class _MainPageState extends State<MainPage> {
     }
 
     // 侧边栏模式
-    if (_layoutMode == 'sidebar') {
-      return _buildSidebarLayout();
+    if (layoutMode == 'sidebar') {
+      return _buildSidebarLayout(sidebarGravity);
     }
 
     // 标准模式
-    if (_layoutMode == 'standard') {
-      return _buildStandardLayout();
+    if (layoutMode == 'standard') {
+      return _buildStandardLayout(appProvider);
     }
 
     // 悬浮模式（默认）
-    return _buildFloatingLayout();
+    return _buildFloatingLayout(appProvider);
   }
 
   /// 悬浮模式布局 - 玻璃效果 + 悬浮导航栏
-  Widget _buildFloatingLayout() {
+  Widget _buildFloatingLayout(AppProvider appProvider) {
     final pages = [
       BookshelfPage(onSwipeToNext: _navigateToDiscovery),
       const DiscoveryPage(),
@@ -191,14 +180,14 @@ class _MainPageState extends State<MainPage> {
             left: 0,
             right: 0,
             bottom: 0,
-            child: _buildFloatingNavBar(),
+            child: _buildFloatingNavBar(appProvider),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildFloatingNavBar() {
+  Widget _buildFloatingNavBar(AppProvider appProvider) {
     // 参考 legado-main 的精确尺寸
     // main_bottom_bar_height: 48dp
     // main_bottom_bar_corner_radius: 24dp
@@ -213,11 +202,33 @@ class _MainPageState extends State<MainPage> {
     final horizontalPadding = 20.0;
     final bottomPadding = 10.0;
     final iconSize = 23.0;
-    final barGap = 10.0;
-    final elevation = 12.0;
     
     final colorScheme = Theme.of(context).colorScheme;
     final isDark = colorScheme.brightness == Brightness.dark;
+    
+    // 从配置获取不透明度
+    final opacity = appProvider.navBarOpacity / 100.0;
+    final effectMode = appProvider.navBarEffectMode;
+    final borderColor = appProvider.navBarBorderColor != null 
+      ? Color(appProvider.navBarBorderColor!).withOpacity(appProvider.navBarBorderAlpha / 100.0)
+      : null;
+    
+    // 根据材质模式设置背景色
+    Color bgColor;
+    if (effectMode == 'solid') {
+      bgColor = isDark 
+        ? colorScheme.surface.withOpacity(opacity)
+        : colorScheme.surface.withOpacity(opacity);
+    } else if (effectMode == 'frosted') {
+      bgColor = isDark 
+        ? colorScheme.surface.withOpacity(0.7 * opacity)
+        : colorScheme.surface.withOpacity(0.85 * opacity);
+    } else {
+      // glass
+      bgColor = isDark 
+        ? colorScheme.surface.withOpacity(0.85 * opacity)
+        : colorScheme.surface.withOpacity(0.9 * opacity);
+    }
     
     return Padding(
       padding: EdgeInsets.only(
@@ -225,96 +236,39 @@ class _MainPageState extends State<MainPage> {
         right: horizontalPadding,
         bottom: bottomPadding,
       ),
-      child: Row(
-        children: [
-          // 导航栏主体
-          Expanded(
-            child: Material(
-              elevation: elevation,
-              borderRadius: BorderRadius.circular(cornerRadius),
-              color: Colors.transparent,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(cornerRadius),
-                child: BackdropFilter(
-                  filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-                  child: Container(
-                    height: bottomBarHeight,
-                    decoration: BoxDecoration(
-                      color: isDark 
-                        ? colorScheme.surface.withOpacity(0.85)
-                        : colorScheme.surface.withOpacity(0.9),
-                      borderRadius: BorderRadius.circular(cornerRadius),
-                      border: Border.all(
-                        color: isDark 
-                          ? Colors.white.withOpacity(0.08)
-                          : Colors.black.withOpacity(0.04),
-                        width: 1,
-                      ),
-                    ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                      children: [
-                        _buildNavItem(0, Icons.book_outlined, Icons.book, iconSize, '书架'),
-                        _buildNavItem(1, Icons.explore_outlined, Icons.explore, iconSize, '发现'),
-                        _buildNavItem(2, Icons.apps_outlined, Icons.apps, iconSize, '小程序'),
-                        _buildNavItem(3, Icons.person_outline, Icons.person, iconSize, '我的'),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-          // 搜索按钮（分离）
-          if (_showSearchButton) ...[
-            SizedBox(width: barGap),
-            _buildSearchButton(cornerRadius, elevation),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSearchButton(double cornerRadius, double elevation) {
-    // main_search_button_size: 48dp
-    // main_search_button_icon_size: 22dp
-    // main_search_button_elevation: 14dp
-    
-    final buttonSize = 48.0;
-    final searchIconSize = 22.0;
-    final searchElevation = 14.0;
-    
-    final colorScheme = Theme.of(context).colorScheme;
-    final isDark = colorScheme.brightness == Brightness.dark;
-    
-    return Tooltip(
-      message: '搜索',
       child: Material(
-        elevation: searchElevation,
-        borderRadius: BorderRadius.circular(buttonSize / 2),
+        elevation: 12,
+        borderRadius: BorderRadius.circular(cornerRadius),
         color: Colors.transparent,
-        child: ClipOval(
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(cornerRadius),
           child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+            filter: ImageFilter.blur(
+              sigmaX: effectMode == 'frosted' ? 30 : 20, 
+              sigmaY: effectMode == 'frosted' ? 30 : 20
+            ),
             child: Container(
-              width: buttonSize,
-              height: buttonSize,
+              height: bottomBarHeight,
               decoration: BoxDecoration(
-                color: isDark 
-                  ? colorScheme.surface.withOpacity(0.85)
-                  : colorScheme.surface.withOpacity(0.9),
-                shape: BoxShape.circle,
-                border: Border.all(
-                  color: isDark 
-                    ? Colors.white.withOpacity(0.08)
-                    : Colors.black.withOpacity(0.04),
-                  width: 1,
-                ),
+                color: bgColor,
+                borderRadius: BorderRadius.circular(cornerRadius),
+                border: borderColor != null 
+                  ? Border.all(color: borderColor, width: 1)
+                  : Border.all(
+                      color: isDark 
+                        ? Colors.white.withOpacity(0.08)
+                        : Colors.black.withOpacity(0.04),
+                      width: 1,
+                    ),
               ),
-              child: Icon(
-                Icons.search,
-                size: searchIconSize,
-                color: colorScheme.primary,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  _buildNavItem(0, Icons.menu_book_outlined, Icons.menu_book, iconSize, '书架'),
+                  _buildNavItem(1, Icons.explore_outlined, Icons.explore, iconSize, '发现'),
+                  _buildNavItem(2, Icons.rss_feed_outlined, Icons.rss_feed, iconSize, '订阅'),
+                  _buildNavItem(3, Icons.person_outline, Icons.person, iconSize, '我的'),
+                ],
               ),
             ),
           ),
@@ -358,13 +312,20 @@ class _MainPageState extends State<MainPage> {
   }
 
   /// 标准模式布局 - 传统底部导航栏
-  Widget _buildStandardLayout() {
+  Widget _buildStandardLayout(AppProvider appProvider) {
     final pages = [
       BookshelfPage(onSwipeToNext: _navigateToDiscovery),
       const DiscoveryPage(),
       const MiniprogramPage(),
       const ProfilePage(),
     ];
+
+    final colorScheme = Theme.of(context).colorScheme;
+    final isDark = colorScheme.brightness == Brightness.dark;
+    final opacity = appProvider.navBarOpacity / 100.0;
+    final borderColor = appProvider.navBarBorderColor != null 
+      ? Color(appProvider.navBarBorderColor!).withOpacity(appProvider.navBarBorderAlpha / 100.0)
+      : null;
 
     return Scaffold(
       body: PageView(
@@ -378,20 +339,24 @@ class _MainPageState extends State<MainPage> {
       ),
       bottomNavigationBar: Container(
         decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surface,
-          border: Border(
-            top: BorderSide(
-              color: Theme.of(context).dividerColor.withOpacity(0.2),
-              width: 0.5,
-            ),
-          ),
+          color: isDark 
+            ? colorScheme.surface.withOpacity(opacity)
+            : colorScheme.surface.withOpacity(opacity),
+          border: borderColor != null 
+            ? Border(top: BorderSide(color: borderColor, width: 1))
+            : Border(
+                top: BorderSide(
+                  color: Theme.of(context).dividerColor.withOpacity(0.2),
+                  width: 0.5,
+                ),
+              ),
         ),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceEvenly,
           children: [
-            _buildStandardNavItem(0, Icons.book_outlined, Icons.book, '书架'),
+            _buildStandardNavItem(0, Icons.menu_book_outlined, Icons.menu_book, '书架'),
             _buildStandardNavItem(1, Icons.explore_outlined, Icons.explore, '发现'),
-            _buildStandardNavItem(2, Icons.apps_outlined, Icons.apps, '小程序'),
+            _buildStandardNavItem(2, Icons.rss_feed_outlined, Icons.rss_feed, '订阅'),
             _buildStandardNavItem(3, Icons.person_outline, Icons.person, '我的'),
           ],
         ),
@@ -445,7 +410,7 @@ class _MainPageState extends State<MainPage> {
   }
 
   /// 侧边栏模式布局
-  Widget _buildSidebarLayout() {
+  Widget _buildSidebarLayout(String sidebarGravity) {
     final pages = [
       BookshelfPage(onSwipeToNext: _navigateToDiscovery),
       const DiscoveryPage(),
@@ -480,10 +445,10 @@ class _MainPageState extends State<MainPage> {
           AnimatedPositioned(
             duration: const Duration(milliseconds: 250),
             curve: Curves.easeOutCubic,
-            left: _sidebarGravity == 'start' 
+            left: sidebarGravity == 'start' 
               ? (_sidebarOpen ? 0 : -280)
               : null,
-            right: _sidebarGravity == 'end'
+            right: sidebarGravity == 'end'
               ? (_sidebarOpen ? 0 : -280)
               : null,
             top: 0,
@@ -558,9 +523,9 @@ class _MainPageState extends State<MainPage> {
               child: ListView(
                 padding: const EdgeInsets.symmetric(vertical: 8),
                 children: [
-                  _buildSidebarItem(0, Icons.book, '书架'),
+                  _buildSidebarItem(0, Icons.menu_book, '书架'),
                   _buildSidebarItem(1, Icons.explore, '发现'),
-                  _buildSidebarItem(2, Icons.apps, '小程序'),
+                  _buildSidebarItem(2, Icons.rss_feed, '订阅'),
                   _buildSidebarItem(3, Icons.person, '我的'),
                   const Divider(),
                   _buildSidebarItem(4, Icons.settings, '设置'),

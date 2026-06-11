@@ -45,7 +45,7 @@ class _MiniprogramPageState extends State<MiniprogramPage> {
                           child: TextField(
                             controller: _searchController,
                             decoration: InputDecoration(
-                              hintText: '搜索小程序',
+                              hintText: '搜索订阅',
                               hintStyle: const TextStyle(fontSize: 13),
                               prefixIcon: const Icon(Icons.search, size: 16),
                               suffixIcon: _searchQuery.isNotEmpty

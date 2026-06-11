@@ -87,7 +87,7 @@ class _ProfilePageState extends State<ProfilePage> {
               onTap: () => _showBookSourceManagement(),
             ),
             _buildListItem(
-              icon: Icons.text_snippet,
+              icon: Icons.description,
               title: 'TXT目录规则',
               subtitle: '管理TXT文件目录解析规则',
               onTap: () => Navigator.pushNamed(context, AppRoutes.txtTocRule),
@@ -195,11 +195,7 @@ class _ProfilePageState extends State<ProfilePage> {
 
   Widget _buildSection(List<Widget> children) {
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 12),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surface,
-        borderRadius: BorderRadius.circular(12),
-      ),
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
       child: Column(
         children: _insertDividers(children),
       ),
@@ -242,8 +238,18 @@ class _ProfilePageState extends State<ProfilePage> {
     VoidCallback? onTap,
   }) {
     return ListTile(
-      leading: Icon(icon, color: Theme.of(context).colorScheme.primary),
-      title: Text(title),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      leading: Icon(
+        icon,
+        color: Theme.of(context).colorScheme.primary,
+      ),
+      title: Text(
+        title,
+        style: const TextStyle(
+          fontSize: 16,
+          fontWeight: FontWeight.w500,
+        ),
+      ),
       subtitle: subtitle != null ? Text(
         subtitle,
         style: TextStyle(
@@ -254,6 +260,7 @@ class _ProfilePageState extends State<ProfilePage> {
       trailing: Icon(
         Icons.chevron_right,
         color: Theme.of(context).colorScheme.onSurfaceVariant,
+        size: 20,
       ),
       onTap: onTap,
     );
@@ -267,8 +274,18 @@ class _ProfilePageState extends State<ProfilePage> {
     required ValueChanged<bool> onChanged,
   }) {
     return ListTile(
-      leading: Icon(icon, color: Theme.of(context).colorScheme.primary),
-      title: Text(title),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      leading: Icon(
+        icon,
+        color: Theme.of(context).colorScheme.primary,
+      ),
+      title: Text(
+        title,
+        style: const TextStyle(
+          fontSize: 16,
+          fontWeight: FontWeight.w500,
+        ),
+      ),
       subtitle: subtitle != null ? Text(
         subtitle,
         style: TextStyle(
