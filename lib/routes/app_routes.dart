@@ -37,8 +37,8 @@ class AppPageRoute<T> extends PageRouteBuilder<T> {
          maintainState: maintainState,
          fullscreenDialog: fullscreenDialog,
          allowSnapshotting: false,
-         transitionDuration: const Duration(milliseconds: 280),
-         reverseTransitionDuration: const Duration(milliseconds: 240),
+         transitionDuration: Duration.zero,
+         reverseTransitionDuration: Duration.zero,
          pageBuilder: (context, animation, secondaryAnimation) =>
              builder(context),
        );
@@ -50,22 +50,7 @@ class AppPageRoute<T> extends PageRouteBuilder<T> {
     Animation<double> secondaryAnimation,
     Widget child,
   ) {
-    final position = Tween<Offset>(begin: const Offset(1, 0), end: Offset.zero)
-        .animate(
-          CurvedAnimation(
-            parent: animation,
-            curve: Curves.easeOutCubic,
-            reverseCurve: Curves.easeInCubic,
-          ),
-        );
-
-    return ClipRect(
-      child: SlideTransition(
-        position: position,
-        transformHitTests: false,
-        child: child,
-      ),
-    );
+    return child;
   }
 }
 

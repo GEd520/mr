@@ -13,11 +13,13 @@ class AppProvider extends ChangeNotifier {
   Color _dayAccentColor = const Color(0xFFAD1457); // Pink 800
   Color _dayBackgroundColor = const Color(0xFFFAFAFA); // Grey 50
   Color _daySurfaceColor = const Color(0xFFFFFFFF); // White
+  Color _dayNavBarColor = const Color(0xFFF5F5F5);
   // 夜间模式
   Color _nightPrimaryColor = const Color(0xFF303030); // 深灰
   Color _nightAccentColor = const Color(0xFFE0E0E0); // 浅灰
   Color _nightBackgroundColor = const Color(0xFF424242); // Grey 800
   Color _nightSurfaceColor = const Color(0xFF303030); // Grey 700
+  Color _nightNavBarColor = const Color(0xFF000000);
 
   // 背景图片设置
   String? _dayBackgroundImage;
@@ -44,10 +46,12 @@ class AppProvider extends ChangeNotifier {
   Color get dayAccentColor => _dayAccentColor;
   Color get dayBackgroundColor => _dayBackgroundColor;
   Color get daySurfaceColor => _daySurfaceColor;
+  Color get dayNavBarColor => _dayNavBarColor;
   Color get nightPrimaryColor => _nightPrimaryColor;
   Color get nightAccentColor => _nightAccentColor;
   Color get nightBackgroundColor => _nightBackgroundColor;
   Color get nightSurfaceColor => _nightSurfaceColor;
+  Color get nightNavBarColor => _nightNavBarColor;
 
   // 背景图片 getter
   String? get dayBackgroundImage => _dayBackgroundImage;
@@ -90,6 +94,19 @@ class AppProvider extends ChangeNotifier {
     }
   }
 
+  Color get currentNavBarColor {
+    if (_themeMode == ThemeMode.dark) {
+      return _nightNavBarColor;
+    } else if (_themeMode == ThemeMode.light) {
+      return _dayNavBarColor;
+    }
+    final brightness =
+        WidgetsBinding.instance.platformDispatcher.platformBrightness;
+    return brightness == Brightness.dark
+        ? _nightNavBarColor
+        : _dayNavBarColor;
+  }
+
   // 获取日间主题
   ThemeData get lightTheme {
     // 如果有背景图片，Scaffold 背景色设置为透明，这样背景图片才能显示
@@ -105,8 +122,8 @@ class AppProvider extends ChangeNotifier {
         secondary: _dayAccentColor,
         surface: _daySurfaceColor,
         background: _dayBackgroundColor,
-        onPrimary: Colors.white, // primary 色上的文字颜色
-        onSecondary: Colors.white, // secondary 色上的文字颜色
+        onPrimary: _foregroundFor(_dayPrimaryColor),
+        onSecondary: _foregroundFor(_dayAccentColor),
         onSurface: Colors.black87, // surface 色上的文字颜色
         onBackground: Colors.black87, // background 色上的文字颜色
         error: const Color(0xFFE53935),
@@ -115,16 +132,39 @@ class AppProvider extends ChangeNotifier {
       scaffoldBackgroundColor: scaffoldBgColor,
       appBarTheme: AppBarTheme(
         backgroundColor: _dayPrimaryColor,
-        foregroundColor: Colors.white,
-        titleTextStyle: const TextStyle(
-          color: Colors.white,
+        foregroundColor: _foregroundFor(_dayPrimaryColor),
+        titleTextStyle: TextStyle(
+          color: _foregroundFor(_dayPrimaryColor),
           fontSize: 20,
-          fontWeight: FontWeight.w500,
+          fontWeight: FontWeight.normal,
+        ),
+      ),
+      switchTheme: _switchTheme(_dayAccentColor),
+      checkboxTheme: _checkboxTheme(_dayAccentColor),
+      radioTheme: _radioTheme(_dayAccentColor),
+      progressIndicatorTheme: ProgressIndicatorThemeData(
+        color: _dayAccentColor,
+      ),
+      bottomNavigationBarTheme: BottomNavigationBarThemeData(
+        backgroundColor: _dayNavBarColor,
+        selectedItemColor: _dayAccentColor,
+        unselectedItemColor: Colors.black54,
+        elevation: 4,
+      ),
+      navigationBarTheme: NavigationBarThemeData(
+        backgroundColor: _dayNavBarColor,
+        indicatorColor: Colors.transparent,
+        iconTheme: WidgetStateProperty.resolveWith(
+          (states) => IconThemeData(
+            color: states.contains(WidgetState.selected)
+                ? _dayAccentColor
+                : Colors.black54,
+          ),
         ),
       ),
       floatingActionButtonTheme: FloatingActionButtonThemeData(
         backgroundColor: _dayPrimaryColor,
-        foregroundColor: Colors.white,
+        foregroundColor: _foregroundFor(_dayPrimaryColor),
       ),
       // 确保文字主题正确
       textTheme: const TextTheme(
@@ -153,8 +193,8 @@ class AppProvider extends ChangeNotifier {
         secondary: _nightAccentColor,
         surface: _nightSurfaceColor,
         background: _nightBackgroundColor,
-        onPrimary: Colors.white, // primary 色上的文字颜色
-        onSecondary: Colors.black87, // secondary 色上的文字颜色
+        onPrimary: _foregroundFor(_nightPrimaryColor),
+        onSecondary: _foregroundFor(_nightAccentColor),
         onSurface: Colors.white70, // surface 色上的文字颜色
         onBackground: Colors.white70, // background 色上的文字颜色
         error: const Color(0xFFE53935),
@@ -162,17 +202,40 @@ class AppProvider extends ChangeNotifier {
       ),
       scaffoldBackgroundColor: scaffoldBgColor,
       appBarTheme: AppBarTheme(
-        backgroundColor: _nightSurfaceColor,
-        foregroundColor: Colors.white,
-        titleTextStyle: const TextStyle(
-          color: Colors.white,
+        backgroundColor: _nightPrimaryColor,
+        foregroundColor: _foregroundFor(_nightPrimaryColor),
+        titleTextStyle: TextStyle(
+          color: _foregroundFor(_nightPrimaryColor),
           fontSize: 20,
-          fontWeight: FontWeight.w500,
+          fontWeight: FontWeight.normal,
+        ),
+      ),
+      switchTheme: _switchTheme(_nightAccentColor),
+      checkboxTheme: _checkboxTheme(_nightAccentColor),
+      radioTheme: _radioTheme(_nightAccentColor),
+      progressIndicatorTheme: ProgressIndicatorThemeData(
+        color: _nightAccentColor,
+      ),
+      bottomNavigationBarTheme: BottomNavigationBarThemeData(
+        backgroundColor: _nightNavBarColor,
+        selectedItemColor: _nightAccentColor,
+        unselectedItemColor: Colors.white70,
+        elevation: 4,
+      ),
+      navigationBarTheme: NavigationBarThemeData(
+        backgroundColor: _nightNavBarColor,
+        indicatorColor: Colors.transparent,
+        iconTheme: WidgetStateProperty.resolveWith(
+          (states) => IconThemeData(
+            color: states.contains(WidgetState.selected)
+                ? _nightAccentColor
+                : Colors.white70,
+          ),
         ),
       ),
       floatingActionButtonTheme: FloatingActionButtonThemeData(
         backgroundColor: _nightPrimaryColor,
-        foregroundColor: Colors.white,
+        foregroundColor: _foregroundFor(_nightPrimaryColor),
       ),
       // 确保文字主题正确
       textTheme: const TextTheme(
@@ -196,10 +259,12 @@ class AppProvider extends ChangeNotifier {
     _dayAccentColor = Color(prefs.getInt('dayAccentColor') ?? 0xFFAD1457);
     _dayBackgroundColor = Color(prefs.getInt('dayBackgroundColor') ?? 0xFFFAFAFA);
     _daySurfaceColor = Color(prefs.getInt('daySurfaceColor') ?? 0xFFFFFFFF);
+    _dayNavBarColor = Color(prefs.getInt('dayNavBarColor') ?? 0xFFF5F5F5);
     _nightPrimaryColor = Color(prefs.getInt('nightPrimaryColor') ?? 0xFF303030);
     _nightAccentColor = Color(prefs.getInt('nightAccentColor') ?? 0xFFE0E0E0);
     _nightBackgroundColor = Color(prefs.getInt('nightBackgroundColor') ?? 0xFF424242);
     _nightSurfaceColor = Color(prefs.getInt('nightSurfaceColor') ?? 0xFF303030);
+    _nightNavBarColor = Color(prefs.getInt('nightNavBarColor') ?? 0xFF000000);
 
     // 加载背景图片设置
     _dayBackgroundImage = prefs.getString('dayBackgroundImage');
@@ -226,6 +291,7 @@ class AppProvider extends ChangeNotifier {
     Color? accentColor,
     Color? backgroundColor,
     Color? surfaceColor,
+    Color? navBarColor,
     String? backgroundImage,
     int? backgroundBlur,
   }) async {
@@ -233,6 +299,7 @@ class AppProvider extends ChangeNotifier {
     if (accentColor != null) _dayAccentColor = accentColor;
     if (backgroundColor != null) _dayBackgroundColor = backgroundColor;
     if (surfaceColor != null) _daySurfaceColor = surfaceColor;
+    if (navBarColor != null) _dayNavBarColor = navBarColor;
     if (backgroundImage != null) _dayBackgroundImage = backgroundImage.isEmpty ? null : backgroundImage;
     if (backgroundBlur != null) _dayBackgroundBlur = backgroundBlur;
 
@@ -241,6 +308,7 @@ class AppProvider extends ChangeNotifier {
     await prefs.setInt('dayAccentColor', _dayAccentColor.value);
     await prefs.setInt('dayBackgroundColor', _dayBackgroundColor.value);
     await prefs.setInt('daySurfaceColor', _daySurfaceColor.value);
+    await prefs.setInt('dayNavBarColor', _dayNavBarColor.value);
     if (backgroundImage != null) {
       if (backgroundImage.isEmpty) {
         await prefs.remove('dayBackgroundImage');
@@ -260,6 +328,7 @@ class AppProvider extends ChangeNotifier {
     Color? accentColor,
     Color? backgroundColor,
     Color? surfaceColor,
+    Color? navBarColor,
     String? backgroundImage,
     int? backgroundBlur,
   }) async {
@@ -267,6 +336,7 @@ class AppProvider extends ChangeNotifier {
     if (accentColor != null) _nightAccentColor = accentColor;
     if (backgroundColor != null) _nightBackgroundColor = backgroundColor;
     if (surfaceColor != null) _nightSurfaceColor = surfaceColor;
+    if (navBarColor != null) _nightNavBarColor = navBarColor;
     if (backgroundImage != null) _nightBackgroundImage = backgroundImage.isEmpty ? null : backgroundImage;
     if (backgroundBlur != null) _nightBackgroundBlur = backgroundBlur;
 
@@ -275,6 +345,7 @@ class AppProvider extends ChangeNotifier {
     await prefs.setInt('nightAccentColor', _nightAccentColor.value);
     await prefs.setInt('nightBackgroundColor', _nightBackgroundColor.value);
     await prefs.setInt('nightSurfaceColor', _nightSurfaceColor.value);
+    await prefs.setInt('nightNavBarColor', _nightNavBarColor.value);
     if (backgroundImage != null) {
       if (backgroundImage.isEmpty) {
         await prefs.remove('nightBackgroundImage');
@@ -287,6 +358,41 @@ class AppProvider extends ChangeNotifier {
     }
 
     notifyListeners();
+  }
+
+  static Color _foregroundFor(Color background) {
+    return ThemeData.estimateBrightnessForColor(background) == Brightness.dark
+        ? Colors.white
+        : Colors.black87;
+  }
+
+  static SwitchThemeData _switchTheme(Color accent) {
+    return SwitchThemeData(
+      thumbColor: WidgetStateProperty.resolveWith(
+        (states) => states.contains(WidgetState.selected) ? accent : null,
+      ),
+      trackColor: WidgetStateProperty.resolveWith(
+        (states) => states.contains(WidgetState.selected)
+            ? accent.withValues(alpha: 0.5)
+            : null,
+      ),
+    );
+  }
+
+  static CheckboxThemeData _checkboxTheme(Color accent) {
+    return CheckboxThemeData(
+      fillColor: WidgetStateProperty.resolveWith(
+        (states) => states.contains(WidgetState.selected) ? accent : null,
+      ),
+    );
+  }
+
+  static RadioThemeData _radioTheme(Color accent) {
+    return RadioThemeData(
+      fillColor: WidgetStateProperty.resolveWith(
+        (states) => states.contains(WidgetState.selected) ? accent : null,
+      ),
+    );
   }
 
   void setThemeMode(ThemeMode mode) {

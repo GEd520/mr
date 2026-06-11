@@ -120,7 +120,7 @@ class _ThemeSettingsPageState extends State<ThemeSettingsPage> {
   Widget _buildCategoryTitle(String title) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-      child: Text(title, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Theme.of(context).colorScheme.primary)),
+      child: Text(title, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Theme.of(context).colorScheme.secondary)),
     );
   }
 
@@ -262,6 +262,7 @@ class _ThemeManagePageState extends State<ThemeManagePage> {
         accentColor: theme.accentColor,
         backgroundColor: theme.backgroundColor,
         surfaceColor: theme.backgroundColor,
+        navBarColor: theme.navBarColor,
         backgroundImage: theme.mainBgImage ?? '',
         backgroundBlur: theme.bgImageBlur,
       );
@@ -272,6 +273,7 @@ class _ThemeManagePageState extends State<ThemeManagePage> {
         accentColor: theme.accentColor,
         backgroundColor: theme.backgroundColor,
         surfaceColor: theme.backgroundColor,
+        navBarColor: theme.navBarColor,
         backgroundImage: theme.mainBgImage ?? '',
         backgroundBlur: theme.bgImageBlur,
       );

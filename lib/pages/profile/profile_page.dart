@@ -38,13 +38,19 @@ class _ProfilePageState extends State<ProfilePage> {
 
   @override
   Widget build(BuildContext context) {
+    final primaryColor = Theme.of(context).colorScheme.primary;
+    final primaryForeground =
+        ThemeData.estimateBrightnessForColor(primaryColor) == Brightness.dark
+        ? Colors.white
+        : Colors.black87;
     return Scaffold(
+      backgroundColor: Colors.transparent,
       body: Column(
         children: [
           // 顶部标题栏（高度48dp，与其他主页面一致）
           Container(
             padding: EdgeInsets.only(top: MediaQuery.of(context).padding.top),
-            color: Theme.of(context).colorScheme.primary,
+            color: primaryColor,
             child: SizedBox(
               height: 48,
               child: Padding(
@@ -53,14 +59,18 @@ class _ProfilePageState extends State<ProfilePage> {
                   children: [
                     Text(
                       '我的',
-                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.normal,
+                        color: primaryForeground,
                       ),
                     ),
                     const Spacer(),
                     IconButton(
-                      icon: const Icon(Icons.help_outline, color: Colors.white),
+                      icon: Icon(
+                        Icons.help_outline,
+                        color: primaryForeground,
+                      ),
                       tooltip: '帮助',
                       onPressed: () {
                         _showHelpDialog();
@@ -79,20 +89,20 @@ class _ProfilePageState extends State<ProfilePage> {
                 // 书源管理（无分类标题）
                 _buildSection([
                   _buildListItem(
-                    icon: Icons.book,
+                    icon: Icons.menu_book_outlined,
                     title: '书源管理',
                     subtitle: '已导入 $_sourceCount 个书源',
                     onTap: () => _showBookSourceManagement(),
                   ),
                   _buildListItem(
-                    icon: Icons.description,
+                    icon: Icons.menu_book_outlined,
                     title: 'TXT目录规则',
                     subtitle: '管理TXT文件目录解析规则',
                     onTap: () =>
                         Navigator.pushNamed(context, AppRoutes.txtTocRule),
                   ),
                   _buildListItem(
-                    icon: Icons.find_replace,
+                    icon: Icons.swap_horiz,
                     title: '替换净化',
                     subtitle: '内容替换规则管理',
                     onTap: () =>
@@ -108,7 +118,7 @@ class _ProfilePageState extends State<ProfilePage> {
                   Consumer<AppProvider>(
                     builder: (context, provider, child) {
                       return _buildListItem(
-                        icon: Icons.palette,
+                        icon: Icons.checkroom_outlined,
                         title: '主题模式',
                         subtitle: _getThemeModeText(provider.themeMode),
                         onTap: () => _showThemeDialog(provider),
@@ -116,7 +126,7 @@ class _ProfilePageState extends State<ProfilePage> {
                     },
                   ),
                   _buildSwitchItem(
-                    icon: Icons.web,
+                    icon: Icons.public,
                     title: 'Web服务',
                     subtitle: '开启后可通过浏览器访问',
                     value: false,
@@ -128,14 +138,14 @@ class _ProfilePageState extends State<ProfilePage> {
                 _buildCategoryTitle('设置'),
                 _buildSection([
                   _buildListItem(
-                    icon: Icons.backup,
+                    icon: Icons.folder_outlined,
                     title: '备份恢复',
                     subtitle: 'WebDAV备份与恢复',
                     onTap: () =>
                         Navigator.pushNamed(context, AppRoutes.backupRestore),
                   ),
                   _buildListItem(
-                    icon: Icons.color_lens,
+                    icon: Icons.checkroom_outlined,
                     title: '主题设置',
                     subtitle: '自定义主题颜色和样式',
                     onTap: () => Navigator.push(
@@ -146,7 +156,7 @@ class _ProfilePageState extends State<ProfilePage> {
                     ),
                   ),
                   _buildListItem(
-                    icon: Icons.settings,
+                    icon: Icons.settings_outlined,
                     title: '其他设置',
                     subtitle: '阅读、界面等更多设置',
                     onTap: () => _showReaderSettings(),
@@ -157,33 +167,33 @@ class _ProfilePageState extends State<ProfilePage> {
                 _buildCategoryTitle('其他'),
                 _buildSection([
                   _buildListItem(
-                    icon: Icons.bookmark,
+                    icon: Icons.bookmark_border,
                     title: '书签',
                     subtitle: '查看所有书签',
                     onTap: () =>
                         Navigator.pushNamed(context, AppRoutes.bookmark),
                   ),
                   _buildListItem(
-                    icon: Icons.history,
+                    icon: Icons.history_outlined,
                     title: '阅读记录',
                     subtitle: '查看阅读历史',
                     onTap: () =>
                         Navigator.pushNamed(context, AppRoutes.readRecord),
                   ),
                   _buildListItem(
-                    icon: Icons.storage,
+                    icon: Icons.storage_outlined,
                     title: '存储管理',
                     subtitle: '管理本地存储的书籍',
                     onTap: () =>
                         Navigator.pushNamed(context, AppRoutes.storageManage),
                   ),
                   _buildListItem(
-                    icon: Icons.info_outline,
+                    icon: Icons.info_outline_rounded,
                     title: '关于',
                     onTap: _showAboutDialog,
                   ),
                   _buildListItem(
-                    icon: Icons.exit_to_app,
+                    icon: Icons.logout,
                     title: '退出',
                     onTap: () => _showExitConfirm(),
                   ),
@@ -199,43 +209,25 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   Widget _buildSection(List<Widget> children) {
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-      child: Column(children: _insertDividers(children)),
+    return ColoredBox(
+      color: Colors.transparent,
+      child: Column(children: children),
     );
   }
 
   Widget _buildCategoryTitle(String title) {
+    final colorScheme = Theme.of(context).colorScheme;
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
       child: Text(
         title,
         style: TextStyle(
           fontSize: 14,
-          fontWeight: FontWeight.w600,
-          color: Theme.of(context).colorScheme.primary,
+          fontWeight: FontWeight.w500,
+          color: colorScheme.secondary,
         ),
       ),
     );
-  }
-
-  List<Widget> _insertDividers(List<Widget> children) {
-    final result = <Widget>[];
-    for (var i = 0; i < children.length; i++) {
-      result.add(children[i]);
-      if (i < children.length - 1) {
-        result.add(
-          Divider(
-            height: 1,
-            indent: 56,
-            color: Theme.of(
-              context,
-            ).colorScheme.outlineVariant.withOpacity(0.5),
-          ),
-        );
-      }
-    }
-    return result;
   }
 
   Widget _buildListItem({
@@ -244,28 +236,39 @@ class _ProfilePageState extends State<ProfilePage> {
     String? subtitle,
     VoidCallback? onTap,
   }) {
-    return ListTile(
-      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      leading: Icon(icon, color: Theme.of(context).colorScheme.primary),
-      title: Text(
-        title,
-        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        splashColor: Colors.transparent,
+        highlightColor: theme.brightness == Brightness.dark
+            ? const Color(0x634D4D4D)
+            : const Color(0x63ACACAC),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: 60),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            child: Row(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.only(top: 1),
+                  child: Icon(icon, color: colorScheme.secondary, size: 24),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: _buildItemText(
+                    title: title,
+                    subtitle: subtitle,
+                    colorScheme: colorScheme,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
-      subtitle: subtitle != null
-          ? Text(
-              subtitle,
-              style: TextStyle(
-                fontSize: 12,
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
-            )
-          : null,
-      trailing: Icon(
-        Icons.chevron_right,
-        color: Theme.of(context).colorScheme.onSurfaceVariant,
-        size: 20,
-      ),
-      onTap: onTap,
     );
   }
 
@@ -276,24 +279,74 @@ class _ProfilePageState extends State<ProfilePage> {
     required bool value,
     required ValueChanged<bool> onChanged,
   }) {
-    return ListTile(
-      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      leading: Icon(icon, color: Theme.of(context).colorScheme.primary),
-      title: Text(
-        title,
-        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () => onChanged(!value),
+        splashColor: Colors.transparent,
+        highlightColor: theme.brightness == Brightness.dark
+            ? const Color(0x634D4D4D)
+            : const Color(0x63ACACAC),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: 60),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            child: Row(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.only(top: 1),
+                  child: Icon(icon, color: colorScheme.secondary, size: 24),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: _buildItemText(
+                    title: title,
+                    subtitle: subtitle,
+                    colorScheme: colorScheme,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Switch(
+                  value: value,
+                  activeThumbColor: colorScheme.secondary,
+                  activeTrackColor: colorScheme.secondary.withValues(
+                    alpha: 0.5,
+                  ),
+                  onChanged: onChanged,
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
-      subtitle: subtitle != null
-          ? Text(
-              subtitle,
-              style: TextStyle(
-                fontSize: 12,
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
-            )
-          : null,
-      trailing: Switch(value: value, onChanged: onChanged),
-      onTap: () => onChanged(!value),
+    );
+  }
+
+  Widget _buildItemText({
+    required String title,
+    required String? subtitle,
+    required ColorScheme colorScheme,
+  }) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          title,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(fontSize: 16, color: colorScheme.onSurface),
+        ),
+        if (subtitle != null) ...[
+          const SizedBox(height: 8),
+          Text(
+            subtitle,
+            style: TextStyle(fontSize: 14, color: colorScheme.onSurfaceVariant),
+          ),
+        ],
+      ],
     );
   }
 

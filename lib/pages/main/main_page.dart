@@ -161,19 +161,27 @@ class _MainPageState extends State<MainPage> {
       const MiniprogramPage(),
       const ProfilePage(),
     ];
+    final bottomSafeArea = MediaQuery.paddingOf(context).bottom;
+    const bottomBarHeight = 48.0;
+    const bottomBarGap = 10.0;
+    final contentBottomInset =
+        bottomBarHeight + bottomBarGap + bottomSafeArea;
 
     return Scaffold(
       body: Stack(
         children: [
           // 主内容
-          PageView(
-            controller: _pageController,
-            onPageChanged: (index) {
-              setState(() {
-                _currentIndex = index;
-              });
-            },
-            children: pages,
+          Positioned.fill(
+            bottom: contentBottomInset,
+            child: PageView(
+              controller: _pageController,
+              onPageChanged: (index) {
+                setState(() {
+                  _currentIndex = index;
+                });
+              },
+              children: pages,
+            ),
           ),
           // 底部导航栏
           Positioned(
@@ -201,10 +209,12 @@ class _MainPageState extends State<MainPage> {
     final cornerRadius = 24.0;
     final horizontalPadding = 20.0;
     final bottomPadding = 10.0;
+    final bottomSafeArea = MediaQuery.paddingOf(context).bottom;
     final iconSize = 23.0;
     
-    final colorScheme = Theme.of(context).colorScheme;
-    final isDark = colorScheme.brightness == Brightness.dark;
+    final navBarColor = appProvider.currentNavBarColor;
+    final navBarIsDark =
+        ThemeData.estimateBrightnessForColor(navBarColor) == Brightness.dark;
     
     // 从配置获取不透明度
     final opacity = appProvider.navBarOpacity / 100.0;
@@ -216,25 +226,23 @@ class _MainPageState extends State<MainPage> {
     // 根据材质模式设置背景色
     Color bgColor;
     if (effectMode == 'solid') {
-      bgColor = isDark 
-        ? colorScheme.surface.withOpacity(opacity)
-        : colorScheme.surface.withOpacity(opacity);
+      bgColor = navBarColor.withOpacity(opacity);
     } else if (effectMode == 'frosted') {
-      bgColor = isDark 
-        ? colorScheme.surface.withOpacity(0.7 * opacity)
-        : colorScheme.surface.withOpacity(0.85 * opacity);
+      bgColor = navBarColor.withOpacity(
+        (navBarIsDark ? 0.7 : 0.85) * opacity,
+      );
     } else {
       // glass
-      bgColor = isDark 
-        ? colorScheme.surface.withOpacity(0.85 * opacity)
-        : colorScheme.surface.withOpacity(0.9 * opacity);
+      bgColor = navBarColor.withOpacity(
+        (navBarIsDark ? 0.85 : 0.9) * opacity,
+      );
     }
     
     return Padding(
       padding: EdgeInsets.only(
         left: horizontalPadding,
         right: horizontalPadding,
-        bottom: bottomPadding,
+        bottom: bottomPadding + bottomSafeArea,
       ),
       child: Material(
         elevation: 12,
@@ -255,7 +263,7 @@ class _MainPageState extends State<MainPage> {
                 border: borderColor != null 
                   ? Border.all(color: borderColor, width: 1)
                   : Border.all(
-                      color: isDark 
+                      color: navBarIsDark
                         ? Colors.white.withOpacity(0.08)
                         : Colors.black.withOpacity(0.04),
                       width: 1,
@@ -280,6 +288,7 @@ class _MainPageState extends State<MainPage> {
   Widget _buildNavItem(int index, IconData icon, IconData activeIcon, double iconSize, String label) {
     final isSelected = _currentIndex == index;
     final colorScheme = Theme.of(context).colorScheme;
+    final navBarColor = context.read<AppProvider>().currentNavBarColor;
     
     return Expanded(
       child: Tooltip(
@@ -302,8 +311,8 @@ class _MainPageState extends State<MainPage> {
               isSelected ? activeIcon : icon,
               size: iconSize,
               color: isSelected 
-                ? colorScheme.primary
-                : colorScheme.onSurfaceVariant,
+                ? colorScheme.secondary
+                : _navBarContentColor(navBarColor),
             ),
           ),
         ),
@@ -320,8 +329,7 @@ class _MainPageState extends State<MainPage> {
       const ProfilePage(),
     ];
 
-    final colorScheme = Theme.of(context).colorScheme;
-    final isDark = colorScheme.brightness == Brightness.dark;
+    final navBarColor = appProvider.currentNavBarColor;
     final opacity = appProvider.navBarOpacity / 100.0;
     final borderColor = appProvider.navBarBorderColor != null 
       ? Color(appProvider.navBarBorderColor!).withOpacity(appProvider.navBarBorderAlpha / 100.0)
@@ -339,9 +347,7 @@ class _MainPageState extends State<MainPage> {
       ),
       bottomNavigationBar: Container(
         decoration: BoxDecoration(
-          color: isDark 
-            ? colorScheme.surface.withOpacity(opacity)
-            : colorScheme.surface.withOpacity(opacity),
+          color: navBarColor.withOpacity(opacity),
           border: borderColor != null 
             ? Border(top: BorderSide(color: borderColor, width: 1))
             : Border(
@@ -388,8 +394,10 @@ class _MainPageState extends State<MainPage> {
                 isSelected ? activeIcon : icon,
                 size: 24,
                 color: isSelected 
-                  ? colorScheme.primary
-                  : colorScheme.onSurfaceVariant,
+                  ? colorScheme.secondary
+                  : _navBarContentColor(
+                      context.read<AppProvider>().currentNavBarColor,
+                    ),
               ),
               const SizedBox(height: 4),
               Text(
@@ -397,8 +405,10 @@ class _MainPageState extends State<MainPage> {
                 style: TextStyle(
                   fontSize: 12,
                   color: isSelected 
-                    ? colorScheme.primary
-                    : colorScheme.onSurfaceVariant,
+                    ? colorScheme.secondary
+                    : _navBarContentColor(
+                        context.read<AppProvider>().currentNavBarColor,
+                      ),
                   fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
                 ),
               ),
@@ -562,6 +572,12 @@ class _MainPageState extends State<MainPage> {
     );
   }
 
+  Color _navBarContentColor(Color background) {
+    return ThemeData.estimateBrightnessForColor(background) == Brightness.dark
+        ? Colors.white70
+        : Colors.black54;
+  }
+
   Widget _buildSidebarItem(int index, IconData icon, String label) {
     final isSelected = _currentIndex == index && index < 4;
     final colorScheme = Theme.of(context).colorScheme;
@@ -571,17 +587,19 @@ class _MainPageState extends State<MainPage> {
       child: ListTile(
         leading: Icon(
           icon,
-          color: isSelected ? colorScheme.primary : colorScheme.onSurfaceVariant,
+          color: isSelected
+              ? colorScheme.secondary
+              : colorScheme.onSurfaceVariant,
         ),
         title: Text(
           label,
           style: TextStyle(
-            color: isSelected ? colorScheme.primary : colorScheme.onSurface,
+            color: isSelected ? colorScheme.secondary : colorScheme.onSurface,
             fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
           ),
         ),
         selected: isSelected,
-        selectedTileColor: colorScheme.primaryContainer.withOpacity(0.3),
+        selectedTileColor: colorScheme.secondary.withOpacity(0.12),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(12),
         ),
