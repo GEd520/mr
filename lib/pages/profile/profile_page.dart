@@ -123,7 +123,21 @@ class _ProfilePageState extends State<ProfilePage> {
                       return _buildListItem(
                         leading: const _LegacyThemeIcon(),
                         title: '主题模式',
-                        subtitle: _getThemeModeText(provider.themeMode),
+                        subtitle: '选择主题模式',
+                        trailing: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: const Color(0x1A0A84FF),
+                            borderRadius: BorderRadius.circular(9),
+                          ),
+                          child: Text(
+                            _getThemeModeText(provider.themeMode),
+                            style: const TextStyle(
+                              fontSize: 14,
+                              color: Color(0xDE000000),
+                            ),
+                          ),
+                        ),
                         onTap: () => _showThemeDialog(provider),
                       );
                     },
@@ -288,6 +302,7 @@ class _ProfilePageState extends State<ProfilePage> {
     Widget? leading,
     required String title,
     String? subtitle,
+    Widget? trailing,
     VoidCallback? onTap,
   }) {
     final theme = Theme.of(context);
@@ -323,6 +338,7 @@ class _ProfilePageState extends State<ProfilePage> {
                     colorScheme: colorScheme,
                   ),
                 ),
+                if (trailing != null) trailing,
               ],
             ),
           ),
