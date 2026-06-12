@@ -824,20 +824,8 @@ class _ReadRecordPageState extends State<ReadRecordPage> {
           'bookUrl': record.bookUrl,
         });
       },
-      child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-        decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surface,
-          borderRadius: BorderRadius.circular(12),
-          border: Theme.of(context).brightness == Brightness.dark
-              ? Border.all(
-                  color: Theme.of(context).colorScheme.outline.withOpacity(0.42),
-                  width: 1,
-                )
-              : null,
-        ),
-        child: Padding(
-          padding: const EdgeInsets.all(12),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           child: Row(
             children: [
               ClipRRect(
@@ -917,11 +905,13 @@ class _ReadRecordPageState extends State<ReadRecordPage> {
                 ),
               ),
               // 三个点菜单
-              PopupMenuButton<String>(
-                icon: Icon(Icons.more_vert, color: Theme.of(context).colorScheme.onSurfaceVariant),
-                onSelected: (value) {
-                  if (value == 'delete') {
-                    _deleteRecord(record);
+            PopupMenuButton<String>(
+              icon: Icon(Icons.more_vert, color: Theme.of(context).colorScheme.onSurfaceVariant),
+              position: PopupMenuPosition.under,
+              offset: const Offset(-8, 4),
+              onSelected: (value) {
+                if (value == 'delete') {
+                  _deleteRecord(record);
                   } else if (value == 'merge') {
                     _showMergeDialog(record);
                   }
@@ -951,7 +941,6 @@ class _ReadRecordPageState extends State<ReadRecordPage> {
               ),
             ],
           ),
-        ),
       ),
     );
 
@@ -1058,20 +1047,8 @@ class _ReadRecordPageState extends State<ReadRecordPage> {
         });
       },
       onLongPress: () => _deleteRecord(record),
-      child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-        decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surface,
-          borderRadius: BorderRadius.circular(12),
-          border: Theme.of(context).brightness == Brightness.dark
-              ? Border.all(
-                  color: Theme.of(context).colorScheme.outline.withOpacity(0.42),
-                  width: 1,
-                )
-              : null,
-        ),
-        child: Padding(
-          padding: const EdgeInsets.all(12),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           child: Row(
             children: [
               ClipRRect(
@@ -1161,7 +1138,6 @@ class _ReadRecordPageState extends State<ReadRecordPage> {
                 ),
             ],
           ),
-        ),
       ),
     );
 
