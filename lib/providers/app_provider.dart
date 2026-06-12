@@ -811,7 +811,7 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (layoutMode != null) _navBarLayoutMode = layoutMode;
     if (effectMode != null) _navBarEffectMode = effectMode;
     if (opacity != null) _navBarOpacity = opacity;
-    if (borderColor != null) _navBarBorderColor = borderColor;
+    if (borderColor != null) _navBarBorderColor = borderColor == 0 ? null : borderColor;
     if (borderAlpha != null) _navBarBorderAlpha = borderAlpha;
     if (wallpaperPath != null) _navBarWallpaperPath = wallpaperPath.isEmpty ? null : wallpaperPath;
     if (sidebarBackgroundPath != null) _navBarSidebarBackgroundPath = sidebarBackgroundPath.isEmpty ? null : sidebarBackgroundPath;
@@ -821,7 +821,13 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (layoutMode != null) await prefs.setString('navBarLayoutMode', layoutMode);
     if (effectMode != null) await prefs.setString('navBarEffectMode', effectMode);
     if (opacity != null) await prefs.setInt('navBarOpacity', opacity);
-    if (borderColor != null) await prefs.setInt('navBarBorderColor', borderColor);
+    if (borderColor != null) {
+      if (borderColor == 0) {
+        await prefs.remove('navBarBorderColor');
+      } else {
+        await prefs.setInt('navBarBorderColor', borderColor);
+      }
+    }
     if (borderAlpha != null) await prefs.setInt('navBarBorderAlpha', borderAlpha);
     if (wallpaperPath != null) {
       if (wallpaperPath.isEmpty) {
