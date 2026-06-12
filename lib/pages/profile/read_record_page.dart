@@ -457,8 +457,16 @@ class _ReadRecordPageState extends State<ReadRecordPage> {
     List<ReadRecord> filteredRecords = _allRecords;
     List<ReadRecordSummary> filteredSummaries = _summaryRecords;
     
+    if (widget.bookUrl?.isNotEmpty == true) {
+      filteredRecords =
+          filteredRecords.where((r) => r.bookUrl == widget.bookUrl).toList();
+      filteredSummaries = filteredSummaries
+          .where((r) => r.bookUrl == widget.bookUrl)
+          .toList();
+    }
+    
     if (_selectedDate != null) {
-      filteredRecords = _allRecords.where((r) {
+      filteredRecords = filteredRecords.where((r) {
         final date = DateTime.fromMillisecondsSinceEpoch(r.startTime * 1000);
         final dateKey = DateTime(date.year, date.month, date.day);
         return dateKey == _selectedDate;
@@ -529,8 +537,16 @@ class _ReadRecordPageState extends State<ReadRecordPage> {
   }
 
   Widget _buildSummaryCard() {
-    final hours = _totalReadTime ~/ 3600;
-    final minutes = (_totalReadTime % 3600) ~/ 60;
+    final summaryRecords = widget.bookUrl?.isNotEmpty == true
+        ? _summaryRecords.where((r) => r.bookUrl == widget.bookUrl).toList()
+        : _summaryRecords;
+    final totalReadTime = widget.bookUrl?.isNotEmpty == true
+        ? _allRecords
+            .where((r) => r.bookUrl == widget.bookUrl)
+            .fold<int>(0, (sum, record) => sum + record.readTime)
+        : _totalReadTime;
+    final hours = totalReadTime ~/ 3600;
+    final minutes = (totalReadTime % 3600) ~/ 60;
     final timeString = hours > 0 ? '$hours小时$minutes分钟' : '$minutes分钟';
     
     return Container(
@@ -567,7 +583,7 @@ class _ReadRecordPageState extends State<ReadRecordPage> {
                           ),
                         ),
                         TextSpan(
-                          text: '${_summaryRecords.length}',
+                          text: '${summaryRecords.length}',
                           style: TextStyle(
                             fontSize: 28,
                             fontWeight: FontWeight.bold,
@@ -595,15 +611,15 @@ class _ReadRecordPageState extends State<ReadRecordPage> {
                 ],
               ),
             ),
-            if (_summaryRecords.isNotEmpty) _buildBookStack(),
+            if (summaryRecords.isNotEmpty) _buildBookStack(summaryRecords),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildBookStack() {
-    final displayRecords = _summaryRecords.take(3).toList();
+  Widget _buildBookStack(List<ReadRecordSummary> records) {
+    final displayRecords = records.take(3).toList();
     const double coverWidth = 48;
     const double coverHeight = 72;
     const double offsetStep = 12;

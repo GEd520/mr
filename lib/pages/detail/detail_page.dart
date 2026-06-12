@@ -7,6 +7,7 @@ import 'package:flutter_html/flutter_html.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:provider/provider.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../models/book.dart';
 import '../../models/book_source.dart';
 import '../../models/chapter.dart';
@@ -49,7 +50,16 @@ class _DetailPageState extends State<DetailPage> {
   @override
   void initState() {
     super.initState();
+    _loadDisplayPrefs();
     _loadData();
+  }
+
+  Future<void> _loadDisplayPrefs() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    setState(() {
+      _showReadRecord = prefs.getBool('bookInfoShowReadRecord') ?? true;
+    });
   }
 
   Future<void> _loadData() async {
@@ -618,7 +628,7 @@ class _DetailPageState extends State<DetailPage> {
             ),
           if (_book!.latestChapterTitle.isNotEmpty) const SizedBox(height: 8),
           // 阅读记录
-          if (_book!.durChapterIndex > 0)
+          if (_showReadRecord && _book!.durChapterIndex > 0)
             _buildInfoRow(
               icon: Icons.history,
               label: '进度',
@@ -967,6 +977,13 @@ class _DetailPageState extends State<DetailPage> {
   }
 
   void _showReadRecordDialog() {
+    if (_book == null) return;
+    Navigator.pushNamed(
+      context,
+      AppRoutes.readRecord,
+      arguments: {'bookUrl': _book!.bookUrl},
+    );
+    return;
     showModalBottomSheet(
       context: context,
       builder: (context) => Container(
@@ -1396,10 +1413,30 @@ class _DetailPageState extends State<DetailPage> {
     );
   }
 
-  void _toggleBookshelf() {
+  Future<void> _toggleBookshelf() async {
     if (_book == null) return;
     final provider = context.read<BookshelfProvider>();
     if (_isInBookshelf) {
+      if (_book!.deleteAlert ?? false) {
+        final confirmed = await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: const Text('确认移除'),
+            content: Text('确定从书架移除《${_book!.displayName}》吗？'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('取消'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, true),
+                child: const Text('确定'),
+              ),
+            ],
+          ),
+        );
+        if (confirmed != true) return;
+      }
       provider.removeFromBookshelf(_book!.bookUrl);
     } else {
       provider.addToBookshelf(_book!);
@@ -1461,9 +1498,12 @@ class _DetailPageState extends State<DetailPage> {
 
   void _openChapter(Chapter chapter) {
     if (chapter.isVolume) return;
+    final routeName = _book?.mediaType == MediaType.comic
+        ? AppRoutes.comicReader
+        : AppRoutes.novelReader;
     Navigator.pushNamed(
       context,
-      AppRoutes.novelReader,
+      routeName,
       arguments: {
         'bookUrl': widget.bookUrl,
         'chapterIndex': chapter.index,
@@ -1678,10 +1718,12 @@ class _DetailPageState extends State<DetailPage> {
     );
   }
 
-  void _toggleShowReadRecord() {
+  Future<void> _toggleShowReadRecord() async {
+    final prefs = await SharedPreferences.getInstance();
     setState(() {
       _showReadRecord = !_showReadRecord;
     });
+    await prefs.setBool('bookInfoShowReadRecord', _showReadRecord);
   }
 
   void _showCustomButton() async {
