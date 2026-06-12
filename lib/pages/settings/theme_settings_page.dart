@@ -3202,6 +3202,7 @@ class _NavigationBarManagePageState extends State<NavigationBarManagePage> {
 
   void _editConfig(NavigationBarConfig? existing) {
     final isEdit = existing != null;
+    final wasActive = isEdit && existing.id == _activeConfigId;
     final config = existing ?? NavigationBarConfig(
       id: 'custom_${DateTime.now().millisecondsSinceEpoch}',
       name: _getNextConfigName(),
@@ -3224,6 +3225,10 @@ class _NavigationBarManagePageState extends State<NavigationBarManagePage> {
             setState(() => _configs.add(updatedConfig));
           }
           await _saveConfigs();
+          // 如果编辑的是当前已应用的底栏包，保存后自动重新应用
+          if (wasActive) {
+            _applyConfig(updatedConfig);
+          }
         },
       ),
     );

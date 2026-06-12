@@ -350,12 +350,7 @@ class _MainPageState extends State<MainPage> {
           color: navBarColor.withOpacity(opacity),
           border: borderColor != null 
             ? Border(top: BorderSide(color: borderColor, width: 1))
-            : Border(
-                top: BorderSide(
-                  color: Theme.of(context).dividerColor.withOpacity(0.2),
-                  width: 0.5,
-                ),
-              ),
+            : null,
         ),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceEvenly,
