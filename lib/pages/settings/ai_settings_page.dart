@@ -215,7 +215,8 @@ class _AiSettingsPageState extends State<AiSettingsPage> {
     required ValueChanged<bool> onChanged,
   }) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final accentColor = Theme.of(context).colorScheme.primary;
+    // 使用强调色（secondary）而不是主色（primary），参考原版 SwitchPreference
+    final accentColor = Theme.of(context).colorScheme.secondary;
 
     return InkWell(
       onTap: () => onChanged(!value),

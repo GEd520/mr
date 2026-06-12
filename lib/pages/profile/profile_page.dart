@@ -43,10 +43,9 @@ class _ProfilePageState extends State<ProfilePage> {
   @override
   Widget build(BuildContext context) {
     final primaryColor = Theme.of(context).colorScheme.primary;
-    final primaryForeground =
-        ThemeData.estimateBrightnessForColor(primaryColor) == Brightness.dark
-        ? Colors.white
-        : Colors.black87;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    // 参考 legado-main: 日间主题标题使用黑色，夜间主题标题使用白色
+    final primaryForeground = isDark ? Colors.white : Colors.black;
     return Scaffold(
       backgroundColor: Colors.transparent,
       body: Column(

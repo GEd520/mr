@@ -21,6 +21,9 @@ class _MiniprogramPageState extends State<MiniprogramPage> {
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    // 参考 legado-main: 日间主题标题使用黑色，夜间主题标题使用白色
+    final appBarForeground = isDark ? Colors.white : Colors.black;
     return Scaffold(
       body: Column(
         children: [
@@ -46,11 +49,11 @@ class _MiniprogramPageState extends State<MiniprogramPage> {
                             controller: _searchController,
                             decoration: InputDecoration(
                               hintText: '搜索订阅',
-                              hintStyle: const TextStyle(fontSize: 13),
-                              prefixIcon: const Icon(Icons.search, size: 16),
+                              hintStyle: TextStyle(fontSize: 13, color: appBarForeground.withValues(alpha: 0.7)),
+                              prefixIcon: Icon(Icons.search, size: 16, color: appBarForeground.withValues(alpha: 0.7)),
                               suffixIcon: _searchQuery.isNotEmpty
                                   ? IconButton(
-                                      icon: const Icon(Icons.clear, size: 16),
+                                      icon: Icon(Icons.clear, size: 16, color: appBarForeground.withValues(alpha: 0.7)),
                                       padding: EdgeInsets.zero,
                                       constraints: const BoxConstraints(),
                                       onPressed: () {
@@ -67,7 +70,7 @@ class _MiniprogramPageState extends State<MiniprogramPage> {
                               contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0),
                               isDense: true,
                             ),
-                            style: const TextStyle(fontSize: 13),
+                            style: TextStyle(fontSize: 13, color: appBarForeground),
                             onChanged: (value) {
                               setState(() {
                                 _searchQuery = value;
@@ -79,25 +82,25 @@ class _MiniprogramPageState extends State<MiniprogramPage> {
                       const SizedBox(width: 4),
                       // 历史记录
                       IconButton(
-                        icon: const Icon(Icons.history, size: 20, color: Colors.white),
+                        icon: Icon(Icons.history, size: 20, color: appBarForeground),
                         tooltip: '历史记录',
                         onPressed: () {},
                       ),
                       // 收藏分组
                       IconButton(
-                        icon: const Icon(Icons.folder_outlined, size: 20, color: Colors.white),
+                        icon: Icon(Icons.folder_outlined, size: 20, color: appBarForeground),
                         tooltip: '收藏分组',
                         onPressed: () {},
                       ),
                       // 设置
                       IconButton(
-                        icon: const Icon(Icons.settings, size: 20, color: Colors.white),
+                        icon: Icon(Icons.settings, size: 20, color: appBarForeground),
                         tooltip: '设置',
                         onPressed: () {},
                       ),
                       // 更多菜单
                       PopupMenuButton<String>(
-                        icon: const Icon(Icons.more_vert, size: 20, color: Colors.white),
+                        icon: Icon(Icons.more_vert, size: 20, color: appBarForeground),
                         tooltip: '更多',
                         offset: const Offset(0, 48),
                         onSelected: (value) {
@@ -106,9 +109,9 @@ class _MiniprogramPageState extends State<MiniprogramPage> {
                           }
                         },
                         itemBuilder: (context) => [
-                          const PopupMenuItem(
+                          PopupMenuItem(
                             value: 'add',
-                            child: Text('添加小程序'),
+                            child: Text('添加小程序', style: TextStyle(color: appBarForeground)),
                           ),
                         ],
                       ),

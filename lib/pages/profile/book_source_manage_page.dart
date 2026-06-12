@@ -1591,7 +1591,7 @@ class _BookSourceManagePageState extends State<BookSourceManagePage> {
       trailing: AndroidSwitch(
         value: source.enabled,
         onChanged: (value) => _toggleSourceEnabled(source),
-        accentColor: Theme.of(context).colorScheme.primary,
+        accentColor: Theme.of(context).colorScheme.secondary,
         isDark: Theme.of(context).brightness == Brightness.dark,
       ),
       onTap: () => _showSourceDetail(source),

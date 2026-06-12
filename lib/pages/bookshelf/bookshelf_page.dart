@@ -106,6 +106,9 @@ class _BookshelfPageState extends State<BookshelfPage> {
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    // 参考 legado-main: 日间主题标题使用黑色，夜间主题标题使用白色
+    final appBarForeground = isDark ? Colors.white : Colors.black;
     return Scaffold(
       body: Consumer<BookshelfProvider>(
         builder: (context, provider, child) {
@@ -153,8 +156,8 @@ class _BookshelfPageState extends State<BookshelfPage> {
                               fontSize: 14,
                               fontWeight: isSelected ? FontWeight.w500 : FontWeight.normal,
                               color: isSelected
-                                  ? Colors.white
-                                  : Colors.white70,
+                                  ? appBarForeground
+                                  : appBarForeground.withValues(alpha: 0.7),
                             ),
                           ),
                         ),
@@ -164,7 +167,7 @@ class _BookshelfPageState extends State<BookshelfPage> {
                       ),
                       // 搜索按钮
                       IconButton(
-                        icon: const Icon(Icons.search, color: Colors.white),
+                        icon: Icon(Icons.search, color: appBarForeground),
                         tooltip: '搜索',
                         onPressed: () {
                           Navigator.pushNamed(context, AppRoutes.search);
@@ -172,41 +175,41 @@ class _BookshelfPageState extends State<BookshelfPage> {
                       ),
                       // 更多菜单
                       PopupMenuButton<String>(
-                        icon: const Icon(Icons.more_vert, color: Colors.white),
+                        icon: Icon(Icons.more_vert, color: appBarForeground),
                         tooltip: '更多选项',
                         offset: const Offset(0, 48),
                         onSelected: (value) => _handleMenuSelection(value),
                         itemBuilder: (context) => [
-                          const PopupMenuItem(
+                          PopupMenuItem(
                             value: 'refresh',
                             height: 48,
                             child: Row(
                               children: [
-                                Icon(Icons.refresh, size: 20),
-                                SizedBox(width: 16),
-                                Text('更新目录'),
+                                Icon(Icons.refresh, size: 20, color: appBarForeground),
+                                const SizedBox(width: 16),
+                                Text('更新目录', style: TextStyle(color: appBarForeground)),
                               ],
                             ),
                           ),
-                          const PopupMenuItem(
+                          PopupMenuItem(
                             value: 'import_local',
                             height: 48,
                             child: Row(
                               children: [
-                                Icon(Icons.add, size: 20),
-                                SizedBox(width: 16),
-                                Text('添加本地'),
+                                Icon(Icons.add, size: 20, color: appBarForeground),
+                                const SizedBox(width: 16),
+                                Text('添加本地', style: TextStyle(color: appBarForeground)),
                               ],
                             ),
                           ),
-                          const PopupMenuItem(
+                          PopupMenuItem(
                             value: 'import_remote',
                             height: 48,
                             child: Row(
                               children: [
-                                Icon(Icons.add, size: 20),
-                                SizedBox(width: 16),
-                                Text('远程书籍'),
+                                Icon(Icons.add, size: 20, color: appBarForeground),
+                                const SizedBox(width: 16),
+                                Text('远程书籍', style: TextStyle(color: appBarForeground)),
                               ],
                             ),
                           ),

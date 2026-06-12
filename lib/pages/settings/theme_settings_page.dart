@@ -48,7 +48,6 @@ class _ThemeSettingsPageState extends State<ThemeSettingsPage> {
           IconButton(
             icon: Icon(
               isDark ? Icons.light_mode_outlined : Icons.dark_mode_outlined,
-              color: Colors.white,
             ),
             tooltip: isDark ? '切换到日间模式' : '切换到夜间模式',
             onPressed: () {
@@ -168,7 +167,8 @@ class _ThemeSettingsPageState extends State<ThemeSettingsPage> {
 
   Widget _buildSwitchItem({required String title, String? subtitle, required bool value, required ValueChanged<bool> onChanged}) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final accentColor = Theme.of(context).colorScheme.primary;
+    // 使用强调色（secondary）而不是主色（primary），参考原版 SwitchPreference
+    final accentColor = Theme.of(context).colorScheme.secondary;
 
     return InkWell(
       onTap: () => onChanged(!value),
@@ -4511,7 +4511,7 @@ class _BookInfoManagePageState extends State<BookInfoManagePage> {
               AndroidSwitch(
                 value: item.visible,
                 onChanged: (v) => setState(() => item.visible = v),
-                accentColor: Theme.of(context).colorScheme.primary,
+                accentColor: Theme.of(context).colorScheme.secondary,
                 isDark: Theme.of(context).brightness == Brightness.dark,
               ),
               const Icon(Icons.drag_handle),

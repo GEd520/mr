@@ -212,9 +212,9 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
       scaffoldBackgroundColor: scaffoldBgColor,
       appBarTheme: AppBarTheme(
         backgroundColor: _dayPrimaryColor,
-        foregroundColor: _foregroundFor(_dayPrimaryColor),
+        foregroundColor: Colors.black, // 日间主题标题使用黑色（参考 legado-main ThemeOverlay.AppCompat.Light）
         titleTextStyle: TextStyle(
-          color: _foregroundFor(_dayPrimaryColor),
+          color: Colors.black,
           fontSize: 20,
           fontWeight: FontWeight.normal,
           fontFamily: _dayTitleFontFamily ?? _dayUiFontFamily,
@@ -313,9 +313,9 @@ class AppProvider extends ChangeNotifier with WidgetsBindingObserver {
       scaffoldBackgroundColor: scaffoldBgColor,
       appBarTheme: AppBarTheme(
         backgroundColor: _nightPrimaryColor,
-        foregroundColor: _foregroundFor(_nightPrimaryColor),
+        foregroundColor: Colors.white, // 夜间主题标题使用白色（参考 legado-main ThemeOverlay.AppCompat.Dark）
         titleTextStyle: TextStyle(
-          color: _foregroundFor(_nightPrimaryColor),
+          color: Colors.white,
           fontSize: 20,
           fontWeight: FontWeight.normal,
           fontFamily: _nightTitleFontFamily ?? _nightUiFontFamily,
