@@ -235,6 +235,66 @@ class NativeChannel {
     }
   }
 
+  /// SHA1 哈希
+  Future<String?> sha1(String data) async {
+    try {
+      final result = await _channel.invokeMethod<String>('sha1', {'data': data});
+      return result;
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  /// SHA256 哈希
+  Future<String?> sha256(String data) async {
+    try {
+      final result = await _channel.invokeMethod<String>('sha256', {'data': data});
+      return result;
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  /// HMAC-SHA256
+  Future<String?> hmacSHA256(String data, String key) async {
+    try {
+      final result = await _channel.invokeMethod<String>('hmacSHA256', {
+        'data': data,
+        'key': key,
+      });
+      return result;
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  /// HTTP HEAD 请求
+  Future<Map<String, String>?> httpHead(String url, {Map<String, String>? headers}) async {
+    try {
+      final result = await _channel.invokeMethod<Map>('httpHead', {
+        'url': url,
+        'headers': headers,
+      });
+      if (result == null) return null;
+      return result.map((k, v) => MapEntry(k, v?.toString() ?? ''));
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  /// 获取 Cookie
+  Future<String?> getCookie(String url, {String? key}) async {
+    try {
+      final result = await _channel.invokeMethod<String>('getCookie', {
+        'url': url,
+        'key': key,
+      });
+      return result;
+    } on PlatformException {
+      return null;
+    }
+  }
+
   /// Base64 编码
   Future<String?> base64Encode(String data) async {
     try {
@@ -384,14 +444,26 @@ class NativeChannel {
     String content,
     String rule, {
     String? baseUrl,
+    String? redirectUrl,
     bool isUrl = false,
+    bool unescape = true,
+    Map<String, dynamic>? sourceInfo,
+    Map<String, dynamic>? bookInfo,
+    Map<String, dynamic>? chapterInfo,
+    String? nextChapterUrl,
   }) async {
     try {
       return await _channel.invokeMethod<String>('analyzeRuleGetString', {
         'content': content,
         'rule': rule,
         'baseUrl': baseUrl,
+        'redirectUrl': redirectUrl,
         'isUrl': isUrl,
+        'unescape': unescape,
+        'sourceInfo': sourceInfo,
+        'bookInfo': bookInfo,
+        'chapterInfo': chapterInfo,
+        'nextChapterUrl': nextChapterUrl,
       });
     } on PlatformException {
       return null;
@@ -403,14 +475,24 @@ class NativeChannel {
     String content,
     String rule, {
     String? baseUrl,
+    String? redirectUrl,
     bool isUrl = false,
+    Map<String, dynamic>? sourceInfo,
+    Map<String, dynamic>? bookInfo,
+    Map<String, dynamic>? chapterInfo,
+    String? nextChapterUrl,
   }) async {
     try {
       final result = await _channel.invokeMethod<Map>('analyzeRuleGetStringList', {
         'content': content,
         'rule': rule,
         'baseUrl': baseUrl,
+        'redirectUrl': redirectUrl,
         'isUrl': isUrl,
+        'sourceInfo': sourceInfo,
+        'bookInfo': bookInfo,
+        'chapterInfo': chapterInfo,
+        'nextChapterUrl': nextChapterUrl,
       });
       if (result == null) return null;
       // 解析 JS 日志，写入 AppLogger
@@ -433,12 +515,22 @@ class NativeChannel {
     String content,
     String rule, {
     String? baseUrl,
+    String? redirectUrl,
+    Map<String, dynamic>? sourceInfo,
+    Map<String, dynamic>? bookInfo,
+    Map<String, dynamic>? chapterInfo,
+    String? nextChapterUrl,
   }) async {
     try {
       final result = await _channel.invokeMethod<List>('analyzeRuleGetElements', {
         'content': content,
         'rule': rule,
         'baseUrl': baseUrl,
+        'redirectUrl': redirectUrl,
+        'sourceInfo': sourceInfo,
+        'bookInfo': bookInfo,
+        'chapterInfo': chapterInfo,
+        'nextChapterUrl': nextChapterUrl,
       });
       return result?.cast<String>();
     } on PlatformException {

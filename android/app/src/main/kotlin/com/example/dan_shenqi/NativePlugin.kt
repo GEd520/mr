@@ -419,6 +419,47 @@ class NativePlugin(private val context: Context) {
     }
 
     /**
+     * 把 JS 端传给 java.log() 的参数转成可读字符串。
+     * - NativeArray：逐元素递归 stringify，包成 [a, b, c]
+     * - Scriptable（普通对象）：尽量用 JSON.stringify，失败 fallback toString
+     * - 其他：ScriptRuntime.toString（数字/布尔/字符串等都正常）
+     * - null/undefined：显式输出 "null"/"undefined"
+     */
+    private fun stringifyJsArg(cx: RhinoContext, scope: Scriptable, arg: Any?): String {
+        if (arg == null) return "null"
+        if (arg === org.mozilla.javascript.Undefined.instance) return "undefined"
+        return try {
+            when (arg) {
+                is org.mozilla.javascript.NativeArray -> {
+                    val sb = StringBuilder("[")
+                    val len = arg.length.toInt()
+                    for (i in 0 until len) {
+                        if (i > 0) sb.append(", ")
+                        sb.append(stringifyJsArg(cx, scope, arg.get(i, arg)))
+                    }
+                    sb.append("]")
+                    sb.toString()
+                }
+                is org.mozilla.javascript.NativeJavaObject -> {
+                    val raw = arg.unwrap()
+                    if (raw is List<*>) {
+                        raw.joinToString(prefix = "[", postfix = "]") { it?.toString() ?: "null" }
+                    } else raw?.toString() ?: "null"
+                }
+                is org.mozilla.javascript.Scriptable -> {
+                    // 用 Rhino 自带 JSON.stringify
+                    runCatching {
+                        org.mozilla.javascript.NativeJSON.stringify(cx, scope, arg, null, null).toString()
+                    }.getOrElse { org.mozilla.javascript.ScriptRuntime.toString(arg) }
+                }
+                else -> org.mozilla.javascript.ScriptRuntime.toString(arg)
+            }
+        } catch (_: Exception) {
+            arg.toString()
+        }
+    }
+
+    /**
      * 注入完整的 legado 风格 java 桥接对象到 Rhino 作用域
      * 借鉴 legado 的 JsExtensions，直接调用原生 JSoup 进行 HTML 解析
      */
@@ -434,7 +475,10 @@ class NativePlugin(private val context: Context) {
         val javaLogFn = object : BaseFunction() {
             override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any?>): Any {
                 val sb = StringBuilder()
-                for (arg in args) { if (sb.isNotEmpty()) sb.append(" "); sb.append(arg?.toString() ?: "null") }
+                for (arg in args) {
+                    if (sb.isNotEmpty()) sb.append(" ")
+                    sb.append(stringifyJsArg(cx, scope, arg))
+                }
                 val msg = sb.toString()
                 Log.d("RhinoJava", msg)
                 // 同步写入 JS 日志缓存，供 Dart 端 AppLogger 显示
@@ -1503,9 +1547,28 @@ class NativePlugin(private val context: Context) {
     /**
      * 构建一个带 Rhino jsEvaluator 的 AnalyzeRule 实例
      * Dart 端只要传 content + baseUrl + rule，即可调用完整 legado 解析能力
+     * 对齐 legado AnalyzeRule.evalJS 的绑定变量：src/result/baseUrl/source/book/chapter/nextChapterUrl
      */
-    private fun buildAnalyzeRule(content: String, baseUrl: String?): com.example.dan_shenqi.analyzeRule.AnalyzeRule {
+    private fun buildAnalyzeRule(
+        content: String,
+        baseUrl: String?,
+        redirectUrl: String? = null,
+        sourceInfo: Map<String, Any?>? = null,
+        bookInfo: Map<String, Any?>? = null,
+        chapterInfo: Map<String, Any?>? = null,
+        nextChapterUrl: String? = null,
+    ): com.example.dan_shenqi.analyzeRule.AnalyzeRule {
         val rule = com.example.dan_shenqi.analyzeRule.AnalyzeRule(content = content, baseUrl = baseUrl)
+        // 对齐 legado：setRedirectUrl 设置 HTTP 重定向后的实际 URL，
+        // 用于 getAbsoluteURL 拼接相对路径时作为基准。
+        if (!redirectUrl.isNullOrEmpty()) {
+            rule.setRedirectUrl(redirectUrl)
+        }
+        // 对齐 legado AnalyzeRule：设置 source/book/chapter 上下文
+        if (sourceInfo != null) rule.setSource(sourceInfo)
+        if (bookInfo != null) rule.setBook(bookInfo)
+        if (chapterInfo != null) rule.setChapter(chapterInfo)
+
         rule.jsEvaluator = { jsStr, res ->
             try {
                 val cx = RhinoContext.enter()
@@ -1513,7 +1576,6 @@ class NativePlugin(private val context: Context) {
                     val scope = cx.initStandardObjects()
                     // 关键修复：Java List 在 Rhino 中没有 .length 属性！
                     // 必须转成 NativeArray，这样 JS 中 result.length / result[0] 才能正常工作
-                    // 否则 ArrayList 被包装为 NativeJavaObject，result.length = undefined
                     val jsResult = when (res) {
                         is List<*> -> {
                             val arr = cx.newArray(scope, res.size)
@@ -1524,13 +1586,24 @@ class NativePlugin(private val context: Context) {
                         }
                         else -> res ?: content
                     }
+                    // ===== 对齐 legado AnalyzeRule.evalJS 的绑定变量 =====
                     ScriptableObject.putProperty(scope, "result", jsResult)
                     ScriptableObject.putProperty(scope, "baseUrl", baseUrl ?: "")
-                    // 关键修复：用 injectJavaBridge 替换 JsJavaBridge！
-                    // JsJavaBridge 通过 Context.javaToJS() 包装为 NativeJavaObject，
-                    // 当 JS 调用 java.log(NativeArray) 时，Rhino 的 Java 方法解析会失败，
-                    // 导致整个 JS eval 抛异常被 catch 吞掉返回 null。
-                    // injectJavaBridge 使用 BaseFunction 实现，直接处理参数，更可靠。
+                    // src = content（HTML原文），legado JS 规则常用 src.match(...)
+                    ScriptableObject.putProperty(scope, "src", content)
+                    // source/book/chapter 上下文
+                    if (sourceInfo != null) ScriptableObject.putProperty(scope, "source", sourceInfo)
+                    if (bookInfo != null) ScriptableObject.putProperty(scope, "book", bookInfo)
+                    if (chapterInfo != null) {
+                        ScriptableObject.putProperty(scope, "chapter", chapterInfo)
+                        // title = chapter.title，legado JS 常用
+                        val title = chapterInfo["title"] as? String
+                        if (title != null) ScriptableObject.putProperty(scope, "title", title)
+                    }
+                    if (!nextChapterUrl.isNullOrEmpty()) {
+                        ScriptableObject.putProperty(scope, "nextChapterUrl", nextChapterUrl)
+                    }
+                    // injectJavaBridge：java.log/get/post
                     injectJavaBridge(cx, scope, baseUrl ?: "")
                     val evalResult = cx.evaluateString(scope, jsStr, "<jsRule>", 1, null)
                     Log.d(TAG, "JS eval: rule=[${jsStr.take(60)}...] resultType=${evalResult?.javaClass?.simpleName} resultPreview=${when(evalResult) { is List<*> -> "List(${evalResult.size})"; is org.mozilla.javascript.NativeArray -> "Array(${evalResult.length})"; else -> evalResult?.toString()?.take(80) }}")
@@ -1579,14 +1652,23 @@ class NativePlugin(private val context: Context) {
         val content = call.argument<String>("content") ?: ""
         val rule = call.argument<String>("rule") ?: ""
         val baseUrl = call.argument<String>("baseUrl")
+        val redirectUrl = call.argument<String>("redirectUrl")
         val isUrl = call.argument<Boolean>("isUrl") ?: false
+        val unescape = call.argument<Boolean>("unescape") ?: true
+        val sourceInfo = call.argument<Map<String, Any?>>("sourceInfo")
+        val bookInfo = call.argument<Map<String, Any?>>("bookInfo")
+        val chapterInfo = call.argument<Map<String, Any?>>("chapterInfo")
+        val nextChapterUrl = call.argument<String>("nextChapterUrl")
         if (rule.isEmpty()) {
             result.success(content)
             return
         }
         pluginScope.launch {
             val r: String = try {
-                val ret = buildAnalyzeRule(content, baseUrl).getString(rule, isUrl = isUrl)
+                val ret = buildAnalyzeRule(content, baseUrl, redirectUrl,
+                    sourceInfo = sourceInfo, bookInfo = bookInfo, chapterInfo = chapterInfo,
+                    nextChapterUrl = nextChapterUrl
+                ).getString(rule, isUrl = isUrl, unescape = unescape)
                 // 强保证：必须返回 String，避免 MethodChannel 类型错误
                 ret as? String ?: ret.toString()
             } catch (e: Throwable) {
@@ -1602,7 +1684,12 @@ class NativePlugin(private val context: Context) {
         val content = call.argument<String>("content") ?: ""
         val rule = call.argument<String>("rule") ?: ""
         val baseUrl = call.argument<String>("baseUrl")
+        val redirectUrl = call.argument<String>("redirectUrl")
         val isUrl = call.argument<Boolean>("isUrl") ?: false
+        val sourceInfo = call.argument<Map<String, Any?>>("sourceInfo")
+        val bookInfo = call.argument<Map<String, Any?>>("bookInfo")
+        val chapterInfo = call.argument<Map<String, Any?>>("chapterInfo")
+        val nextChapterUrl = call.argument<String>("nextChapterUrl")
         if (rule.isEmpty()) {
             result.success(mapOf("data" to emptyList<String>(), "logs" to emptyList<String>()))
             return
@@ -1611,7 +1698,10 @@ class NativePlugin(private val context: Context) {
             // 初始化当前线程的 JS 日志缓存
             jsLogBuffer.set(ArrayList())
             val r: List<String> = try {
-                val analyzeRule = buildAnalyzeRule(content, baseUrl)
+                val analyzeRule = buildAnalyzeRule(content, baseUrl, redirectUrl,
+                    sourceInfo = sourceInfo, bookInfo = bookInfo, chapterInfo = chapterInfo,
+                    nextChapterUrl = nextChapterUrl
+                )
                 val ret = analyzeRule.getStringList(rule, isUrl = isUrl)
                 // 诊断日志：规则提取结果
                 if (ret == null || ret.isEmpty()) {
@@ -1640,13 +1730,21 @@ class NativePlugin(private val context: Context) {
         val content = call.argument<String>("content") ?: ""
         val rule = call.argument<String>("rule") ?: ""
         val baseUrl = call.argument<String>("baseUrl")
+        val redirectUrl = call.argument<String>("redirectUrl")
+        val sourceInfo = call.argument<Map<String, Any?>>("sourceInfo")
+        val bookInfo = call.argument<Map<String, Any?>>("bookInfo")
+        val chapterInfo = call.argument<Map<String, Any?>>("chapterInfo")
+        val nextChapterUrl = call.argument<String>("nextChapterUrl")
         if (rule.isEmpty()) {
             result.success(emptyList<String>())
             return
         }
         pluginScope.launch {
             val r: List<String> = try {
-                buildAnalyzeRule(content, baseUrl).getElements(rule).map { it.toString() }
+                buildAnalyzeRule(content, baseUrl, redirectUrl,
+                    sourceInfo = sourceInfo, bookInfo = bookInfo, chapterInfo = chapterInfo,
+                    nextChapterUrl = nextChapterUrl
+                ).getElements(rule).map { it.toString() }
             } catch (e: Exception) {
                 Log.w(TAG, "analyzeRuleGetElements failed: $rule", e)
                 emptyList()

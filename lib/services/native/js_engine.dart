@@ -27,6 +27,158 @@ class _EngineResolveResult {
   const _EngineResolveResult(this.engine, this.code);
 }
 
+/// JS 执行追踪节点（构建完整执行树）
+class JsTraceNode {
+  final String id;
+  final String engine;        // QuickJS / Rhino→QuickJS
+  final String caller;        // 调用来源（AnalyzeRule / processJsRule / executeSync 等）
+  final String? ruleStep;     // 规则步骤描述（如 "步骤1/2: @href"）
+  final String codePreview;   // JS 代码预览
+  final String? inputPreview; // 输入内容预览
+  String? outputPreview;      // 输出内容预览
+  String? outputType;         // 输出类型
+  String? error;              // 错误信息
+  final DateTime startTime;
+  DateTime? endTime;
+  final List<JsTraceNode> children = [];
+  final JsTraceNode? parent;
+
+  JsTraceNode({
+    required this.id,
+    required this.engine,
+    required this.caller,
+    this.ruleStep,
+    required this.codePreview,
+    this.inputPreview,
+    this.parent,
+  }) : startTime = DateTime.now();
+
+  Duration? get duration => endTime?.difference(startTime);
+
+  /// 生成树形字符串
+  String toTreeString({int indent = 0}) {
+    final prefix = '  ' * indent;
+    final buf = StringBuffer();
+    final dur = duration != null ? '${duration!.inMilliseconds}ms' : '?';
+    final errMark = error != null ? ' [ERROR]' : '';
+    buf.writeln('$prefix├─ [$engine] $caller${ruleStep != null ? " | $ruleStep" : ""} ($dur)$errMark');
+
+    final codeLines = codePreview.split('\n');
+    for (final line in codeLines.take(3)) {
+      buf.writeln('$prefix│  code: ${line.length > 80 ? '${line.substring(0, 80)}...' : line}');
+    }
+    if (codeLines.length > 3) {
+      buf.writeln('$prefix│  code: ... (${codeLines.length - 3} more lines)');
+    }
+
+    if (inputPreview != null && inputPreview!.isNotEmpty) {
+      final inp = inputPreview!.replaceAll('\n', '\\n');
+      buf.writeln('$prefix│  input: ${inp.length > 100 ? '${inp.substring(0, 100)}...' : inp}');
+    }
+    if (outputPreview != null && outputPreview!.isNotEmpty) {
+      final out = outputPreview!.replaceAll('\n', '\\n');
+      buf.writeln('$prefix│  output($outputType): ${out.length > 100 ? '${out.substring(0, 100)}...' : out}');
+    }
+    if (error != null) {
+      buf.writeln('$prefix│  error: $error');
+    }
+    for (final child in children) {
+      buf.write(child.toTreeString(indent: indent + 1));
+    }
+    return buf.toString();
+  }
+}
+
+/// JS 执行追踪器（全局单例，构建执行树）
+class JsTracer {
+  JsTracer._();
+  static final JsTracer instance = JsTracer._();
+
+  /// 当前追踪树根节点
+  JsTraceNode? _currentRoot;
+
+  /// 当前活跃节点栈（支持嵌套调用追踪）
+  final List<JsTraceNode> _stack = [];
+
+  /// 获取当前栈深度（公开访问）
+  int get stackDepth => _stack.length;
+
+  /// 当前栈顶节点是否为空（公开访问）
+  bool get isStackEmpty => _stack.isEmpty;
+
+  /// 获取当前栈顶节点
+  JsTraceNode? get currentStackTop => _stack.isNotEmpty ? _stack.last : null;
+
+  /// 是否启用追踪
+  bool enabled = true;
+
+  /// 追踪 ID 计数器
+  int _idCounter = 0;
+
+  /// 开始一个新的追踪根
+  JsTraceNode beginRoot(String caller, String engine, String codePreview, {String? inputPreview, String? ruleStep}) {
+    final node = JsTraceNode(
+      id: 'trace_${_idCounter++}',
+      engine: engine,
+      caller: caller,
+      codePreview: codePreview,
+      inputPreview: inputPreview,
+      ruleStep: ruleStep,
+    );
+    _currentRoot = node;
+    _stack.clear();
+    _stack.add(node);
+    return node;
+  }
+
+  /// 在当前节点下添加子节点
+  JsTraceNode addChild(String caller, String engine, String codePreview, {String? inputPreview, String? ruleStep}) {
+    final parent = _stack.isNotEmpty ? _stack.last : null;
+    final node = JsTraceNode(
+      id: 'trace_${_idCounter++}',
+      engine: engine,
+      caller: caller,
+      codePreview: codePreview,
+      inputPreview: inputPreview,
+      ruleStep: ruleStep,
+      parent: parent,
+    );
+    parent?.children.add(node);
+    return node;
+  }
+
+  /// 进入一个节点（压栈）
+  void push(JsTraceNode node) {
+    _stack.add(node);
+  }
+
+  /// 退出当前节点（弹栈）
+  void pop({String? outputPreview, String? outputType, String? error}) {
+    if (_stack.isEmpty) return;
+    final node = _stack.removeLast();
+    node.endTime = DateTime.now();
+    if (outputPreview != null) node.outputPreview = outputPreview;
+    if (outputType != null) node.outputType = outputType;
+    if (error != null) node.error = error;
+  }
+
+  /// 获取完整追踪树字符串
+  String getTreeString() {
+    if (_currentRoot == null) return '(no trace)';
+    return _currentRoot!.toTreeString();
+  }
+
+  /// 获取当前根节点
+  JsTraceNode? get currentRoot => _currentRoot;
+
+  /// 清空追踪
+  void clear() {
+    _currentRoot = null;
+    _stack.clear();
+    _idCounter = 0;
+  }
+}
+
 /// JS/TS 运行时引擎 - 分流双引擎架构
 ///
 /// 架构设计：
@@ -430,7 +582,7 @@ class JsEngine {
         // 自动拼接 baseUrl
         var fullUrl = url;
         if (url && !url.startsWith('http') && typeof baseUrl !== 'undefined' && baseUrl) {
-          fullUrl = baseUrl.replace(/\/+\$/, '') + '/' + url.replace(/^\/+/, '');
+          fullUrl = baseUrl.replace(/\\/+\$/, '') + '/' + url.replace(/^\\/+/, '');
         }
         var cacheKey = method.toUpperCase() === 'POST' ? 'http_post:' + fullUrl : 'http_get:' + fullUrl;
         if (_javaCache[cacheKey] !== undefined) {
@@ -481,7 +633,7 @@ class JsEngine {
         var url = this._url;
         // 自动拼接 baseUrl
         if (url && !url.startsWith('http') && typeof baseUrl !== 'undefined' && baseUrl) {
-          url = baseUrl.replace(/\/+\$/, '') + '/' + url.replace(/^\/+/, '');
+          url = baseUrl.replace(/\\/+\$/, '') + '/' + url.replace(/^\\/+/, '');
         }
         var cacheKey = this._method === 'POST' ? 'http_post:' + url : 'http_get:' + url;
         var cachedText = _javaCache[cacheKey] || '';
@@ -825,6 +977,147 @@ class JsEngine {
     }
   }
 
+  /// 注入纯 JS SHA1/SHA256/HMAC-SHA256 引擎
+  void _injectShaEngine() {
+    const shaCode = '''
+      var _SHA1 = (function() {
+        function rotateLeft(n, c) { return (n << c) | (n >>> (32 - c)); }
+        function utf8Encode(str) { return unescape(encodeURIComponent(str)); }
+        function str2binb(str) {
+          var bin = [], mask = (1 << 8) - 1;
+          for (var i = 0; i < str.length * 8; i += 8)
+            bin[i >> 5] |= (str.charCodeAt(i / 8) & mask) << (24 - i % 32);
+          return bin;
+        }
+        function binb2hex(binarray) {
+          var hexTab = '0123456789abcdef', str = '';
+          for (var i = 0; i < binarray.length * 4; i++) {
+            str += hexTab.charAt((binarray[i >> 2] >> ((3 - i % 4) * 8 + 4)) & 0xF) +
+                   hexTab.charAt((binarray[i >> 2] >> ((3 - i % 4) * 8)) & 0xF);
+          }
+          return str;
+        }
+        function sha1Core(x, len) {
+          x[len >> 5] |= 0x80 << (24 - len % 32);
+          x[((len + 64 >> 9) << 4) + 15] = len;
+          var w = [], a = 1732584193, b = -271733879, c = -1732584194, d = 271733878, e = -1009589776;
+          for (var i = 0; i < x.length; i += 16) {
+            var oa = a, ob = b, oc = c, od = d, oe = e;
+            for (var j = 0; j < 80; j++) {
+              if (j < 16) w[j] = x[i + j];
+              else w[j] = rotateLeft(w[j-3] ^ w[j-8] ^ w[j-14] ^ w[j-16], 1);
+              var t = rotateLeft(a, 5) + ((j < 20) ? (b & c | ~b & d) + 1518500249 :
+                      (j < 40) ? (b ^ c ^ d) + 1859775393 :
+                      (j < 60) ? (b & c | b & d | c & d) - 1894007588 :
+                                 (b ^ c ^ d) - 899497514) + e + w[j];
+              e = d; d = c; c = rotateLeft(b, 30); b = a; a = t;
+            }
+            a += oa; b += ob; c += oc; d += od; e += oe;
+          }
+          return [a, b, c, d, e];
+        }
+        return function(str) {
+          var s = utf8Encode(str);
+          return binb2hex(sha1Core(str2binb(s), s.length * 8));
+        };
+      })();
+
+      var _SHA256 = (function() {
+        var K = [
+          0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+          0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+          0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+          0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+          0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+          0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+          0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+          0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+        ];
+        function rightRotate(n, c) { return (n >>> c) | (n << (32 - c)); }
+        function utf8Encode(str) { return unescape(encodeURIComponent(str)); }
+        function str2binb(str) {
+          var bin = [], mask = (1 << 8) - 1;
+          for (var i = 0; i < str.length * 8; i += 8)
+            bin[i >> 5] |= (str.charCodeAt(i / 8) & mask) << (24 - i % 32);
+          return bin;
+        }
+        function binb2hex(binarray) {
+          var hexTab = '0123456789abcdef', str = '';
+          for (var i = 0; i < binarray.length * 4; i++) {
+            str += hexTab.charAt((binarray[i >> 2] >> ((3 - i % 4) * 8 + 4)) & 0xF) +
+                   hexTab.charAt((binarray[i >> 2] >> ((3 - i % 4) * 8)) & 0xF);
+          }
+          return str;
+        }
+        return function(str) {
+          var s = utf8Encode(str);
+          var M = str2binb(s), l = s.length * 8;
+          M[l >> 5] |= 0x80 << (24 - l % 32);
+          M[((l + 64 >> 9) << 4) + 15] = l;
+          var H0 = 0x6a09e667, H1 = 0xbb67ae85, H2 = 0x3c6ef372, H3 = 0xa54ff53a;
+          var H4 = 0x510e527f, H5 = 0x9b05688c, H6 = 0x1f83d9ab, H7 = 0x5be0cd19;
+          for (var i = 0; i < M.length; i += 16) {
+            var a=H0,b=H1,c=H2,d=H3,e=H4,f=H5,g=H6,h=H7;
+            var W = [];
+            for (var t = 0; t < 64; t++) {
+              if (t < 16) W[t] = M[i + t];
+              else {
+                var s0 = rightRotate(W[t-15],7) ^ rightRotate(W[t-15],18) ^ (W[t-15] >>> 3);
+                var s1 = rightRotate(W[t-2],17) ^ rightRotate(W[t-2],19) ^ (W[t-2] >>> 10);
+                W[t] = (W[t-16] + s0 + W[t-7] + s1) | 0;
+              }
+              var ch = (e & f) ^ (~e & g);
+              var maj = (a & b) ^ (a & c) ^ (b & c);
+              var S0 = rightRotate(a,2) ^ rightRotate(a,13) ^ rightRotate(a,22);
+              var S1 = rightRotate(e,6) ^ rightRotate(e,11) ^ rightRotate(e,25);
+              var T1 = (h + S1 + ch + K[t] + W[t]) | 0;
+              var T2 = (S0 + maj) | 0;
+              h=g; g=f; f=e; e=(d+T1)|0; d=c; c=b; b=a; a=(T1+T2)|0;
+            }
+            H0=(H0+a)|0; H1=(H1+b)|0; H2=(H2+c)|0; H3=(H3+d)|0;
+            H4=(H4+e)|0; H5=(H5+f)|0; H6=(H6+g)|0; H7=(H7+h)|0;
+          }
+          return binb2hex([H0,H1,H2,H3,H4,H5,H6,H7]);
+        };
+      })();
+
+      var _HMACSHA256 = (function() {
+        return function(data, key) {
+          var sha256 = _SHA256;
+          var blocksize = 64;
+          var kStr = unescape(encodeURIComponent(key));
+          var dStr = unescape(encodeURIComponent(data));
+          if (kStr.length > blocksize) kStr = sha256(key);
+          while (kStr.length < blocksize) kStr += '\\x00';
+          var oKeyPad = '', iKeyPad = '';
+          for (var i = 0; i < blocksize; i++) {
+            oKeyPad += String.fromCharCode(kStr.charCodeAt(i) ^ 0x5c);
+            iKeyPad += String.fromCharCode(kStr.charCodeAt(i) ^ 0x36);
+          }
+          var innerHash = sha256(iKeyPad + dStr);
+          return sha256(oKeyPad + hexStr2Str(innerHash));
+        };
+        function hexStr2Str(hex) {
+          var str = '';
+          for (var i = 0; i < hex.length; i += 2)
+            str += String.fromCharCode(parseInt(hex.substr(i, 2), 16));
+          return str;
+        }
+      })();
+    ''';
+    try {
+      evaluate(shaCode);
+      final check = evaluate('typeof _SHA1 !== "undefined" && typeof _SHA256 !== "undefined" && typeof _HMACSHA256 !== "undefined"');
+      if (check == 'true') {
+        debugPrint('JsEngine: SHA1/SHA256/HMAC-SHA256 引擎注入成功');
+      } else {
+        debugPrint('JsEngine: SHA 引擎注入后验证失败');
+      }
+    } catch (e) {
+      debugPrint('JsEngine: SHA 引擎注入失败: $e');
+    }
+  }
+
   // ===== Java 桥接对象（QuickJS 侧）=====
 
   void _injectJavaBridge() {
@@ -844,8 +1137,11 @@ class JsEngine {
 
     // 2.5 注入纯 JS MD5 引擎
     _injectMd5Engine();
+
+    // 2.6 注入纯 JS SHA1/SHA256/HMAC-SHA256 引擎
+    _injectShaEngine();
     // 注意：不能使用 const，因为字符串中包含 $ 符号（JS 正则替换引用 $&）
-    final helperCode = '''
+    final helperCode = """
       // ===== Legado Java 桥接对象（QuickJS 侧）=====
       // 借鉴 legado 的 JsExtensions 接口，通过 Dart 侧 NativeChannel 桥接
       // 核心策略：同步模式从 _javaCache 取缓存值，异步模式由 Dart 端预缓存
@@ -912,37 +1208,65 @@ class JsEngine {
       };
 
       var java = {
-        // ===== HTTP 请求方法（核心，借鉴 legado JsExtensions.ajax）=====
+        // ===== HTTP 请求方法（核心，对齐 legado JsExtensions）=====
+        // 辅助：构建 StrResponse 对象（对齐 legado 的 StrResponse）
+        // legado 书源经常用 java.connect(url).body / .url / .headerMap
+        _buildResponse: function(body, url, headers) {
+          return {
+            body: body || '',
+            url: url || '',
+            headerMap: headers || {},
+            html: body || '',
+            toString: function() { return this.body; },
+            getHeader: function(name) { return this.headerMap[name] || ''; }
+          };
+        },
         get: function(url, headers) {
-          // 自动拼接 baseUrl：如果 url 是相对路径，拼接 baseUrl
           var fullUrl = url;
           if (url && !url.startsWith('http') && typeof baseUrl !== 'undefined' && baseUrl) {
-            fullUrl = baseUrl.replace(/\/+\$/, '') + '/' + url.replace(/^\/+/, '');
+            fullUrl = baseUrl.replace(/\\/+\$/, '') + '/' + url.replace(/^\\/+/, '');
           }
           var cacheKey = 'http_get:' + fullUrl;
-          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
-          // fallback: 尝试原始 url
+          if (_javaCache[cacheKey] !== undefined) {
+            var cached = _javaCache[cacheKey];
+            if (typeof cached === 'object' && cached !== null && 'body' in cached) return cached;
+            return java._buildResponse(cached, fullUrl, {});
+          }
           if (fullUrl !== url) {
             var origKey = 'http_get:' + url;
-            if (_javaCache[origKey] !== undefined) return _javaCache[origKey];
+            if (_javaCache[origKey] !== undefined) {
+              var origCached = _javaCache[origKey];
+              if (typeof origCached === 'object' && origCached !== null && 'body' in origCached) return origCached;
+              return java._buildResponse(origCached, url, {});
+            }
           }
-          return '';
+          return java._buildResponse('', fullUrl, {});
         },
         post: function(url, body, headers) {
           var fullUrl = url;
           if (url && !url.startsWith('http') && typeof baseUrl !== 'undefined' && baseUrl) {
-            fullUrl = baseUrl.replace(/\/+\$/, '') + '/' + url.replace(/^\/+/, '');
+            fullUrl = baseUrl.replace(/\\/+\$/, '') + '/' + url.replace(/^\\/+/, '');
           }
           var cacheKey = 'http_post:' + fullUrl;
-          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          if (_javaCache[cacheKey] !== undefined) {
+            var cached = _javaCache[cacheKey];
+            if (typeof cached === 'object' && cached !== null && 'body' in cached) return cached;
+            return java._buildResponse(cached, fullUrl, {});
+          }
           if (fullUrl !== url) {
             var origKey = 'http_post:' + url;
-            if (_javaCache[origKey] !== undefined) return _javaCache[origKey];
+            if (_javaCache[origKey] !== undefined) {
+              var origCached = _javaCache[origKey];
+              if (typeof origCached === 'object' && origCached !== null && 'body' in origCached) return origCached;
+              return java._buildResponse(origCached, url, {});
+            }
           }
-          return '';
+          return java._buildResponse('', fullUrl, {});
         },
+        // legado: ajax 返回 body 字符串（不是 Response 对象）
         ajax: function(url, headers) {
-          return java.get(url, headers);
+          var resp = java.get(url, headers);
+          return (typeof resp === 'object' && resp !== null && 'body' in resp) ? resp.body : String(resp || '');
         },
         ajaxAll: function(urls) {
           if (!urls || !urls.length) return [];
@@ -1070,16 +1394,19 @@ class JsEngine {
           return '';
         },
         sha1Encode: function(str) {
+          if (typeof _SHA1 !== 'undefined') return _SHA1(str);
           var cacheKey = 'sha1:' + str;
           if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
           return '';
         },
         sha256Encode: function(str) {
+          if (typeof _SHA256 !== 'undefined') return _SHA256(str);
           var cacheKey = 'sha256:' + str;
           if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
           return '';
         },
         hmacSHA256: function(data, key) {
+          if (typeof _HMACSHA256 !== 'undefined') return _HMACSHA256(data, key);
           var cacheKey = 'hmac_sha256:' + data + ':' + key;
           if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
           return '';
@@ -1115,8 +1442,8 @@ class JsEngine {
           getAttr: function(html, selector, attr) { return _JsoupLite.getAttr(html, selector, attr); },
           clean: function(html) {
             if (!html) return '';
-            return html.replace(/<script[^>]*>[\\\\s\\\\S]*?<\\\\/script>/gi, '')
-                       .replace(/<style[^>]*>[\\\\s\\\\S]*?<\\\\/style>/gi, '')
+            return html.replace(/<script[^>]*>[\\s\\S]*?<\\/script>/gi, '')
+                       .replace(/<style[^>]*>[\\s\\S]*?<\\/style>/gi, '')
                        .replace(/<[^>]+>/g, '')
                        .replace(/&nbsp;/g, ' ')
                        .replace(/&amp;/g, '&')
@@ -1221,6 +1548,314 @@ class JsEngine {
           console.log('[JavaBridge] ' + msg);
         },
 
+        // ===== 网络（对齐 legado JsExtensions）=====
+        // java.connect(urlStr, header) — 完整 HTTP 请求，返回 response body
+        connect: function(urlStr, header, callTimeout) {
+          // 兼容 legado：connect 返回 body 字符串
+          var fullUrl = urlStr;
+          if (urlStr && !urlStr.startsWith('http') && typeof baseUrl !== 'undefined' && baseUrl) {
+            fullUrl = baseUrl.replace(/\\/+\\\$/, '') + '/' + urlStr.replace(/^\\/+/, '');
+          }
+          var cacheKey = 'http_connect:' + fullUrl;
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          // fallback: 尝试 get 缓存
+          return java.get(fullUrl, header);
+        },
+        // java.head(urlStr, headers) — HEAD 请求（同步模式无法真正执行，从缓存取）
+        head: function(urlStr, headers, timeout) {
+          var cacheKey = 'http_head:' + urlStr;
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          return '';
+        },
+        // java.getCookie(tag) / java.getCookie(tag, key) — Cookie 管理
+        getCookie: function(tag, key) {
+          var cacheKey = 'cookie:' + tag + (key ? ':' + key : '');
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          return '';
+        },
+        // java.startBrowser(url, title) — 打开浏览器（移动端专用，QuickJS 空操作）
+        startBrowser: function(url, title) {},
+        // java.startBrowserAwait(url, title) — 等待浏览器结果
+        startBrowserAwait: function(url, title, refetchAfterSuccess, html) {
+          var cacheKey = 'browser:' + url;
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          return '';
+        },
+        // java.getVerificationCode(imageUrl) — 验证码识别
+        getVerificationCode: function(imageUrl) {
+          var cacheKey = 'captcha:' + imageUrl;
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          return '';
+        },
+
+        // ===== 编解码（对齐 legado JsEncodeUtils）=====
+        // java.md5Encode16(str) — 16 位 MD5
+        md5Encode16: function(str) {
+          var full = java.md5Encode(str);
+          return full.length >= 32 ? full.substring(8, 24) : '';
+        },
+        // java.digestHex(data, algorithm) — 通用摘要算法
+        digestHex: function(data, algorithm) {
+          var cacheKey = 'digest:' + algorithm + ':' + data;
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          // fallback: algorithm 小写匹配
+          var algo = (algorithm || '').toLowerCase();
+          if (algo.indexOf('md5') >= 0) return java.md5Encode(data);
+          if (algo.indexOf('sha-1') >= 0 || algo.indexOf('sha1') >= 0) return java.sha1Encode(data);
+          if (algo.indexOf('sha-256') >= 0 || algo.indexOf('sha256') >= 0) return java.sha256Encode(data);
+          return '';
+        },
+        // java.digestBase64Str(data, algorithm) — 摘要算法返回 Base64
+        digestBase64Str: function(data, algorithm) {
+          var hex = java.digestHex(data, algorithm);
+          if (!hex) return '';
+          try { return java.base64Encode(java.hexDecodeToString(hex)); } catch(e) { return ''; }
+        },
+        // java.HMacHex(data, algorithm, key) — HMAC 摘要
+        HMacHex: function(data, algorithm, key) {
+          var cacheKey = 'hmac:' + algorithm + ':' + data + ':' + key;
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          var algo = (algorithm || '').toLowerCase();
+          if (algo.indexOf('sha256') >= 0 || algo.indexOf('hmacsha256') >= 0) return java.hmacSHA256(data, key);
+          return '';
+        },
+        // java.HMacBase64Str(data, algorithm, key) — HMAC 返回 Base64
+        HMacBase64Str: function(data, algorithm, key) {
+          var hex = java.HMacHex(data, algorithm, key);
+          if (!hex) return '';
+          try { return java.base64Encode(java.hexDecodeToString(hex)); } catch(e) { return ''; }
+        },
+        // java.strToBytes(str) / java.strToBytes(str, charset) — 字符串转字节数组
+        strToBytes: function(str, charset) {
+          var bytes = [];
+          for (var i = 0; i < str.length; i++) {
+            var c = str.charCodeAt(i);
+            if (c < 128) { bytes.push(c); }
+            else if (c < 2048) { bytes.push(192 | (c >> 6), 128 | (c & 63)); }
+            else { bytes.push(224 | (c >> 12), 128 | ((c >> 6) & 63), 128 | (c & 63)); }
+          }
+          return bytes;
+        },
+        // java.bytesToStr(bytes) / java.bytesToStr(bytes, charset) — 字节数组转字符串
+        bytesToStr: function(bytes, charset) {
+          if (!bytes || !bytes.length) return '';
+          var str = '';
+          for (var i = 0; i < bytes.length; i++) {
+            str += String.fromCharCode(bytes[i] & 0xFF);
+          }
+          try { return decodeURIComponent(escape(str)); } catch(e) { return str; }
+        },
+        // java.base64DecodeToByteArray(str) — Base64 解码为字节数组
+        base64DecodeToByteArray: function(str) {
+          var decoded = java.base64Decode(str);
+          if (!decoded) return [];
+          return java.strToBytes(decoded);
+        },
+
+        // ===== 文本处理（对齐 legado JsExtensions）=====
+        // java.htmlFormat(str) — HTML 格式化（去标签、解码实体）
+        htmlFormat: function(str) {
+          if (!str) return '';
+          return str.replace(/<p[^>]*>/gi, '\\n')
+                    .replace(/<br[^>]*\\/?>/gi, '\\n')
+                    .replace(/<[^>]+>/g, '')
+                    .replace(/&nbsp;/g, ' ')
+                    .replace(/&amp;/g, '&')
+                    .replace(/&lt;/g, '<')
+                    .replace(/&gt;/g, '>')
+                    .replace(/&quot;/g, '"')
+                    .replace(/&#39;/g, "'")
+                    .replace(/\\n{3,}/g, '\\n\\n')
+                    .trim();
+        },
+        // java.t2s(text) — 繁体转简体（简易映射，常用字覆盖）
+        t2s: function(text) {
+          var cacheKey = 't2s:' + text;
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          // 简易映射：常用繁简对照表
+          var map = {'書':'书','學':'学','網':'网','開':'开','關':'关','無':'无','說':'说','對':'对','來':'来','們':'们','時':'时','國':'国','會':'会','長':'长','點':'点','機':'机','動':'动','現':'现','經':'经','過':'过','運':'运','種':'种','問':'问','區':'区','場':'场','體':'体','電':'电','話':'话','視':'视','語':'语','讀':'读','設':'设','請':'请','產':'产','務':'务','歷':'历','達':'达','還':'还','進':'进','開':'开','邊':'边','東':'东','車':'车','頭':'头','見':'见','風':'风','龍':'龙','萬':'万','與':'与','爾':'尔','樂':'乐','醫':'医','藥':'药','農':'农','礦':'矿','鐵':'铁','銀':'银','錢':'钱','門':'门','間':'间','聽':'听','聲':'声','膽':'胆','腦':'脑','臉':'脸','節':'节','歲':'岁','幾':'几','買':'买','賣':'卖','貴':'贵','費':'费','資':'资','質':'质','轉':'转','軟':'软','較':'较','輯':'辑','輸':'输','轄':'辖','辦':'办','辯':'辩','證':'证','識':'识','議':'议','護':'护','讚':'赞','豐':'丰','財':'财','貧':'贫','貪':'贪','責':'责','賴':'赖','贈':'赠','贊':'赞','贏':'赢','躍':'跃','車':'车','軌':'轨','載':'载','輔':'辅','輕':'轻','輪':'轮','輯':'辑','輸':'输','轄':'辖','轉':'转','轟':'轰','辭':'辞','辯':'辩','農':'农','迴':'回','週':'周','進':'进','運':'运','過':'过','達':'达','遲':'迟','還':'还','邊':'边','郵':'邮','鄉':'乡','醫':'医','鐘':'钟','鐵':'铁','鑒':'鉴','長':'长','門':'门','關':'关','陸':'陆','陽':'阳','險':'险','隨':'随','隱':'隐','隸':'隶','雙':'双','雜':'杂','雞':'鸡','離':'离','難':'难','雲':'云','電':'电','震':'震','霧':'雾','露':'露','靈':'灵','靜':'静','面':'面','革':'革','靴':'靴','鞋':'鞋','韓':'韩','音':'音','韻':'韵','頁':'页','頃':'顷','項':'项','須':'须','頌':'颂','預':'预','頑':'顽','頒':'颁','頓':'顿','頗':'颇','領':'领','頜':'颌','頤':'颐','頭':'头','頻':'频','顆':'颗','題':'题','額':'额','顏':'颜','願':'愿','顛':'颠','類':'类','顧':'顾','顯':'显','風':'风','颯':'飒','颱':'台','颳':'刮','飄':'飘','飛':'飞','食':'食','飯':'饭','飲':'饮','飼':'饲','飽':'饱','飾':'饰','餃':'饺','餅':'饼','餌':'饵','餐':'餐','餘':'余','餞':'饯','餡':'馅','館':'馆','饋':'馈','饑':'饥','饒':'饶','饗':'飨','首':'首','香':'香','馬':'马','馱':'驮','馴':'驯','駕':'驾','駐':'驻','駕':'驾','駛':'驶','駝':'驼','駭':'骇','騎':'骑','騙':'骗','騰':'腾','驕':'骄','驗':'验','驚':'惊','驛':'驿','骨':'骨','體':'体','高':'高','髮':'发','鬥':'斗','鬧':'闹','鬱':'郁','鬼':'鬼','魁':'魁','魂':'魂','魏':'魏','魚':'鱼','魯':'鲁','鮑':'鲍','鮮':'鲜','鯉':'鲤','鯊':'鲨','鯨':'鲸','鳥':'鸟','鳳':'凤','鳴':'鸣','鴉':'鸦','鴻':'鸿','鵑':'鹃','鵝':'鹅','鵬':'鹏','鶴':'鹤','鷗':'鸥','鷹':'鹰','鷺':'鹭','鹽':'盐','麗':'丽','麥':'麦','麻':'麻','黃':'黄','黌':'黉','黎':'黎','黏':'黏','黑':'黑','點':'点','黨':'党','鼓':'鼓','鼠':'鼠','鼻':'鼻','齊':'齐','齋':'斋','齒':'齿','齡':'龄','龍':'龙','龐':'庞','龔':'龚','龜':'龟'};
+          var result = text;
+          for (var k in map) {
+            result = result.replace(new RegExp(k, 'g'), map[k]);
+          }
+          _javaCache[cacheKey] = result;
+          return result;
+        },
+        // java.s2t(text) — 简体转繁体（简易映射）
+        s2t: function(text) {
+          var cacheKey = 's2t:' + text;
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          var map = {'书':'書','学':'學','网':'網','开':'開','关':'關','无':'無','说':'說','对':'對','来':'來','们':'們','时':'時','国':'國','会':'會','长':'長','点':'點','机':'機','动':'動','现':'現','经':'經','过':'過','运':'運','种':'種','问':'問','区':'區','场':'場','体':'體','电':'電','话':'話','视':'視','语':'語','读':'讀','设':'設','请':'請','产':'產','务':'務','历':'歷','达':'達','还':'還','进':'進','边':'邊','东':'東','车':'車','头':'頭','见':'見','风':'風','龙':'龍','万':'萬','与':'與','尔':'爾','乐':'樂','医':'醫','药':'藥','农':'農','矿':'礦','铁':'鐵','银':'銀','钱':'錢','门':'門','间':'間','听':'聽','声':'聲','脑':'腦','脸':'臉','节':'節','岁':'歲','几':'幾','买':'買','卖':'賣','贵':'貴','费':'費','资':'資','质':'質','转':'轉','软':'軟','较':'較','辑':'輯','输':'輸','办':'辦','证':'證','识':'識','议':'議','护':'護','赞':'讚','丰':'豐','财':'財','贫':'貧','责':'責','赠':'贈','赢':'贏','跃':'躍','轨':'軌','载':'載','轻':'輕','轮':'輪','迟':'遲','邮':'郵','乡':'鄉','钟':'鐘','陆':'陸','阳':'陽','险':'險','随':'隨','隐':'隱','双':'雙','杂':'雜','鸡':'雞','离':'離','难':'難','云':'雲','静':'靜','灵':'靈','韵':'韻','页':'頁','须':'須','预':'預','顿':'頓','领':'領','频':'頻','题':'題','额':'額','颜':'顏','愿':'願','类':'類','显':'顯','飞':'飛','饭':'飯','饮':'飲','馆':'館','马':'馬','驾':'駕','骑':'騎','骗':'騙','惊':'驚','验':'驗','鱼':'魚','鸟':'鳥','鸣':'鳴','鹤':'鶴','盐':'鹽','丽':'麗','麦':'麥','齿':'齒','龄':'齡','龟':'龜'};
+          var result = text;
+          for (var k in map) {
+            result = result.replace(new RegExp(k, 'g'), map[k]);
+          }
+          _javaCache[cacheKey] = result;
+          return result;
+        },
+        // java.toNumChapter(s) — 章节号标准化（"第一百二十章" → "120"）
+        toNumChapter: function(s) {
+          if (!s) return '';
+          var numMap = {'零':0,'一':1,'二':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9,'十':10,'百':100,'千':1000,'万':10000};
+          // 尝试提取阿拉伯数字
+          var m = s.match(/(\\d+)/);
+          if (m) return m[1];
+          // 中文数字转换
+          var result = 0, current = 0;
+          for (var i = 0; i < s.length; i++) {
+            var ch = s[i];
+            if (numMap[ch] !== undefined) {
+              var val = numMap[ch];
+              if (val >= 10) {
+                current = current === 0 ? val : current * val;
+                if (val >= 10000) { result = (result + current) * val; current = 0; }
+                else if (val >= 1000) { result += current; current = 0; }
+              } else {
+                current = val;
+              }
+            }
+          }
+          return String(result + current);
+        },
+
+        // ===== 工具方法（对齐 legado JsExtensions）=====
+        // java.toast(msg) — 显示 Toast
+        toast: function(msg) { console.log('[Toast] ' + msg); },
+        // java.longToast(msg) — 长时间 Toast
+        longToast: function(msg) { console.log('[LongToast] ' + msg); },
+        // java.getWebViewUA() — 获取 WebView UA
+        getWebViewUA: function() {
+          var cacheKey = 'webview_ua';
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          return 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
+        },
+        // java.randomUUID() — 生成 UUID
+        randomUUID: function() {
+          return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+            var r = Math.random() * 16 | 0;
+            return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+          });
+        },
+        // java.androidId() — Android 设备 ID
+        androidId: function() {
+          var cacheKey = 'android_id';
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          return java.randomUUID().replace(/-/g, '').substring(0, 16);
+        },
+        // java.cacheFile(url) — 缓存文件到本地
+        cacheFile: function(url, saveTime) {
+          var cacheKey = 'cache_file:' + url;
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          return '';
+        },
+        // java.importScript(path) — 导入脚本
+        importScript: function(path) {
+          var cacheKey = 'import_script:' + path;
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          return '';
+        },
+        // java.readFile(path) / java.readTxtFile(path) — 读取文件
+        readFile: function(path) { return ''; },
+        readTxtFile: function(path, charset) { return ''; },
+        // java.deleteFile(path) — 删除文件
+        deleteFile: function(path) { return false; },
+        // java.unzipFile(path) / java.un7zFile / java.unrarFile / java.unArchiveFile — 解压
+        unzipFile: function(path) { return ''; },
+        un7zFile: function(path) { return ''; },
+        unrarFile: function(path) { return ''; },
+        unArchiveFile: function(path) { return ''; },
+        // java.getTxtInFolder(path) — 读取文件夹下所有 txt
+        getTxtInFolder: function(path) { return ''; },
+        // java.openUrl(url) — 打开 URL
+        openUrl: function(url, mimeType) {},
+        // java.getReadBookConfig() — 获取阅读配置
+        getReadBookConfig: function() { return '{}'; },
+        // java.getThemeMode() — 获取主题模式
+        getThemeMode: function() { return 'light'; },
+        // java.getThemeConfig() — 获取主题配置
+        getThemeConfig: function() { return '{}'; },
+        // java.toURL(urlStr) — 创建 URL 对象
+        toURL: function(urlStr, base) {
+          try {
+            // 简易 URL 解析
+            var u = urlStr;
+            if (base && !urlStr.startsWith('http')) {
+              u = base.replace(/\\/+\\\$/, '') + '/' + urlStr.replace(/^\\/+/, '');
+            }
+            var m = u.match(/^(https?:)\\/\\/([^:/]+)(:\\d+)?(\\/[^?#]*)?(\\?[^?#]*)?(#.*)?\$/);
+            return {
+              protocol: m ? m[1] : '',
+              host: m ? m[2] : '',
+              port: m && m[3] ? m[3].substring(1) : '',
+              pathname: m && m[4] ? m[4] : '/',
+              search: m && m[5] ? m[5] : '',
+              hash: m && m[6] ? m[6] : '',
+              href: u,
+              toString: function() { return u; }
+            };
+          } catch(e) { return { href: urlStr, toString: function() { return urlStr; } }; }
+        },
+
+        // ===== AES/DES 完整参数版（对齐 legado JsEncodeUtils）=====
+        // java.aesEncodeToString(data, key, transformation, iv) — AES 加密返回字符串
+        aesEncodeToString: function(data, key, transformation, iv) {
+          return java.aesEncode(data, key, iv);
+        },
+        // java.aesEncodeToBase64String(data, key, transformation, iv) — AES 加密返回 Base64
+        aesEncodeToBase64String: function(data, key, transformation, iv) {
+          var result = java.aesEncode(data, key, iv);
+          return result ? java.base64Encode(result) : '';
+        },
+        // java.aesDecodeToString(str, key, transformation, iv) — AES 解密
+        aesDecodeToString: function(str, key, transformation, iv) {
+          return java.aesDecode(str, key, iv);
+        },
+        // java.aesBase64DecodeToString(str, key, transformation, iv) — AES Base64 解密
+        aesBase64DecodeToString: function(str, key, transformation, iv) {
+          var decoded = java.base64Decode(str);
+          return decoded ? java.aesDecode(decoded, key, iv) : '';
+        },
+        // java.createSymmetricCrypto(transformation, key, iv) — 创建对称加密器
+        createSymmetricCrypto: function(transformation, key, iv) {
+          // 简化实现：返回一个包含 encrypt/decrypt 方法的对象
+          var keyStr = typeof key === 'string' ? key : (key ? String(key) : '');
+          var ivStr = typeof iv === 'string' ? iv : (iv ? String(iv) : '');
+          return {
+            encrypt: function(data) { return java.aesEncode(data, keyStr, ivStr); },
+            decrypt: function(data) { return java.aesDecode(data, keyStr, ivStr); },
+            encryptBase64: function(data) { return java.aesEncodeToBase64String(data, keyStr, '', ivStr); },
+            decryptBase64: function(data) { return java.aesBase64DecodeToString(data, keyStr, '', ivStr); }
+          };
+        },
+        // java.desEncodeToString / desDecodeToString — DES 兼容（简化为 AES）
+        desEncodeToString: function(data, key, transformation, iv) {
+          return java.aesEncode(data, key, iv);
+        },
+        desDecodeToString: function(data, key, transformation, iv) {
+          return java.aesDecode(data, key, iv);
+        },
+        desEncodeToBase64String: function(data, key, transformation, iv) {
+          return java.aesEncodeToBase64String(data, key, '', iv);
+        },
+        desBase64DecodeToString: function(data, key, transformation, iv) {
+          return java.aesBase64DecodeToString(data, key, '', iv);
+        },
+        // java.tripleDES* — 3DES 兼容（简化为 AES）
+        tripleDESEncodeBase64Str: function(data, key, mode, padding, iv) {
+          return java.aesEncodeToBase64String(data, key, '', iv);
+        },
+        tripleDESDecodeArgsBase64Str: function(data, key, mode, padding, iv) {
+          return java.aesBase64DecodeToString(data, key, '', iv);
+        },
+        // java.createAsymmetricCrypto(transformation) — 创建非对称加密器
+        createAsymmetricCrypto: function(transformation) {
+          return { encrypt: function(data) { return ''; }, decrypt: function(data) { return ''; } };
+        },
+        // java.createSign(algorithm) — 创建签名器
+        createSign: function(algorithm) {
+          return { sign: function(data) { return ''; }, verify: function(data, sig) { return false; } };
+        },
+
         // ===== 元素操作（借鉴 legado JsExtensions）=====
         getElements: function(html, rule) {
           // 借鉴 legado：单参数模式 html 是规则，内容来自 result
@@ -1290,7 +1925,7 @@ class JsEngine {
         },
         algo: {},
       };
-    ''';
+    """;
 
     // 3. 注入 HTML 解析辅助函数 + java 对象
     try {
@@ -1619,17 +2254,51 @@ class JsEngine {
 
   /// 同步执行 JS 代码（用于 AnalyzeRule 规则解析）
   /// 默认走 QuickJS，如果代码含 java. 且无 ES6 特征，自动走 Rhino
-  dynamic executeSync(String jsCode, dynamic content, {String? baseUrl, JsEngineType? sourceEngine, Map<String, dynamic>? variables}) {
+  dynamic executeSync(String jsCode, dynamic content, {String? baseUrl, JsEngineType? sourceEngine, Map<String, dynamic>? variables, String? ruleStep}) {
     // 先提取 JS 代码（去掉 <js></js> 标签或 @js: 前缀）
     final extracted = _extractJsCode(jsCode) ?? jsCode;
     final resolved = resolveEngine(extracted, sourceEngine: sourceEngine);
+
+    final engineTag = resolved.engine == JsEngineType.rhino ? 'Rhino→QuickJS' : 'QuickJS';
+    final codePreview = resolved.code.length > 200 ? '${resolved.code.substring(0, 200)}...' : resolved.code;
+    final inputPreview = content?.toString();
+    final inputShort = inputPreview != null && inputPreview.length > 200 ? '${inputPreview.substring(0, 200)}...' : inputPreview;
+
+    AppLogger.instance.debug(LogCategory.js, '[$engineTag] 同步执行JS',
+      detail: 'code=$codePreview, content=${content?.toString().length ?? 0}chars');
+
+    // 追踪树：创建节点
+    JsTraceNode? traceNode;
+    if (JsTracer.instance.enabled) {
+      final tracer = JsTracer.instance;
+      if (tracer._stack.isEmpty) {
+        traceNode = tracer.beginRoot('executeSync', engineTag, codePreview,
+          inputPreview: inputShort, ruleStep: ruleStep);
+      } else {
+        traceNode = tracer.addChild('executeSync', engineTag, codePreview,
+          inputPreview: inputShort, ruleStep: ruleStep);
+      }
+      tracer.push(traceNode);
+    }
 
     if (resolved.engine == JsEngineType.rhino) {
       // Rhino 不支持同步调用（MethodChannel 是异步的），降级到 QuickJS
       debugPrint('JsEngine: Rhino 不支持同步执行，降级到 QuickJS: ${jsCode.substring(0, jsCode.length > 50 ? 50 : jsCode.length)}...');
     }
 
-    return _executeQuickJSSync(resolved.code, content, baseUrl: baseUrl, variables: variables);
+    final result = _executeQuickJSSync(resolved.code, content, baseUrl: baseUrl, variables: variables);
+
+    // 追踪树：记录输出
+    if (traceNode != null) {
+      final outputStr = result?.toString();
+      final outputShort = outputStr != null && outputStr.length > 200 ? '${outputStr.substring(0, 200)}...' : outputStr;
+      JsTracer.instance.pop(
+        outputPreview: outputShort,
+        outputType: result?.runtimeType.toString(),
+      );
+    }
+
+    return result;
   }
 
   /// QuickJS 同步执行
@@ -1683,7 +2352,7 @@ class JsEngine {
           var result = $contentStr;
           var baseUrl = ${jsonEncode(baseUrl ?? '')};
           var content = result;
-          var src = result;
+          var src = ${variables?.containsKey('src') == true ? jsonEncode(variables!['src']?.toString() ?? '') : contentStr};
           $sharedVarsCode
           $varCode
           var __returnValue = (function() { $wrappedCode })();
@@ -1698,12 +2367,26 @@ class JsEngine {
       if (evalResult.isError) {
         debugPrint('JsEngine executeSync error: ${evalResult.stringResult}');
         AppLogger.instance.logJsError('QuickJS', evalResult.stringResult);
+        // 追踪树：记录错误
+        if (JsTracer.instance.enabled && JsTracer.instance._stack.isNotEmpty) {
+          JsTracer.instance._stack.last.error = evalResult.stringResult.length > 200
+            ? '${evalResult.stringResult.substring(0, 200)}...' : evalResult.stringResult;
+        }
         return null;
       }
-      return _parseJsResult(evalResult.stringResult);
+      final parsed = _parseJsResult(evalResult.stringResult);
+      final resultPreview = parsed?.toString().length ?? 0;
+      AppLogger.instance.debug(LogCategory.js, '[QuickJS] 同步执行完成',
+        detail: 'resultType=${parsed?.runtimeType}, resultLen=$resultPreview, isError=${evalResult.isError}');
+      return parsed;
     } catch (e) {
       debugPrint('JsEngine executeSync exception: $e');
       AppLogger.instance.logJsError('QuickJS', e.toString());
+      // 追踪树：记录异常
+      if (JsTracer.instance.enabled && JsTracer.instance._stack.isNotEmpty) {
+        JsTracer.instance._stack.last.error = e.toString().length > 200
+          ? '${e.toString().substring(0, 200)}...' : e.toString();
+      }
       return null;
     }
   }
@@ -1933,15 +2616,33 @@ class JsEngine {
     String? result,
     Map<String, dynamic>? env,
     Map<String, dynamic>? variables,
+    String? ruleStep,
   }) async {
     if (!_initialized || _jsRuntime == null) {
       await init();
       if (!_initialized || _jsRuntime == null) return null;
     }
+    // 追踪树：创建节点（提到 try 之前，catch 块也能访问）
+    JsTraceNode? traceNode;
     try {
       // 断点1：记录原始JS代码
-      AppLogger.instance.debug(LogCategory.js, '[QuickJS] 开始执行',
-        detail: jsCode.length > 300 ? '${jsCode.substring(0, 300)}...' : jsCode);
+      final codePreview = jsCode.length > 300 ? '${jsCode.substring(0, 300)}...' : jsCode;
+      AppLogger.instance.debug(LogCategory.js, '[QuickJS] 开始异步执行',
+        detail: codePreview);
+
+      // 追踪树：创建节点
+      if (JsTracer.instance.enabled) {
+        final tracer = JsTracer.instance;
+        final inputPreview = result != null && result.length > 200 ? '${result.substring(0, 200)}...' : result;
+        if (tracer._stack.isEmpty) {
+          traceNode = tracer.beginRoot('_executeQuickJSRule', 'QuickJS', codePreview,
+            inputPreview: inputPreview, ruleStep: ruleStep);
+        } else {
+          traceNode = tracer.addChild('_executeQuickJSRule', 'QuickJS', codePreview,
+            inputPreview: inputPreview, ruleStep: ruleStep);
+        }
+        tracer.push(traceNode);
+      }
 
       // 自动补 return
       final wrappedCode = _wrapJsCode(jsCode);
@@ -2038,16 +2739,33 @@ class JsEngine {
       _flushConsoleLogs();
 
       // 断点3：记录执行结果
-      AppLogger.instance.debug(LogCategory.js, '[QuickJS] 执行完成',
-        detail: 'isError=${evalResult.isError}, result=${evalResult.stringResult.length > 200 ? "${evalResult.stringResult.substring(0, 200)}..." : evalResult.stringResult}');
+      final resultStr = evalResult.stringResult;
+      final resultShort = resultStr.length > 200 ? '${resultStr.substring(0, 200)}...' : resultStr;
+      AppLogger.instance.debug(LogCategory.js, '[QuickJS] 异步执行完成',
+        detail: 'isError=${evalResult.isError}, result=$resultShort');
 
       if (evalResult.isError) {
         debugPrint('JsEngine QuickJS error: ${evalResult.stringResult}');
         AppLogger.instance.logJsError('QuickJS', evalResult.stringResult);
+        // 追踪树：记录错误
+        if (traceNode != null) {
+          JsTracer.instance.pop(
+            outputPreview: resultShort,
+            outputType: 'error',
+            error: resultShort,
+          );
+        }
         // QuickJS 失败 → 降级到 Rust 引擎
         return fallbackToRustEngine(jsCode, result: result, env: env);
       }
       final strResult = evalResult.stringResult;
+      // 追踪树：记录成功输出
+      if (traceNode != null) {
+        JsTracer.instance.pop(
+          outputPreview: strResult.length > 200 ? '${strResult.substring(0, 200)}...' : strResult,
+          outputType: 'String',
+        );
+      }
       // undefined → 返回空字符串而不是 null（书源规则可能不需要返回值）
       if (strResult == 'undefined') return '';
       // null → 返回 Dart null，避免 "null" 字符串被当作有效结果
@@ -2056,6 +2774,13 @@ class JsEngine {
     } catch (e) {
       debugPrint('JsEngine QuickJS exception: $e');
       AppLogger.instance.logJsError('QuickJS', e.toString());
+      // 追踪树：记录异常
+      if (traceNode != null) {
+        JsTracer.instance.pop(
+          outputType: 'exception',
+          error: e.toString().length > 200 ? '${e.toString().substring(0, 200)}...' : e.toString(),
+        );
+      }
       // 即使异常也尝试提取 console 日志
       _flushConsoleLogs();
       // QuickJS 异常 → 降级到 Rust 引擎
@@ -2566,7 +3291,7 @@ class JsEngine {
     }
 
     // 5. 扫描 java.aesEncode/aesDecode 调用（已有纯 JS _AES 引擎，不再需要预缓存）
-    // 6. 扫描 java.md5Encode 调用（暂无纯 JS MD5 实现，仍需预缓存）
+    // 6. 扫描 java.md5Encode 调用（已有纯 JS _MD5 引擎，但仍通过桥接预缓存加速）
     final md5Pattern = RegExp(
       r"""java\.md5Encode\s*\(\s*["']([^"']+)["']""",
       multiLine: true,
@@ -2583,8 +3308,190 @@ class JsEngine {
       }
     }
 
+    // 6.1 扫描 java.sha1Encode 调用（已有纯 JS _SHA1 引擎，桥接预缓存作为加速）
+    final sha1Pattern = RegExp(
+      r"""java\.sha1Encode\s*\(\s*["']([^"']+)["']""",
+      multiLine: true,
+    );
+    for (final match in sha1Pattern.allMatches(jsCode)) {
+      final str = match.group(1);
+      if (str != null) {
+        final cacheKey = 'sha1:$str';
+        if (!_isCached(cacheKey)) {
+          try {
+            final result = await NativeChannel.instance.sha1(str);
+            if (result != null) cryptoResults[cacheKey] = result;
+          } catch (_) {}
+        }
+      }
+    }
+
+    // 6.2 扫描 java.sha256Encode 调用（已有纯 JS _SHA256 引擎，桥接预缓存作为加速）
+    final sha256Pattern = RegExp(
+      r"""java\.sha256Encode\s*\(\s*["']([^"']+)["']""",
+      multiLine: true,
+    );
+    for (final match in sha256Pattern.allMatches(jsCode)) {
+      final str = match.group(1);
+      if (str != null) {
+        final cacheKey = 'sha256:$str';
+        if (!_isCached(cacheKey)) {
+          try {
+            final result = await NativeChannel.instance.sha256(str);
+            if (result != null) cryptoResults[cacheKey] = result;
+          } catch (_) {}
+        }
+      }
+    }
+
+    // 6.3 扫描 java.hmacSHA256 调用（已有纯 JS _HMACSHA256 引擎，桥接预缓存作为加速）
+    final hmacPattern = RegExp(
+      r"""java\.hmacSHA256\s*\(\s*["']([^"']+)["']\s*,\s*["']([^"']+)["']""",
+      multiLine: true,
+    );
+    for (final match in hmacPattern.allMatches(jsCode)) {
+      final data = match.group(1);
+      final key = match.group(2);
+      if (data != null && key != null) {
+        final cacheKey = 'hmac_sha256:$data:$key';
+        if (!_isCached(cacheKey)) {
+          try {
+            final result = await NativeChannel.instance.hmacSHA256(data, key);
+            if (result != null) cryptoResults[cacheKey] = result;
+          } catch (_) {}
+        }
+      }
+    }
+
     if (cryptoResults.isNotEmpty) {
       await preCacheCryptoResults(cryptoResults);
+    }
+
+    // 6.4 扫描 java.post 调用（POST 请求预缓存）
+    final postPattern = RegExp(
+      r"""java\.post\s*\(\s*["']([^"']+)["']\s*,\s*["']([^"']*)["']""",
+      multiLine: true,
+    );
+    final postUrls = <String, String>{}; // url -> body
+    for (final match in postPattern.allMatches(jsCode)) {
+      final url = match.group(1);
+      final body = match.group(2) ?? '';
+      if (url != null && url.isNotEmpty) {
+        var resolvedUrl = url;
+        if (env != null) {
+          resolvedUrl = _resolveTemplateVars(url, env);
+        }
+        final absoluteUrl = _resolveUrl(resolvedUrl, baseUrl);
+        if (absoluteUrl.isNotEmpty && absoluteUrl.startsWith('http')) {
+          postUrls[absoluteUrl] = body;
+        }
+      }
+    }
+    if (postUrls.isNotEmpty) {
+      AppLogger.instance.debug(LogCategory.js, '预缓存 ${postUrls.length} 个POST请求');
+      final customHeaders = env?['headers'] as Map<String, String>?;
+      final postFutures = postUrls.entries.map((entry) async {
+        try {
+          final result = await NativeChannel.instance.httpPost(
+            entry.key,
+            body: entry.value,
+            headers: customHeaders,
+          );
+          if (result != null) {
+            return MapEntry('http_post:${entry.key}', result);
+          }
+        } catch (e) {
+          AppLogger.instance.warn(LogCategory.js, '预缓存POST失败: ${entry.key}', detail: e.toString());
+        }
+        return null;
+      });
+      final postResults = await Future.wait(postFutures);
+      final postCacheEntries = <String, String>{};
+      for (final entry in postResults) {
+        if (entry != null) postCacheEntries[entry.key] = entry.value;
+      }
+      if (postCacheEntries.isNotEmpty) {
+        await preCacheHttpResults(postCacheEntries);
+      }
+    }
+
+    // 6.5 扫描 java.head 调用（HEAD 请求预缓存）
+    final headPattern = RegExp(
+      r"""java\.head\s*\(\s*["']([^"']+)["']""",
+      multiLine: true,
+    );
+    final headUrls = <String>{};
+    for (final match in headPattern.allMatches(jsCode)) {
+      final url = match.group(1);
+      if (url != null && url.isNotEmpty) {
+        var resolvedUrl = url;
+        if (env != null) {
+          resolvedUrl = _resolveTemplateVars(url, env);
+        }
+        final absoluteUrl = _resolveUrl(resolvedUrl, baseUrl);
+        if (absoluteUrl.isNotEmpty && absoluteUrl.startsWith('http')) {
+          headUrls.add(absoluteUrl);
+        }
+      }
+    }
+    if (headUrls.isNotEmpty) {
+      AppLogger.instance.debug(LogCategory.js, '预缓存 ${headUrls.length} 个HEAD请求');
+      final customHeaders = env?['headers'] as Map<String, String>?;
+      final headFutures = headUrls.map((url) async {
+        try {
+          final result = await NativeChannel.instance.httpHead(url, headers: customHeaders);
+          if (result != null) {
+            // HEAD 请求返回 headers map，序列化为 JSON 字符串缓存
+            return MapEntry('http_head:$url', jsonEncode(result));
+          }
+        } catch (e) {
+          AppLogger.instance.warn(LogCategory.js, '预缓存HEAD失败: $url', detail: e.toString());
+        }
+        return null;
+      });
+      final headResults = await Future.wait(headFutures);
+      final headCacheEntries = <String, String>{};
+      for (final entry in headResults) {
+        if (entry != null) headCacheEntries[entry.key] = entry.value;
+      }
+      if (headCacheEntries.isNotEmpty) {
+        await preCacheHttpResults(headCacheEntries);
+      }
+    }
+
+    // 6.6 扫描 java.getCookie 调用（Cookie 预缓存）
+    final cookiePattern = RegExp(
+      r"""java\.getCookie\s*\(\s*["']([^"']+)["']""",
+      multiLine: true,
+    );
+    final cookieUrls = <String>{};
+    for (final match in cookiePattern.allMatches(jsCode)) {
+      final tag = match.group(1);
+      if (tag != null && tag.isNotEmpty) {
+        cookieUrls.add(tag);
+      }
+    }
+    if (cookieUrls.isNotEmpty) {
+      AppLogger.instance.debug(LogCategory.js, '预缓存 ${cookieUrls.length} 个Cookie请求');
+      final cookieFutures = cookieUrls.map((tag) async {
+        try {
+          final result = await NativeChannel.instance.getCookie(tag);
+          if (result != null) {
+            return MapEntry('cookie:$tag', result);
+          }
+        } catch (e) {
+          AppLogger.instance.warn(LogCategory.js, '预缓存Cookie失败: $tag', detail: e.toString());
+        }
+        return null;
+      });
+      final cookieResults = await Future.wait(cookieFutures);
+      final cookieCacheEntries = <String, String>{};
+      for (final entry in cookieResults) {
+        if (entry != null) cookieCacheEntries[entry.key] = entry.value;
+      }
+      if (cookieCacheEntries.isNotEmpty) {
+        await preCacheHttpResults(cookieCacheEntries);
+      }
     }
 
     // 7. 预缓存 HTML 解析结果（使用 Dart 原生 html 包）

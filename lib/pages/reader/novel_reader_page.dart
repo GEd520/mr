@@ -297,7 +297,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
 
     // 缓存没有则从网络获取
     if (content == null || content.isEmpty) {
-      content = await _dataProvider!.getContent(_book!, chapter);
+      content = await _dataProvider!.getContent(_book!, chapter, allChapters: _chapters);
       // 保存到缓存
       if (content != null && content.isNotEmpty && _book!.originType == BookOriginType.online) {
         unawaited(ChapterCacheService.instance.saveChapterContent(_book!, chapter, content));

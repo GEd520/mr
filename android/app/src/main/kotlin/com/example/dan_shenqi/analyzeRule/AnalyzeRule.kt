@@ -21,6 +21,10 @@ class AnalyzeRule(
     /** JS 评估回调，由调用方注入 */
     var jsEvaluator: ((String, Any?) -> Any?)? = null
 
+    // 对齐 legado：book/chapter 上下文，JS 中可通过 book/chapter 变量访问
+    private var book: Map<String, Any?>? = null
+    private var chapter: Map<String, Any?>? = null
+
     private fun evalJS(jsStr: String, result: Any?): Any? {
         return jsEvaluator?.invoke(jsStr, result)
     }
@@ -52,13 +56,29 @@ class AnalyzeRule(
         isJSON = when (content) {
             is Element -> false
             else -> content.toString().let { str ->
-                str.trimStart().startsWith("{") || str.trimStart().startsWith("[")
+                val trimmed = str.trimStart()
+                // 对齐 legado：检查首尾是否匹配 JSON 格式
+                (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+                (trimmed.startsWith("[") && trimmed.endsWith("]"))
             }
         }
         baseUrl?.let { this.baseUrl = it }
         analyzeByXPath = null
         analyzeByJSoup = null
         analyzeByJSonPath = null
+        return this
+    }
+
+    /**
+     * 对齐 legado：设置 HTTP 重定向后的实际 URL
+     * 用于 getAbsoluteURL 拼接相对路径时作为基准
+     * legado 在 BookChapterList/BookContent/BookInfo 中都会调用 setRedirectUrl
+     */
+    fun setRedirectUrl(url: String): AnalyzeRule {
+        try {
+            redirectUrl = java.net.URL(url)
+        } catch (_: Exception) {
+        }
         return this
     }
 
@@ -69,6 +89,16 @@ class AnalyzeRule(
 
     fun setSource(source: Map<String, Any?>?): AnalyzeRule {
         this.source = source
+        return this
+    }
+
+    fun setBook(book: Map<String, Any?>?): AnalyzeRule {
+        this.book = book
+        return this
+    }
+
+    fun setChapter(chapter: Map<String, Any?>?): AnalyzeRule {
+        this.chapter = chapter
         return this
     }
 
@@ -161,7 +191,9 @@ class AnalyzeRule(
             if (result is List<*>) {
                 for (url in result) {
                     if (url == null) continue
-                    val absoluteURL = getAbsoluteURL(redirectUrl, url.toString())
+                    val raw = url.toString()
+                    val absoluteURL = getAbsoluteURL(redirectUrl, raw)
+                    android.util.Log.d("AnalyzeRule", "getStringList[isUrl] base=[$baseUrl] redirect=[$redirectUrl] raw=[$raw] -> abs=[$absoluteURL]")
                     if (absoluteURL.isNotEmpty() && !urlList.contains(absoluteURL)) {
                         urlList.add(absoluteURL)
                     }
@@ -177,10 +209,10 @@ class AnalyzeRule(
         return listOf(result.toString())
     }
 
-    fun getString(ruleStr: String?, mContent: Any? = null, isUrl: Boolean = false): String {
+    fun getString(ruleStr: String?, mContent: Any? = null, isUrl: Boolean = false, unescape: Boolean = true): String {
         if (ruleStr.isNullOrEmpty()) return ""
         val ruleList = splitSourceRuleCacheString(ruleStr)
-        return getString(ruleList, mContent, isUrl)
+        return getString(ruleList, mContent, isUrl, unescape)
     }
 
     fun getString(
@@ -365,24 +397,26 @@ class AnalyzeRule(
         return variableMap[key] ?: ""
     }
 
+    /**
+     * 对齐 legado NetworkUtils.getAbsoluteURL
+     * 完全复制 legado 的 URL 拼接逻辑
+     */
     private fun getAbsoluteURL(redirectUrl: URL?, url: String): String {
         if (url.isEmpty()) return ""
-        if (url.startsWith("http://") || url.startsWith("https://")) return url
-        if (url.startsWith("//")) return "https:$url"
-        if (url.startsWith("/")) {
-            val base = baseUrl ?: redirectUrl?.toString() ?: return url
-            try {
-                val u = URL(base)
-                return "${u.protocol}://${u.host}${if (u.port > 0 && u.port != u.defaultPort) ":${u.port}" else ""}$url"
-            } catch (_: Exception) {
-                return url
-            }
-        }
-        val base = baseUrl ?: redirectUrl?.toString() ?: return url
+        val trimmed = url.trim()
+        // 对齐 legado isAbsUrl(): 大小写不敏感
+        val lower = trimmed.lowercase(Locale.ROOT)
+        if (lower.startsWith("http://") || lower.startsWith("https://")) return trimmed
+        // 对齐 legado isDataUrl()
+        if (lower.startsWith("data:")) return trimmed
+        // 对齐 legado: javascript 前缀返回空
+        if (lower.startsWith("javascript")) return ""
+        if (redirectUrl == null) return trimmed
+        // 对齐 legado: 直接用 URL(baseURL, relativePath) 拼接
         return try {
-            URL(URL(base), url).toString()
+            URL(redirectUrl, trimmed).toString()
         } catch (_: Exception) {
-            url
+            trimmed
         }
     }
 

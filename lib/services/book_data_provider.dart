@@ -2,6 +2,7 @@ import '../models/book.dart';
 import '../models/book_source.dart';
 import '../models/chapter.dart';
 import 'local_book/local_book_service.dart';
+import 'app_logger.dart';
 import 'source_engine/source_engine.dart';
 import 'storage_service.dart';
 
@@ -164,6 +165,16 @@ class OnlineBookDataProvider implements BookDataProvider {
         if (idx >= 0 && idx + 1 < allChapters.length) {
           nextChapterUrl = allChapters[idx + 1].url;
         }
+        if (nextChapterUrl == null) {
+          AppLogger.instance.warn(LogCategory.parse,
+              '熔断: 未找到下一章URL (idx=$idx, chapters=${allChapters.length}, chapterUrl=${chapter.url})');
+        } else {
+          AppLogger.instance.debug(LogCategory.parse,
+              '熔断: 下一章URL=$nextChapterUrl (idx=$idx)');
+        }
+      } else {
+        AppLogger.instance.warn(LogCategory.parse,
+            '熔断: allChapters 为空，无法计算 nextChapterUrl');
       }
       return webBook.getContent(chapter.url!, book: book, chapter: chapter,
           nextChapterUrl: nextChapterUrl);

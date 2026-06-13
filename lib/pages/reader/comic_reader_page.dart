@@ -308,7 +308,7 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
           images = cachedImages;
         } else {
           // 缓存没有则从网络获取
-          final content = await _dataProvider!.getContent(_book!, chapter);
+          final content = await _dataProvider!.getContent(_book!, chapter, allChapters: _chapters);
           images = _extractImageUrls(
             content ?? '',
             baseUrl: chapter.url ?? _book!.bookUrl,
@@ -319,7 +319,7 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
           }
         }
       } else {
-        final content = await _dataProvider!.getContent(_book!, chapter);
+        final content = await _dataProvider!.getContent(_book!, chapter, allChapters: _chapters);
         images = _extractImageUrls(
           content ?? '',
           baseUrl: chapter.url ?? _book!.bookUrl,
@@ -897,14 +897,14 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
         if (cachedImages != null && cachedImages.isNotEmpty) {
           images = cachedImages;
         } else {
-          final content = await _dataProvider!.getContent(_book!, chapter);
+          final content = await _dataProvider!.getContent(_book!, chapter, allChapters: _chapters);
           images = _extractImageUrls(content ?? '', baseUrl: chapter.url ?? _book!.bookUrl);
           if (images.isNotEmpty) {
             unawaited(ChapterCacheService.instance.saveComicChapterContent(_book!, chapter, images));
           }
         }
       } else {
-        final content = await _dataProvider!.getContent(_book!, chapter);
+        final content = await _dataProvider!.getContent(_book!, chapter, allChapters: _chapters);
         images = _extractImageUrls(content ?? '', baseUrl: chapter.url ?? _book!.bookUrl);
       }
       return images;

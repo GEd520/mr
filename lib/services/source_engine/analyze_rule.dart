@@ -35,6 +35,7 @@ class AnalyzeRule {
   Map<String, dynamic>? _sourceInfo;  // 书源元数据
   Map<String, dynamic>? _bookInfo;    // 书籍信息
   Map<String, dynamic>? _chapterInfo; // 章节信息
+  String? _nextChapterUrl;            // 下一章URL（JS中可用）
 
   // 规则缓存
   static final Map<String, List<_SourceRule>> _stringRuleCache = {};
@@ -88,7 +89,13 @@ class AnalyzeRule {
     return this;
   }
 
+  AnalyzeRule setNextChapterUrl(String? url) {
+    _nextChapterUrl = url;
+    return this;
+  }
+
   /// 检测内容是否为JSON
+  /// 对齐 legado：检查首尾是否匹配 JSON 格式
   bool _detectJson(dynamic content) {
     if (content is Map || content is List) return true;
     if (content is String) {
@@ -225,27 +232,40 @@ class AnalyzeRule {
       {dynamic content, bool isUrl = false, bool unescape = true}) async {
     if (ruleStr == null || ruleStr.trim().isEmpty) return null;
 
-    // Android：优先走原生桥接
-    if (defaultTargetPlatform == TargetPlatform.android) {
+    // 对齐 legado：@js: 规则走 QuickJS（ES6+），不走 Native Rhino
+    // 混合规则（如 class.item@js:xxx）也走 Dart 端，因为 JS 部分需要 QuickJS
+    final hasJs = _containsJsRule(ruleStr);
+
+    if (!hasJs && defaultTargetPlatform == TargetPlatform.android) {
       final contentStr = _anyToString(content ?? _content);
       final result = await NativeChannel.instance.analyzeRuleGetString(
-        contentStr, ruleStr, baseUrl: _baseUrl, isUrl: isUrl,
+        contentStr, ruleStr,
+        baseUrl: _baseUrl, redirectUrl: _redirectUrl, isUrl: isUrl, unescape: unescape,
+        sourceInfo: _sourceInfo, bookInfo: _bookInfo, chapterInfo: _chapterInfo,
+        nextChapterUrl: _nextChapterUrl,
       );
       if (result != null) return result;
       // fallback 到 Dart
     }
 
-    return getString(ruleStr, content: content, isUrl: isUrl, unescape: unescape);
+    // 含 JS 的规则走异步路径（含预缓存桥接数据）
+    final ruleList = _splitSourceRuleCacheString(ruleStr);
+    return _getStringAsync(ruleList, mContent: content, isUrl: isUrl, unescape: unescape);
   }
 
   /// 异步获取字符串列表
   Future<List<String>> getStringListAsync(String? ruleStr, {bool isUrl = false}) async {
     if (ruleStr == null || ruleStr.trim().isEmpty) return [];
 
-    if (defaultTargetPlatform == TargetPlatform.android) {
+    final hasJs = _containsJsRule(ruleStr);
+
+    if (!hasJs && defaultTargetPlatform == TargetPlatform.android) {
       final contentStr = _anyToString(_content);
       final result = await NativeChannel.instance.analyzeRuleGetStringList(
-        contentStr, ruleStr, baseUrl: _baseUrl, isUrl: isUrl,
+        contentStr, ruleStr,
+        baseUrl: _baseUrl, redirectUrl: _redirectUrl, isUrl: isUrl,
+        sourceInfo: _sourceInfo, bookInfo: _bookInfo, chapterInfo: _chapterInfo,
+        nextChapterUrl: _nextChapterUrl,
       );
       if (result != null) return result;
     }
@@ -257,16 +277,26 @@ class AnalyzeRule {
   Future<List<dynamic>> getElementsAsync(String? ruleStr) async {
     if (ruleStr == null || ruleStr.trim().isEmpty) return [];
 
-    if (defaultTargetPlatform == TargetPlatform.android) {
+    final hasJs = _containsJsRule(ruleStr);
+
+    if (!hasJs && defaultTargetPlatform == TargetPlatform.android) {
       final contentStr = _anyToString(_content);
       final result = await NativeChannel.instance.analyzeRuleGetElements(
-        contentStr, ruleStr, baseUrl: _baseUrl,
+        contentStr, ruleStr,
+        baseUrl: _baseUrl, redirectUrl: _redirectUrl,
+        sourceInfo: _sourceInfo, bookInfo: _bookInfo, chapterInfo: _chapterInfo,
+        nextChapterUrl: _nextChapterUrl,
       );
       if (result != null) return result;
     }
 
     return getElements(ruleStr);
   }
+
+  /// 检测规则是否包含 JS 部分（@js: / <js>...</js>）
+  /// 含 JS 的规则走 Dart 端 QuickJS，不含 JS 的走 Native JSoup
+  static final _jsPattern = RegExp(r'@js:|<js>', caseSensitive: false);
+  bool _containsJsRule(String ruleStr) => _jsPattern.hasMatch(ruleStr);
 
   /// 将 content 转为字符串（Element → outerHtml，其他 → toString）
   String _anyToString(dynamic any) {
@@ -390,7 +420,11 @@ class AnalyzeRule {
       {dynamic mContent, bool isUrl = false, bool unescape = true}) {
     dynamic result = mContent ?? _content;
 
-    for (final rule in ruleList) {
+    // 追踪树：开始规则链追踪
+    JsTracer.instance.clear();
+
+    for (var i = 0; i < ruleList.length; i++) {
+      final rule = ruleList[i];
       if (result == null) continue;
 
       // 执行 @put 规则
@@ -399,13 +433,37 @@ class AnalyzeRule {
       // 应用变量替换
       final appliedRule = _applyVariables(rule, result);
 
-      // 执行规则
-      result = _applyRule(result, appliedRule, listMode: false);
+      // 构建步骤描述
+      final stepDesc = '步骤${i + 1}/${ruleList.length} mode=${appliedRule.mode}';
+      final rulePreview = appliedRule.rule.length > 60
+          ? '${appliedRule.rule.substring(0, 60)}...'
+          : appliedRule.rule;
+      AppLogger.instance.debug(LogCategory.js, '[AnalyzeRule] $stepDesc',
+        detail: 'rule=$rulePreview, inputLen=${result?.toString().length ?? 0}');
+
+      // 执行规则（传递 stepDesc 给追踪器）
+      result = _applyRule(result, appliedRule, listMode: false, ruleStep: stepDesc);
+
+      // 记录步骤输出
+      final resultType = result?.runtimeType;
+      final resultLen = result?.toString().length ?? 0;
+      final resultPreview = result?.toString();
+      final resultShort = resultPreview != null && resultPreview.length > 100
+          ? '${resultPreview.substring(0, 100)}...' : resultPreview;
+      AppLogger.instance.debug(LogCategory.js, '[AnalyzeRule] $stepDesc 完成',
+        detail: 'resultType=$resultType, resultLen=$resultLen, preview=$resultShort');
 
       // 应用正则替换
       if (result != null && rule.replaceRegex.isNotEmpty) {
         result = _applyReplaceRegex(result.toString(), rule);
       }
+    }
+
+    // 输出完整 JS 执行树
+    final treeStr = JsTracer.instance.getTreeString();
+    if (treeStr.isNotEmpty && treeStr != '(no trace)') {
+      AppLogger.instance.debug(LogCategory.js, '[AnalyzeRule] JS执行树',
+        detail: treeStr);
     }
 
     if (result == null) return null;
@@ -430,6 +488,169 @@ class AnalyzeRule {
     }
 
     return resultStr.isEmpty ? null : resultStr;
+  }
+
+  /// 异步版 _getString：JS 步骤走异步路径（含预缓存），非 JS 步骤走同步路径
+  Future<String?> _getStringAsync(List<_SourceRule> ruleList,
+      {dynamic mContent, bool isUrl = false, bool unescape = true}) async {
+    dynamic result = mContent ?? _content;
+
+    // 追踪树：开始规则链追踪
+    JsTracer.instance.clear();
+
+    for (var i = 0; i < ruleList.length; i++) {
+      final rule = ruleList[i];
+      if (result == null) continue;
+
+      // 执行 @put 规则
+      _executePutRule(rule.putMap);
+
+      // 应用变量替换
+      final appliedRule = _applyVariables(rule, result);
+
+      // 构建步骤描述
+      final stepDesc = '步骤${i + 1}/${ruleList.length} mode=${appliedRule.mode}';
+      final rulePreview = appliedRule.rule.length > 60
+          ? '${appliedRule.rule.substring(0, 60)}...'
+          : appliedRule.rule;
+      AppLogger.instance.debug(LogCategory.js, '[AnalyzeRule] $stepDesc (async)',
+        detail: 'rule=$rulePreview, inputLen=${result?.toString().length ?? 0}');
+
+      // JS 步骤走异步路径，非 JS 步骤走同步路径
+      if (appliedRule.mode == RuleMode.js || appliedRule.mode == RuleMode.webJs) {
+        // 异步 JS 执行（含预缓存桥接数据）
+        final jsCode = appliedRule.mode == RuleMode.webJs
+            ? appliedRule.rule.substring(7) : appliedRule.rule;
+        result = await _applyJsAsync(result, jsCode, ruleStep: stepDesc);
+      } else {
+        // 非 JS 步骤走同步路径
+        result = _applyRule(result, appliedRule, listMode: false, ruleStep: stepDesc);
+      }
+
+      // 记录步骤输出
+      final resultType = result?.runtimeType;
+      final resultLen = result?.toString().length ?? 0;
+      final resultPreview = result?.toString();
+      final resultShort = resultPreview != null && resultPreview.length > 100
+          ? '${resultPreview.substring(0, 100)}...' : resultPreview;
+      AppLogger.instance.debug(LogCategory.js, '[AnalyzeRule] $stepDesc 完成 (async)',
+        detail: 'resultType=$resultType, resultLen=$resultLen, preview=$resultShort');
+
+      // 应用正则替换
+      if (result != null && rule.replaceRegex.isNotEmpty) {
+        result = _applyReplaceRegex(result.toString(), rule);
+      }
+    }
+
+    // 输出完整 JS 执行树
+    final treeStr = JsTracer.instance.getTreeString();
+    if (treeStr.isNotEmpty && treeStr != '(no trace)') {
+      AppLogger.instance.debug(LogCategory.js, '[AnalyzeRule] JS执行树',
+        detail: treeStr);
+    }
+
+    if (result == null) return null;
+
+    String resultStr = _toString(result) ?? '';
+
+    // HTML反转义
+    if (unescape && resultStr.contains('&')) {
+      resultStr = _unescapeHtml(resultStr);
+    }
+
+    // URL处理
+    if (isUrl) {
+      if (resultStr.isEmpty) return null;
+      if (resultStr.contains('\n')) {
+        resultStr = resultStr.split('\n').first.trim();
+      }
+      return _getAbsoluteUrl(resultStr);
+    }
+
+    return resultStr.isEmpty ? null : resultStr;
+  }
+
+  /// 异步 JS 执行（含预缓存桥接数据）
+  Future<dynamic> _applyJsAsync(dynamic content, String jsCode, {String? ruleStep}) async {
+    try {
+      // 收集上下文变量
+      final env = <String, dynamic>{
+        'baseUrl': _baseUrl ?? '',
+      };
+      env.addAll(_variableMap);
+      env.addAll(_variables);
+      if (_sourceInfo != null) {
+        env['source'] = _sourceInfo;
+        final sourceVars = _sourceInfo!['variable'];
+        if (sourceVars is Map) {
+          env['sourceVars'] = sourceVars;
+        }
+        final headerStr = _sourceInfo!['header'];
+        if (headerStr is String && headerStr.isNotEmpty) {
+          try {
+            final parsed = jsonDecode(headerStr);
+            if (parsed is Map) {
+              env['headers'] = Map<String, String>.from(parsed);
+            }
+          } catch (_) {}
+        }
+      }
+      if (_bookInfo != null) env['book'] = _bookInfo;
+      if (_chapterInfo != null) env['chapter'] = _chapterInfo;
+      env['cookie'] = <String, String>{};
+
+      final contentStr = content?.toString() ?? '';
+      final codePreview = jsCode.length > 200 ? '${jsCode.substring(0, 200)}...' : jsCode;
+      AppLogger.instance.debug(LogCategory.js, '[AnalyzeRule] 异步JS执行',
+        detail: 'content=${contentStr.length}chars, code=$codePreview');
+
+      // 追踪树：创建节点
+      JsTraceNode? traceNode;
+      if (JsTracer.instance.enabled) {
+        final tracer = JsTracer.instance;
+        final inputPreview = contentStr.length > 200 ? '${contentStr.substring(0, 200)}...' : contentStr;
+        if (tracer.isStackEmpty) {
+          traceNode = tracer.beginRoot('_applyJsAsync', 'QuickJS(async)', codePreview,
+            inputPreview: inputPreview, ruleStep: ruleStep);
+        } else {
+          traceNode = tracer.addChild('_applyJsAsync', 'QuickJS(async)', codePreview,
+            inputPreview: inputPreview, ruleStep: ruleStep);
+        }
+        tracer.push(traceNode);
+      }
+
+      final result = await JsEngine.instance.processJsRule(
+        contentStr,
+        jsCode,
+        baseUrl: _baseUrl,
+        sourceEngine: _sourceEngine,
+        env: env,
+      );
+
+      // 追踪树：记录输出
+      if (traceNode != null) {
+        final outputStr = result?.toString();
+        final outputShort = outputStr != null && outputStr.length > 200
+            ? '${outputStr.substring(0, 200)}...' : outputStr;
+        JsTracer.instance.pop(
+          outputPreview: outputShort,
+          outputType: result?.runtimeType.toString(),
+        );
+      }
+
+      // processJsRule 返回 String?，需要解析
+      if (result == null) return null;
+      if (result.isEmpty) return '';
+      // 尝试 JSON 解析（可能是数组或对象）
+      try {
+        final decoded = jsonDecode(result);
+        return decoded;
+      } catch (_) {}
+      return result;
+    } catch (e) {
+      AppLogger.instance.logJsError('AnalyzeRule', e.toString());
+      return null;
+    }
   }
 
   List<String> _getStringList(List<_SourceRule> ruleList,
@@ -531,7 +752,7 @@ class AnalyzeRule {
   // ================== 规则应用 ==================
 
   dynamic _applyRule(dynamic content, _SourceRule rule,
-      {required bool listMode}) {
+      {required bool listMode, String? ruleStep}) {
     final ruleStr = rule.rule;
     if (ruleStr.isEmpty) return content;
     if (rule.literal) return ruleStr;
@@ -542,11 +763,11 @@ class AnalyzeRule {
       case RuleMode.xpath:
         return _applyXPath(content, ruleStr, listMode: listMode);
       case RuleMode.js:
-        return _applyJs(content, ruleStr);
+        return _applyJs(content, ruleStr, ruleStep: ruleStep);
       case RuleMode.regex:
         return _applyRegex(content, ruleStr, listMode: listMode);
       case RuleMode.webJs:
-        return _applyJs(content, ruleStr.substring(7));
+        return _applyJs(content, ruleStr.substring(7), ruleStep: ruleStep);
       case RuleMode.default_:
         return listMode
             ? _jsoupGetElements(content, ruleStr)
@@ -1342,7 +1563,7 @@ class AnalyzeRule {
 
   /// JS 执行（借鉴 legado 的 evalJS 绑定上下文）
   /// 注入 java/source/book/chapter/cookie/result/baseUrl 等变量
-  dynamic _applyJs(dynamic content, String jsCode) {
+  dynamic _applyJs(dynamic content, String jsCode, {String? ruleStep}) {
     try {
       // 收集规则上下文变量，注入到JS作用域
       final vars = <String, dynamic>{};
@@ -1356,12 +1577,18 @@ class AnalyzeRule {
       // Add src variable (legado: src = content, the original HTML/JSON)
       if (!vars.containsKey('src')) vars['src'] = _content;
 
+      final contentPreview = content?.toString().length ?? 0;
+      final codePreview = jsCode.length > 100 ? '${jsCode.substring(0, 100)}...' : jsCode;
+      AppLogger.instance.debug(LogCategory.js, '[AnalyzeRule] 执行JS规则',
+        detail: 'content=${contentPreview}chars, code=$codePreview');
+
       return JsEngine.instance.executeSync(
         jsCode,
         content,
         baseUrl: _baseUrl,
         sourceEngine: _sourceEngine,
         variables: vars,
+        ruleStep: ruleStep,
       );
     } catch (e) {
       AppLogger.instance.logJsError('AnalyzeRule', e.toString());
@@ -1623,7 +1850,11 @@ class AnalyzeRule {
     if (value is String) return value;
     if (value is dom.Element) return value.text.trim();
     if (value is xml.XmlNode) return LegadoXPath.stringValue(value);
-    if (value is List) return value.isEmpty ? null : _toString(value.first);
+    if (value is List) {
+      if (value.isEmpty) return null;
+      // 对齐 legado：List 用换行符拼接，而非只取第一个元素
+      return value.map((e) => e?.toString() ?? '').where((e) => e.isNotEmpty).join('\n');
+    }
     return value.toString();
   }
 
