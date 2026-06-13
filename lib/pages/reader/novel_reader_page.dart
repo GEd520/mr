@@ -1036,7 +1036,9 @@ class _NovelReaderPageState extends State<NovelReaderPage>
                     },
                     itemCount: _pages.length,
                     itemBuilder: (context, index) {
-                      return _buildPageContent(provider, _pages[index]);
+                      return RepaintBoundary(
+                        child: _buildPageContent(provider, _pages[index]),
+                      );
                     },
                   ),
           ),
@@ -1082,7 +1084,9 @@ class _NovelReaderPageState extends State<NovelReaderPage>
                     },
                     itemCount: _pages.length,
                     itemBuilder: (context, index) {
-                      return _buildPageContent(provider, _pages[index]);
+                      return RepaintBoundary(
+                        child: _buildPageContent(provider, _pages[index]),
+                      );
                     },
                   ),
           ),
