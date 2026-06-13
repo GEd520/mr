@@ -225,7 +225,7 @@ class EngineDispatcher {
   ///   1. 含 @java:/@css:/@text:/@attr:/java: 前缀 → Rhino
   ///   2. 其他 → QuickJS → 失败 → Rust boa → 失败 → null
   Future<String?> execute(String code, {
-    String? result,
+    dynamic result,
     String? baseUrl,
     Map<String, dynamic>? env,
     JsEngineType? sourceEngine,
@@ -242,8 +242,18 @@ class EngineDispatcher {
 
     // QuickJS 路径（含自动降级到 Rust）
     _quickjsCount++;
+    // 序列化 result 用于 processJsRule 的 content 参数
+    String contentStr;
+    if (result is List || result is Map) {
+      contentStr = jsonEncode(result);
+    } else if (result is String) {
+      contentStr = result;
+    } else {
+      contentStr = result?.toString() ?? '';
+    }
     final quickjsResult = await JsEngine.instance.processJsRule(
-      result ?? '', resolved.code, baseUrl: baseUrl, sourceEngine: sourceEngine,
+      contentStr, resolved.code, baseUrl: baseUrl, sourceEngine: sourceEngine,
+      dynamicContent: result,
     );
 
     if (quickjsResult != null) return quickjsResult;

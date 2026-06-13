@@ -351,8 +351,8 @@ class JsEngine {
 
   /// 关键词自动识别引擎
   ///
-  /// - 含 java. 前缀调用且无 ES6 特征 → Rhino
   /// - 含 ES6 特征（不管有无 java.*）→ QuickJS
+  /// - 含 java. 调用但无 ES6 → QuickJS（桥接需要预缓存）
   /// - 无法确定 → null（使用书源级声明或默认值）
   JsEngineType? _autoDetectEngine(String code) {
     final hasJavaCall = RegExp(r'\bjava\.').hasMatch(code);
@@ -366,8 +366,11 @@ class JsEngine {
     }
 
     if (hasJavaCall && !hasES6) {
-      // 纯 Java 互操作，无 ES6 → Rhino
-      return JsEngineType.rhino;
+      // 含 java. 调用但无 ES6 → 也走 QuickJS
+      // 原因：java.* 桥接方法（java.ajax/get/post 等）需要预缓存机制，
+      // 只有 QuickJS 路径支持 _preCacheBridgeCalls
+      // Rhino 路径无法预缓存，桥接调用会失败
+      return JsEngineType.quickjs;
     }
 
     // 无法确定，返回 null 让上层决定
@@ -2481,7 +2484,16 @@ class JsEngine {
     final actualResult = dynamicContent ?? content;
 
     if (resolved.engine == JsEngineType.rhino) {
-      return _executeRhinoRule(resolved.code, result: actualResult?.toString() ?? content, env: mergedEnv);
+      // Rhino 路径：result 参数是 String?，需要正确序列化
+      String rhinoResult;
+      if (actualResult is List || actualResult is Map) {
+        rhinoResult = jsonEncode(actualResult);
+      } else if (actualResult is String) {
+        rhinoResult = actualResult;
+      } else {
+        rhinoResult = actualResult?.toString() ?? content;
+      }
+      return _executeRhinoRule(resolved.code, result: rhinoResult, env: mergedEnv);
     }
 
     // 借鉴 legado 的 preCache 机制：在执行 JS 前，预缓存 java.ajax/get/post 的结果
@@ -2581,7 +2593,7 @@ class JsEngine {
   /// - @js: / <js> → 自动识别引擎
   /// - 无前缀 → 自动识别引擎
   Future<String?> evaluateBookRule(String ruleCode, {
-    String? result,
+    dynamic result,
     Map<String, dynamic>? env,
     JsEngineType? sourceEngine,
   }) async {
@@ -2594,7 +2606,16 @@ class JsEngine {
     }
 
     if (resolved.engine == JsEngineType.rhino) {
-      return _executeRhinoRule(code, result: result, env: env);
+      // Rhino 路径：result 需要序列化为 String
+      String? rhinoResult;
+      if (result is List || result is Map) {
+        rhinoResult = jsonEncode(result);
+      } else if (result is String) {
+        rhinoResult = result;
+      } else {
+        rhinoResult = result?.toString();
+      }
+      return _executeRhinoRule(code, result: rhinoResult, env: env);
     }
 
     return _executeQuickJSRule(code, result: result, env: env);
@@ -2637,7 +2658,16 @@ class JsEngine {
       // 追踪树：创建节点
       if (JsTracer.instance.enabled) {
         final tracer = JsTracer.instance;
-        final inputPreview = result != null && result.length > 200 ? '${result.substring(0, 200)}...' : result;
+        // 安全生成 inputPreview：List/Map 用 jsonEncode，String 截断，其他 toString
+        String? inputPreview;
+        if (result is List || result is Map) {
+          final encoded = jsonEncode(result);
+          inputPreview = encoded.length > 200 ? '${encoded.substring(0, 200)}...' : encoded;
+        } else if (result is String) {
+          inputPreview = result.length > 200 ? '${result.substring(0, 200)}...' : result;
+        } else {
+          inputPreview = result?.toString();
+        }
         if (tracer._stack.isEmpty) {
           traceNode = tracer.beginRoot('_executeQuickJSRule', 'QuickJS', codePreview,
             inputPreview: inputPreview, ruleStep: ruleStep);
@@ -2866,7 +2896,7 @@ class JsEngine {
   /// QuickJS 执行失败时，降级到 Rust boa 引擎
   /// 通过 HTTP 调用 native-proxy 的 /api/js/* 接口
   Future<String?> fallbackToRustEngine(String jsCode, {
-    String? result,
+    dynamic result,
     Map<String, dynamic>? env,
   }) async {
     if (kIsWeb) return null;
@@ -2877,20 +2907,30 @@ class JsEngine {
       return null;
     }
 
+    // 序列化 result：List/Map 用 jsonEncode，String 直接用，其他 toString
+    String? resultStr;
+    if (result is List || result is Map) {
+      resultStr = jsonEncode(result);
+    } else if (result is String) {
+      resultStr = result;
+    } else {
+      resultStr = result?.toString();
+    }
+
     try {
       debugPrint('JsEngine: QuickJS 失败，降级到 Rust 引擎 (port: $apiPort)');
       final client = HttpClient();
       final code = Uri.encodeComponent(jsCode);
-      final resultStr = Uri.encodeComponent(result ?? '');
+      final encodedResult = Uri.encodeComponent(resultStr ?? '');
       final baseUrl = Uri.encodeComponent(env?['baseUrl'] ?? '');
       final bookJson = env?['book'] != null ? Uri.encodeComponent(jsonEncode(env!['book'])) : '';
       final chapterJson = env?['chapter'] != null ? Uri.encodeComponent(jsonEncode(env!['chapter'])) : '';
 
       final url = 'http://localhost:$apiPort/api/js/evaluateWithContext'
           '?code=$code'
-          '&result=$resultStr'
+          '&result=$encodedResult'
           '&baseUrl=$baseUrl'
-          '&content=$resultStr'
+          '&content=$encodedResult'
           '${bookJson.isNotEmpty ? '&book=$bookJson' : ''}'
           '${chapterJson.isNotEmpty ? '&chapter=$chapterJson' : ''}';
 

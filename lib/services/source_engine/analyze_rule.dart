@@ -1791,12 +1791,23 @@ class AnalyzeRule {
       if (_chapterInfo != null) env['chapter'] = _chapterInfo;
       env['cookie'] = <String, String>{};
 
+      // 序列化 content：List/Map 用 jsonEncode，String 直接用，其他 toString
+      String contentStr;
+      if (content is List || content is Map) {
+        contentStr = jsonEncode(content);
+      } else if (content is String) {
+        contentStr = content;
+      } else {
+        contentStr = content?.toString() ?? '';
+      }
+
       return await JsEngine.instance.processJsRule(
-        content?.toString() ?? '',
+        contentStr,
         jsCode,
         baseUrl: _baseUrl,
         sourceEngine: _sourceEngine,
         env: env,
+        dynamicContent: content,  // 保留原始类型：List/Map/String
       );
     } catch (e) {
       AppLogger.instance.logJsError('AnalyzeRule', e.toString());
