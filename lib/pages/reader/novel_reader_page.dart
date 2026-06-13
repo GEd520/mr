@@ -309,7 +309,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
 
     // 缓存没有则从网络获取
     if (content == null || content.isEmpty) {
-      content = await _dataProvider!.getContent(_book!, chapter);
+      content = await _dataProvider!.getContent(_book!, chapter, allChapters: _chapters);
       // 保存到缓存
       if (content != null && content.isNotEmpty && _book!.originType == BookOriginType.online) {
         unawaited(ChapterCacheService.instance.saveChapterContent(_book!, chapter, content));
@@ -353,7 +353,8 @@ class _NovelReaderPageState extends State<NovelReaderPage>
 
     if (_currentChapterIndex > 0) {
       final prevChapter = _chapters[_currentChapterIndex - 1];
-      _prevContent = await _dataProvider!.getContent(_book!, prevChapter);
+      _prevContent = await _dataProvider!.getContent(_book!, prevChapter,
+          allChapters: _chapters);
       _prevChapterTitle = prevChapter.title;
     } else {
       _prevContent = null;
@@ -362,7 +363,8 @@ class _NovelReaderPageState extends State<NovelReaderPage>
 
     if (_currentChapterIndex < _totalChapters - 1) {
       final nextChapter = _chapters[_currentChapterIndex + 1];
-      _nextContent = await _dataProvider!.getContent(_book!, nextChapter);
+      _nextContent = await _dataProvider!.getContent(_book!, nextChapter,
+          allChapters: _chapters);
       _nextChapterTitle = nextChapter.title;
     } else {
       _nextContent = null;
@@ -374,7 +376,8 @@ class _NovelReaderPageState extends State<NovelReaderPage>
     if (_book == null || _nextContent != null) return;
     if (_currentChapterIndex < _totalChapters - 1) {
       final nextChapter = _chapters[_currentChapterIndex + 1];
-      _nextContent = await _dataProvider!.getContent(_book!, nextChapter);
+      _nextContent = await _dataProvider!.getContent(_book!, nextChapter,
+          allChapters: _chapters);
       _nextChapterTitle = nextChapter.title;
       if (mounted) setState(() {});
     }

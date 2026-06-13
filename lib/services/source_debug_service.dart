@@ -434,7 +434,7 @@ class SourceDebugService {
       final chapterUrl = firstContent.url?.trim();
       if (chapterUrl != null && chapterUrl.isNotEmpty) {
         await _debugContent(bookSource, chapterUrl,
-            book: book, chapter: firstContent, webBook: webBook);
+          book: book, chapter: firstContent, webBook: webBook, allChapters: chapters);
       } else {
         log('≡首章链接为空，无法跳转正文', state: DebugState.error.code);
       }
@@ -450,6 +450,7 @@ class SourceDebugService {
     Book? book,
     Chapter? chapter,
     WebBook? webBook,
+    List<Chapter>? allChapters,
   }) async {
     if (_isCancelled) return;
 
@@ -457,10 +458,19 @@ class SourceDebugService {
     webBook ??= WebBook(bookSource);
 
     try {
+      // 计算下一章 URL 用于熔断
+      String? nextChapterUrl;
+      if (allChapters != null && allChapters.isNotEmpty && chapter?.url != null) {
+        final idx = allChapters.indexWhere((c) => c.url == chapter!.url);
+        if (idx >= 0 && idx + 1 < allChapters.length) {
+          nextChapterUrl = allChapters[idx + 1].url;
+        }
+      }
       final String? content = await webBook.getContent(
         chapterUrl,
         book: book,
         chapter: chapter,
+        nextChapterUrl: nextChapterUrl,
       );
       if (_isCancelled) return;
 

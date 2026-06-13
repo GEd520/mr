@@ -2,6 +2,7 @@ import '../models/book.dart';
 import '../models/book_source.dart';
 import '../models/chapter.dart';
 import 'local_book/local_book_service.dart';
+import 'app_logger.dart';
 import 'source_engine/source_engine.dart';
 import 'storage_service.dart';
 
@@ -15,7 +16,10 @@ abstract class BookDataProvider {
   Future<List<Chapter>> getChapterList(Book book);
 
   /// 获取章节内容
-  Future<String?> getContent(Book book, Chapter chapter);
+  /// [allChapters] 可选，传入完整章节列表后，正文翻页（nextContentUrl）
+  /// 一旦命中下一章地址即终止翻页（借鉴 legado 的"组值断点"机制）
+  Future<String?> getContent(Book book, Chapter chapter,
+      {List<Chapter>? allChapters});
 
   /// 搜索书籍
   Future<List<Book>> searchBooks(String keyword);
@@ -94,7 +98,8 @@ class LocalBookDataProvider implements BookDataProvider {
   }
 
   @override
-  Future<String?> getContent(Book book, Chapter chapter) {
+  Future<String?> getContent(Book book, Chapter chapter,
+      {List<Chapter>? allChapters}) {
     return LocalBookService.instance.getContent(book, chapter);
   }
 
@@ -145,13 +150,34 @@ class OnlineBookDataProvider implements BookDataProvider {
   }
 
   @override
-  Future<String?> getContent(Book book, Chapter chapter) async {
+  Future<String?> getContent(Book book, Chapter chapter,
+      {List<Chapter>? allChapters}) async {
     if (chapter.isVolume && (chapter.url ?? '').startsWith(chapter.title)) {
       return '';
     }
     final webBook = await _getWebBook();
     if (chapter.url != null) {
-      return webBook.getContent(chapter.url!, book: book, chapter: chapter);
+      // 对齐 legado BookContent.kt：只传下一章 URL 作为熔断断点
+      // 目录已获取完毕，下一章 URL 用于正文翻页时命中终止
+      String? nextChapterUrl;
+      if (allChapters != null && allChapters.isNotEmpty) {
+        final idx = allChapters.indexWhere((c) => c.url == chapter.url);
+        if (idx >= 0 && idx + 1 < allChapters.length) {
+          nextChapterUrl = allChapters[idx + 1].url;
+        }
+        if (nextChapterUrl == null) {
+          AppLogger.instance.warn(LogCategory.parse,
+              '熔断: 未找到下一章URL (idx=$idx, chapters=${allChapters.length}, chapterUrl=${chapter.url})');
+        } else {
+          AppLogger.instance.debug(LogCategory.parse,
+              '熔断: 下一章URL=$nextChapterUrl (idx=$idx)');
+        }
+      } else {
+        AppLogger.instance.warn(LogCategory.parse,
+            '熔断: allChapters 为空，无法计算 nextChapterUrl');
+      }
+      return webBook.getContent(chapter.url!, book: book, chapter: chapter,
+          nextChapterUrl: nextChapterUrl);
     }
     return null;
   }

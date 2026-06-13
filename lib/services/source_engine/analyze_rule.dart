@@ -8,6 +8,7 @@ import 'package:xml/xml.dart' as xml;
 
 import '../app_logger.dart';
 import '../native/js_engine.dart';
+import '../native/platform_channel.dart';
 import 'legado_json_path.dart';
 import 'legado_xpath.dart';
 
@@ -34,6 +35,7 @@ class AnalyzeRule {
   Map<String, dynamic>? _sourceInfo;  // 书源元数据
   Map<String, dynamic>? _bookInfo;    // 书籍信息
   Map<String, dynamic>? _chapterInfo; // 章节信息
+  String? _nextChapterUrl;            // 下一章URL（JS中可用）
 
   // 规则缓存
   static final Map<String, List<_SourceRule>> _stringRuleCache = {};
@@ -87,7 +89,13 @@ class AnalyzeRule {
     return this;
   }
 
+  AnalyzeRule setNextChapterUrl(String? url) {
+    _nextChapterUrl = url;
+    return this;
+  }
+
   /// 检测内容是否为JSON
+  /// 对齐 legado：检查首尾是否匹配 JSON 格式
   bool _detectJson(dynamic content) {
     if (content is Map || content is List) return true;
     if (content is String) {
@@ -213,6 +221,95 @@ class AnalyzeRule {
     return _getElement(ruleList);
   }
 
+  // ===== 原生桥接异步版本（Android 优先 + Dart fallback）=====
+
+  /// 异步获取字符串 — Android 优先走 Kotlin 原生 AnalyzeRule 引擎
+  /// 支持全部 6 种 Mode：Default(CSS/JSoup) / Json / XPath / Js / Regex / WebJs
+  /// [content] 可选覆盖 content
+  /// [isUrl] 结果是否为 URL（自动拼接为绝对路径）
+  /// [unescape] 是否反转义 HTML
+  Future<String?> getStringAsync(String? ruleStr,
+      {dynamic content, bool isUrl = false, bool unescape = true}) async {
+    if (ruleStr == null || ruleStr.trim().isEmpty) return null;
+
+    // 对齐 legado：@js: 规则走 QuickJS（ES6+），不走 Native Rhino
+    // 混合规则（如 class.item@js:xxx）也走 Dart 端，因为 JS 部分需要 QuickJS
+    final hasJs = _containsJsRule(ruleStr);
+
+    if (!hasJs && defaultTargetPlatform == TargetPlatform.android) {
+      final contentStr = _anyToString(content ?? _content);
+      final result = await NativeChannel.instance.analyzeRuleGetString(
+        contentStr, ruleStr,
+        baseUrl: _baseUrl, redirectUrl: _redirectUrl, isUrl: isUrl, unescape: unescape,
+        sourceInfo: _sourceInfo, bookInfo: _bookInfo, chapterInfo: _chapterInfo,
+        nextChapterUrl: _nextChapterUrl,
+      );
+      if (result != null) return result;
+      // fallback 到 Dart
+    }
+
+    // 含 JS 的规则走异步路径（含预缓存桥接数据）
+    final ruleList = _splitSourceRuleCacheString(ruleStr);
+    return _getStringAsync(ruleList, mContent: content, isUrl: isUrl, unescape: unescape);
+  }
+
+  /// 异步获取字符串列表
+  Future<List<String>> getStringListAsync(String? ruleStr, {bool isUrl = false}) async {
+    if (ruleStr == null || ruleStr.trim().isEmpty) return [];
+
+    final hasJs = _containsJsRule(ruleStr);
+
+    if (!hasJs && defaultTargetPlatform == TargetPlatform.android) {
+      final contentStr = _anyToString(_content);
+      final result = await NativeChannel.instance.analyzeRuleGetStringList(
+        contentStr, ruleStr,
+        baseUrl: _baseUrl, redirectUrl: _redirectUrl, isUrl: isUrl,
+        sourceInfo: _sourceInfo, bookInfo: _bookInfo, chapterInfo: _chapterInfo,
+        nextChapterUrl: _nextChapterUrl,
+      );
+      if (result != null) return result;
+    }
+
+    // 含 JS 的规则走异步路径
+    final ruleList = _splitSourceRuleCacheString(ruleStr);
+    return _getStringListAsync(ruleList, isUrl: isUrl);
+  }
+
+  /// 异步获取元素列表（返回 outerHtml 字符串列表，兼容后续二次解析）
+  Future<List<dynamic>> getElementsAsync(String? ruleStr) async {
+    if (ruleStr == null || ruleStr.trim().isEmpty) return [];
+
+    final hasJs = _containsJsRule(ruleStr);
+
+    if (!hasJs && defaultTargetPlatform == TargetPlatform.android) {
+      final contentStr = _anyToString(_content);
+      final result = await NativeChannel.instance.analyzeRuleGetElements(
+        contentStr, ruleStr,
+        baseUrl: _baseUrl, redirectUrl: _redirectUrl,
+        sourceInfo: _sourceInfo, bookInfo: _bookInfo, chapterInfo: _chapterInfo,
+        nextChapterUrl: _nextChapterUrl,
+      );
+      if (result != null) return result;
+    }
+
+    // 含 JS 的规则走异步路径
+    final ruleList = _splitSourceRuleCacheString(ruleStr);
+    return _getElementsAsync(ruleList);
+  }
+
+  /// 检测规则是否包含 JS 部分（@js: / <js>...</js>）
+  /// 含 JS 的规则走 Dart 端 QuickJS，不含 JS 的走 Native JSoup
+  static final _jsPattern = RegExp(r'@js:|<js>', caseSensitive: false);
+  bool _containsJsRule(String ruleStr) => _jsPattern.hasMatch(ruleStr);
+
+  /// 将 content 转为字符串（Element → outerHtml，其他 → toString）
+  String _anyToString(dynamic any) {
+    if (any == null) return '';
+    if (any is dom.Element) return any.outerHtml;
+    if (any is String) return any;
+    return any.toString();
+  }
+
   /// 获取Map列表
   List<Map<String, dynamic>> getMapList(String ruleStr) {
     return getElements(ruleStr)
@@ -327,7 +424,11 @@ class AnalyzeRule {
       {dynamic mContent, bool isUrl = false, bool unescape = true}) {
     dynamic result = mContent ?? _content;
 
-    for (final rule in ruleList) {
+    // 追踪树：开始规则链追踪
+    JsTracer.instance.clear();
+
+    for (var i = 0; i < ruleList.length; i++) {
+      final rule = ruleList[i];
       if (result == null) continue;
 
       // 执行 @put 规则
@@ -336,13 +437,37 @@ class AnalyzeRule {
       // 应用变量替换
       final appliedRule = _applyVariables(rule, result);
 
-      // 执行规则
-      result = _applyRule(result, appliedRule, listMode: false);
+      // 构建步骤描述
+      final stepDesc = '步骤${i + 1}/${ruleList.length} mode=${appliedRule.mode}';
+      final rulePreview = appliedRule.rule.length > 60
+          ? '${appliedRule.rule.substring(0, 60)}...'
+          : appliedRule.rule;
+      AppLogger.instance.debug(LogCategory.js, '[AnalyzeRule] $stepDesc',
+        detail: 'rule=$rulePreview, inputLen=${result?.toString().length ?? 0}');
+
+      // 执行规则（传递 stepDesc 给追踪器）
+      result = _applyRule(result, appliedRule, listMode: false, ruleStep: stepDesc);
+
+      // 记录步骤输出
+      final resultType = result?.runtimeType;
+      final resultLen = result?.toString().length ?? 0;
+      final resultPreview = result?.toString();
+      final resultShort = resultPreview != null && resultPreview.length > 100
+          ? '${resultPreview.substring(0, 100)}...' : resultPreview;
+      AppLogger.instance.debug(LogCategory.js, '[AnalyzeRule] $stepDesc 完成',
+        detail: 'resultType=$resultType, resultLen=$resultLen, preview=$resultShort');
 
       // 应用正则替换
       if (result != null && rule.replaceRegex.isNotEmpty) {
         result = _applyReplaceRegex(result.toString(), rule);
       }
+    }
+
+    // 输出完整 JS 执行树
+    final treeStr = JsTracer.instance.getTreeString();
+    if (treeStr.isNotEmpty && treeStr != '(no trace)') {
+      AppLogger.instance.debug(LogCategory.js, '[AnalyzeRule] JS执行树',
+        detail: treeStr);
     }
 
     if (result == null) return null;
@@ -369,6 +494,182 @@ class AnalyzeRule {
     return resultStr.isEmpty ? null : resultStr;
   }
 
+  /// 异步版 _getString：JS 步骤走异步路径（含预缓存），非 JS 步骤走同步路径
+  Future<String?> _getStringAsync(List<_SourceRule> ruleList,
+      {dynamic mContent, bool isUrl = false, bool unescape = true}) async {
+    dynamic result = mContent ?? _content;
+
+    // 追踪树：开始规则链追踪
+    JsTracer.instance.clear();
+
+    for (var i = 0; i < ruleList.length; i++) {
+      final rule = ruleList[i];
+      if (result == null) continue;
+
+      // 执行 @put 规则
+      _executePutRule(rule.putMap);
+
+      // 应用变量替换
+      final appliedRule = _applyVariables(rule, result);
+
+      // 构建步骤描述
+      final stepDesc = '步骤${i + 1}/${ruleList.length} mode=${appliedRule.mode}';
+      final rulePreview = appliedRule.rule.length > 60
+          ? '${appliedRule.rule.substring(0, 60)}...'
+          : appliedRule.rule;
+      AppLogger.instance.debug(LogCategory.js, '[AnalyzeRule] $stepDesc (async)',
+        detail: 'rule=$rulePreview, inputLen=${result?.toString().length ?? 0}');
+
+      // JS 步骤走异步路径，非 JS 步骤走同步路径
+      if (appliedRule.mode == RuleMode.js || appliedRule.mode == RuleMode.webJs) {
+        // 异步 JS 执行（含预缓存桥接数据）
+        final jsCode = appliedRule.mode == RuleMode.webJs
+            ? appliedRule.rule.substring(7) : appliedRule.rule;
+        result = await _applyJsAsync(result, jsCode, ruleStep: stepDesc);
+      } else {
+        // 非 JS 步骤走同步路径
+        result = _applyRule(result, appliedRule, listMode: false, ruleStep: stepDesc);
+      }
+
+      // 记录步骤输出
+      final resultType = result?.runtimeType;
+      final resultLen = result?.toString().length ?? 0;
+      final resultPreview = result?.toString();
+      final resultShort = resultPreview != null && resultPreview.length > 100
+          ? '${resultPreview.substring(0, 100)}...' : resultPreview;
+      AppLogger.instance.debug(LogCategory.js, '[AnalyzeRule] $stepDesc 完成 (async)',
+        detail: 'resultType=$resultType, resultLen=$resultLen, preview=$resultShort');
+
+      // 应用正则替换
+      if (result != null && rule.replaceRegex.isNotEmpty) {
+        result = _applyReplaceRegex(result.toString(), rule);
+      }
+    }
+
+    // 输出完整 JS 执行树
+    final treeStr = JsTracer.instance.getTreeString();
+    if (treeStr.isNotEmpty && treeStr != '(no trace)') {
+      AppLogger.instance.debug(LogCategory.js, '[AnalyzeRule] JS执行树',
+        detail: treeStr);
+    }
+
+    if (result == null) return null;
+
+    String resultStr = _toString(result) ?? '';
+
+    // HTML反转义
+    if (unescape && resultStr.contains('&')) {
+      resultStr = _unescapeHtml(resultStr);
+    }
+
+    // URL处理
+    if (isUrl) {
+      if (resultStr.isEmpty) return null;
+      if (resultStr.contains('\n')) {
+        resultStr = resultStr.split('\n').first.trim();
+      }
+      return _getAbsoluteUrl(resultStr);
+    }
+
+    return resultStr.isEmpty ? null : resultStr;
+  }
+
+  /// 异步 JS 执行（含预缓存桥接数据）
+  Future<dynamic> _applyJsAsync(dynamic content, String jsCode, {String? ruleStep}) async {
+    try {
+      // 收集上下文变量
+      final env = <String, dynamic>{
+        'baseUrl': _baseUrl ?? '',
+      };
+      env.addAll(_variableMap);
+      env.addAll(_variables);
+      if (_sourceInfo != null) {
+        env['source'] = _sourceInfo;
+        final sourceVars = _sourceInfo!['variable'];
+        if (sourceVars is Map) {
+          env['sourceVars'] = sourceVars;
+        }
+        final headerStr = _sourceInfo!['header'];
+        if (headerStr is String && headerStr.isNotEmpty) {
+          try {
+            final parsed = jsonDecode(headerStr);
+            if (parsed is Map) {
+              env['headers'] = Map<String, String>.from(parsed);
+            }
+          } catch (_) {}
+        }
+      }
+      if (_bookInfo != null) env['book'] = _bookInfo;
+      if (_chapterInfo != null) env['chapter'] = _chapterInfo;
+      env['cookie'] = <String, String>{};
+
+      // 正确序列化 content：List/Map 用 jsonEncode，String 直接传
+      // 对齐 _executeQuickJSSync 的序列化逻辑
+      String contentStr;
+      if (content is List || content is Map) {
+        contentStr = jsonEncode(content);
+      } else if (content is String) {
+        contentStr = content;
+      } else {
+        contentStr = content?.toString() ?? '';
+      }
+
+      final codePreview = jsCode.length > 200 ? '${jsCode.substring(0, 200)}...' : jsCode;
+      AppLogger.instance.debug(LogCategory.js, '[AnalyzeRule] 异步JS执行',
+        detail: 'content=${contentStr.length}chars, contentType=${content?.runtimeType}, code=$codePreview');
+
+      // 追踪树：创建节点
+      JsTraceNode? traceNode;
+      if (JsTracer.instance.enabled) {
+        final tracer = JsTracer.instance;
+        final inputPreview = contentStr.length > 200 ? '${contentStr.substring(0, 200)}...' : contentStr;
+        if (tracer.isStackEmpty) {
+          traceNode = tracer.beginRoot('_applyJsAsync', 'QuickJS(async)', codePreview,
+            inputPreview: inputPreview, ruleStep: ruleStep);
+        } else {
+          traceNode = tracer.addChild('_applyJsAsync', 'QuickJS(async)', codePreview,
+            inputPreview: inputPreview, ruleStep: ruleStep);
+        }
+        tracer.push(traceNode);
+      }
+
+      // 传递原始 content（dynamic 类型）给 processJsRule，
+      // 让 _executeQuickJSRule 根据类型正确序列化
+      final result = await JsEngine.instance.processJsRule(
+        contentStr,
+        jsCode,
+        baseUrl: _baseUrl,
+        sourceEngine: _sourceEngine,
+        env: env,
+        dynamicContent: content,  // 保留原始类型：List/Map/String
+      );
+
+      // 追踪树：记录输出
+      if (traceNode != null) {
+        final outputStr = result?.toString();
+        final outputShort = outputStr != null && outputStr.length > 200
+            ? '${outputStr.substring(0, 200)}...' : outputStr;
+        JsTracer.instance.pop(
+          outputPreview: outputShort,
+          outputType: result?.runtimeType.toString(),
+        );
+      }
+
+      // processJsRule 返回 String?，需要解析
+      if (result == null) return null;
+      if (result.isEmpty) return '';
+      // 尝试 JSON 解析（可能是数组或对象）
+      try {
+        final decoded = jsonDecode(result);
+        return decoded;
+      } catch (_) {}
+      return result;
+    } catch (e) {
+      AppLogger.instance.logJsError('AnalyzeRule', e.toString());
+      return null;
+    }
+  }
+
   List<String> _getStringList(List<_SourceRule> ruleList,
       {bool isUrl = false}) {
     dynamic result = _content;
@@ -391,6 +692,82 @@ class AnalyzeRule {
           result = _applyReplaceRegex(result.toString(), rule);
         }
       }
+    }
+
+    if (result == null) return [];
+
+    List<String> resultList;
+    if (result is List) {
+      resultList = result
+          .map((e) => _toString(e) ?? '')
+          .where((e) => e.isNotEmpty)
+          .toList();
+    } else {
+      final str = _toString(result);
+      resultList = str != null && str.isNotEmpty ? [str] : [];
+    }
+
+    if (isUrl) {
+      return resultList
+          .map((url) => _getAbsoluteUrl(url))
+          .where((e) => e.isNotEmpty)
+          .toList();
+    }
+
+    return resultList;
+  }
+
+  /// 异步版 _getStringList：JS 步骤走异步路径（含预缓存）
+  Future<List<String>> _getStringListAsync(List<_SourceRule> ruleList,
+      {bool isUrl = false}) async {
+    dynamic result = _content;
+
+    // 追踪树：开始规则链追踪
+    JsTracer.instance.clear();
+
+    for (var i = 0; i < ruleList.length; i++) {
+      final rule = ruleList[i];
+      if (result == null) continue;
+
+      _executePutRule(rule.putMap);
+      final appliedRule = _applyVariables(rule, result);
+
+      final stepDesc = '步骤${i + 1}/${ruleList.length} mode=${appliedRule.mode} (list)';
+      final rulePreview = appliedRule.rule.length > 60
+          ? '${appliedRule.rule.substring(0, 60)}...' : appliedRule.rule;
+      AppLogger.instance.debug(LogCategory.js, '[AnalyzeRule] $stepDesc (async)',
+        detail: 'rule=$rulePreview, inputLen=${result?.toString().length ?? 0}');
+
+      // JS 步骤走异步，非 JS 走同步
+      if (appliedRule.mode == RuleMode.js || appliedRule.mode == RuleMode.webJs) {
+        final jsCode = appliedRule.mode == RuleMode.webJs
+            ? appliedRule.rule.substring(7) : appliedRule.rule;
+        result = await _applyJsAsync(result, jsCode, ruleStep: stepDesc);
+      } else if (appliedRule.mode == RuleMode.default_) {
+        result = _jsoupGetStringList(result, appliedRule.rule);
+      } else {
+        result = _applyRule(result, appliedRule, listMode: true, ruleStep: stepDesc);
+      }
+
+      final resultType = result?.runtimeType;
+      final resultLen = result is List ? result.length : result?.toString().length ?? 0;
+      AppLogger.instance.debug(LogCategory.js, '[AnalyzeRule] $stepDesc 完成 (async)',
+        detail: 'resultType=$resultType, resultLen=$resultLen');
+
+      if (result != null && rule.replaceRegex.isNotEmpty) {
+        if (result is List) {
+          result = result.map((e) => _applyReplaceRegex(e.toString(), rule)).toList();
+        } else {
+          result = _applyReplaceRegex(result.toString(), rule);
+        }
+      }
+    }
+
+    // 输出完整 JS 执行树
+    final treeStr = JsTracer.instance.getTreeString();
+    if (treeStr.isNotEmpty && treeStr != '(no trace)') {
+      AppLogger.instance.debug(LogCategory.js, '[AnalyzeRule] JS执行树',
+        detail: treeStr);
     }
 
     if (result == null) return [];
@@ -465,10 +842,78 @@ class AnalyzeRule {
     return elements.isNotEmpty ? elements.first : null;
   }
 
+  /// 异步版 _getElements：JS 步骤走异步路径（含预缓存）
+  Future<List<dynamic>> _getElementsAsync(List<_SourceRule> ruleList) async {
+    dynamic result = _content;
+
+    // 追踪树：开始规则链追踪
+    JsTracer.instance.clear();
+
+    for (var i = 0; i < ruleList.length; i++) {
+      final rule = ruleList[i];
+      if (result == null) continue;
+
+      _executePutRule(rule.putMap);
+      final appliedRule = _applyVariables(rule, result);
+
+      final stepDesc = '步骤${i + 1}/${ruleList.length} mode=${appliedRule.mode} (elements)';
+      final rulePreview = appliedRule.rule.length > 60
+          ? '${appliedRule.rule.substring(0, 60)}...' : appliedRule.rule;
+      AppLogger.instance.debug(LogCategory.js, '[AnalyzeRule] $stepDesc (async)',
+        detail: 'rule=$rulePreview, inputLen=${result?.toString().length ?? 0}');
+
+      // JS 步骤走异步
+      if (appliedRule.mode == RuleMode.js || appliedRule.mode == RuleMode.webJs) {
+        final jsCode = appliedRule.mode == RuleMode.webJs
+            ? appliedRule.rule.substring(7) : appliedRule.rule;
+        result = await _applyJsAsync(result, jsCode, ruleStep: stepDesc);
+      } else if (result is List && appliedRule.mode == RuleMode.default_) {
+        // 借鉴 legado：多步规则中，如果上一步返回元素列表，
+        // 需要对每个元素分别执行规则，然后合并结果
+        final merged = <dynamic>[];
+        for (final item in result) {
+          final itemResult = _applyRule(item, appliedRule, listMode: true, ruleStep: stepDesc);
+          if (itemResult is List) {
+            merged.addAll(itemResult);
+          } else if (itemResult != null) {
+            merged.add(itemResult);
+          }
+        }
+        result = merged;
+      } else {
+        result = _applyRule(result, appliedRule, listMode: true, ruleStep: stepDesc);
+      }
+
+      final resultType = result?.runtimeType;
+      final resultLen = result is List ? result.length : result?.toString().length ?? 0;
+      AppLogger.instance.debug(LogCategory.js, '[AnalyzeRule] $stepDesc 完成 (async)',
+        detail: 'resultType=$resultType, resultLen=$resultLen');
+
+      if (result != null && rule.replaceRegex.isNotEmpty) {
+        if (result is List) {
+          result = result.map((e) => _applyReplaceRegex(e.toString(), rule)).toList();
+        } else {
+          result = _applyReplaceRegex(result.toString(), rule);
+        }
+      }
+    }
+
+    // 输出完整 JS 执行树
+    final treeStr = JsTracer.instance.getTreeString();
+    if (treeStr.isNotEmpty && treeStr != '(no trace)') {
+      AppLogger.instance.debug(LogCategory.js, '[AnalyzeRule] JS执行树',
+        detail: treeStr);
+    }
+
+    if (result == null) return [];
+    if (result is List) return result;
+    return [result];
+  }
+
   // ================== 规则应用 ==================
 
   dynamic _applyRule(dynamic content, _SourceRule rule,
-      {required bool listMode}) {
+      {required bool listMode, String? ruleStep}) {
     final ruleStr = rule.rule;
     if (ruleStr.isEmpty) return content;
     if (rule.literal) return ruleStr;
@@ -479,11 +924,11 @@ class AnalyzeRule {
       case RuleMode.xpath:
         return _applyXPath(content, ruleStr, listMode: listMode);
       case RuleMode.js:
-        return _applyJs(content, ruleStr);
+        return _applyJs(content, ruleStr, ruleStep: ruleStep);
       case RuleMode.regex:
         return _applyRegex(content, ruleStr, listMode: listMode);
       case RuleMode.webJs:
-        return _applyJs(content, ruleStr.substring(7));
+        return _applyJs(content, ruleStr.substring(7), ruleStep: ruleStep);
       case RuleMode.default_:
         return listMode
             ? _jsoupGetElements(content, ruleStr)
@@ -597,7 +1042,7 @@ class AnalyzeRule {
   /// 选择单个规则对应的元素
   List<dynamic> _selectElementsSingle(dom.Element root, String rawRule) {
     final parsed = _ElementSelector.parse(rawRule);
-    List<dom.Element> elements;
+    List<dom.Element> elements = [];
     var beforeRule = parsed.beforeRule;
 
     // 处理 css: 前缀（legado 风格，trim() 可能去掉了 @ 前缀）
@@ -676,14 +1121,235 @@ class AnalyzeRule {
               root.querySelectorAll(beforeRule).toList(),
               html_query.matches(root, beforeRule),
             );
+            // 借鉴 legado：html 包的 querySelectorAll 可能不支持 :nth-child(n+X) 公式
+            // 如果结果为空且选择器包含 :nth-child，手动解析并过滤
+            if (elements.isEmpty && beforeRule.contains(':nth-child')) {
+              elements = _selectNthChild(root, beforeRule);
+            }
           } catch (e) {
             debugPrint('CSS选择器失败: $beforeRule $e');
-            elements = [];
+            // fallback: 尝试手动处理 :nth-child
+            if (beforeRule.contains(':nth-child')) {
+              try {
+                elements = _selectNthChild(root, beforeRule);
+              } catch (_) {}
+            }
+            // fallback: 手动处理属性选择器 [attr$=xxx] [attr~=xxx] [attr^=xxx] [attr*=xxx]
+            if (beforeRule.contains('[') && beforeRule.contains('=')) {
+              try {
+                elements = _selectByAttribute(root, beforeRule);
+              } catch (_) {}
+            }
+          }
+          // html 包可能不支持属性选择器，手动 fallback
+          if (elements.isEmpty && beforeRule.contains('[') && beforeRule.contains('=')) {
+            try {
+              elements = _selectByAttribute(root, beforeRule);
+            } catch (_) {}
           }
       }
     }
 
     return parsed.apply(elements);
+  }
+
+  /// 手动处理 :nth-child(n+X) 等 CSS 伪类选择器
+  /// html 包的 querySelectorAll 不支持 :nth-child 的 n+ 公式语法
+  /// 借鉴 legado：拆分选择器，先选基础元素，再按 nth-child 过滤
+  List<dom.Element> _selectNthChild(dom.Element root, String selector) {
+    // 解析 :nth-child 公式
+    final nthPattern = RegExp(r':nth-child\(([^)]+)\)');
+    final matches = nthPattern.allMatches(selector).toList();
+    if (matches.isEmpty) return [];
+
+    // 移除所有 :nth-child(...) 得到基础选择器
+    var baseSelector = selector.replaceAll(nthPattern, '').trim();
+    // 清理尾部多余空格和伪类分隔符
+    baseSelector = baseSelector.replaceAll(RegExp(r'\s+$'), '');
+
+    // 获取基础元素
+    List<dom.Element> baseElements;
+    try {
+      baseElements = root.querySelectorAll(baseSelector).whereType<dom.Element>().toList();
+    } catch (e) {
+      // 基础选择器也失败，尝试用标签名
+      final tagMatch = RegExp(r'^([a-zA-Z][\w-]*)').firstMatch(baseSelector);
+      if (tagMatch != null) {
+        baseElements = root.getElementsByTagName(tagMatch.group(1)!).toList();
+      } else {
+        baseElements = root.children.toList();
+      }
+    }
+
+    if (baseElements.isEmpty) return [];
+
+    // 对每个 :nth-child 公式进行过滤
+    var current = baseElements;
+    for (final match in matches) {
+      final formula = match.group(1)!.trim();
+      current = _filterByNthChild(current, formula);
+    }
+
+    return current;
+  }
+
+  /// 根据 nth-child 公式过滤元素
+  /// 支持: n+1, 2n+1, odd, even, 3, -n+3 等
+  List<dom.Element> _filterByNthChild(List<dom.Element> elements, String formula) {
+    final lower = formula.toLowerCase().trim();
+
+    // 特殊关键字
+    if (lower == 'odd') {
+      return elements.asMap().entries
+          .where((e) => e.key % 2 == 0) // 1-based: 1st, 3rd, 5th...
+          .map((e) => e.value)
+          .toList();
+    }
+    if (lower == 'even') {
+      return elements.asMap().entries
+          .where((e) => e.key % 2 == 1) // 1-based: 2nd, 4th, 6th...
+          .map((e) => e.value)
+          .toList();
+    }
+
+    // 纯数字: nth-child(3) → 第3个
+    final pureNum = int.tryParse(lower);
+    if (pureNum != null) {
+      final idx = pureNum - 1; // CSS nth-child 是 1-based
+      if (idx >= 0 && idx < elements.length) return [elements[idx]];
+      return [];
+    }
+
+    // 公式: An+B 或 n+B 或 -n+B 等
+    final formulaPattern = RegExp(r'^(-?\d*)n\s*([+-]\s*\d+)?$');
+    final m = formulaPattern.firstMatch(lower);
+    if (m != null) {
+      var aStr = m.group(1);
+      var bStr = m.group(2);
+
+      // 解析 A
+      int a;
+      if (aStr == null || aStr.isEmpty || aStr == '+') {
+        a = 1;
+      } else if (aStr == '-') {
+        a = -1;
+      } else {
+        a = int.parse(aStr);
+      }
+
+      // 解析 B
+      int b = 0;
+      if (bStr != null) {
+        b = int.parse(bStr.replaceAll(' ', ''));
+      }
+
+      // 对于 n+1 (a=1, b=1): 匹配 1, 2, 3, ... → 所有元素从第 b 个开始
+      // 对于 -n+3 (a=-1, b=3): 匹配 3, 2, 1 → 前3个
+      // 对于 2n+1 (a=2, b=1): 匹配 1, 3, 5, ...
+      final result = <dom.Element>[];
+      for (var i = 0; i < elements.length; i++) {
+        final nth = i + 1; // CSS nth-child 是 1-based
+        // 检查 nth = a*k + b 是否有非负整数解 k
+        if (a == 0) {
+          if (nth == b) result.add(elements[i]);
+        } else {
+          final diff = nth - b;
+          if (diff % a == 0) {
+            final k = diff ~/ a;
+            if (k >= 0) result.add(elements[i]);
+          }
+        }
+      }
+      return result;
+    }
+
+    return elements;
+  }
+
+  /// 手动处理 CSS 属性选择器 [attr$=xxx] [attr~=xxx] [attr^=xxx] [attr*=xxx] [attr=xxx]
+  /// html 包的 querySelectorAll 可能不支持这些高级属性选择器
+  /// 借鉴 legado：直接用 JSoup 的 select()，咱手动实现
+  List<dom.Element> _selectByAttribute(dom.Element root, String selector) {
+    // 解析选择器：标签名 + 属性条件
+    // 例如：[property$=author]、meta[property$=author]、[property~=category|status]
+    final attrPattern = RegExp(r'\[([^\]]+)\]');
+    final matches = attrPattern.allMatches(selector).toList();
+    if (matches.isEmpty) return [];
+
+    // 提取标签名（[] 之前的部分）
+    var tagPart = selector.substring(0, selector.indexOf('[')).trim();
+    if (tagPart.isEmpty) tagPart = '*';
+
+    // 获取候选元素
+    List<dom.Element> candidates;
+    if (tagPart == '*') {
+      candidates = root.querySelectorAll('*').whereType<dom.Element>().toList();
+    } else {
+      candidates = root.getElementsByTagName(tagPart).toList();
+    }
+
+    // 对每个属性条件进行过滤
+    for (final match in matches) {
+      final attrExpr = match.group(1)!;
+
+      // 解析属性选择器操作符：$= ~= ^= *= =
+      String attrName;
+      String attrValue;
+      bool Function(String?, String) matcher;
+
+      if (attrExpr.contains('\$=')) {
+        // [attr$=value] — 以 value 结尾
+        final parts = attrExpr.split('\$=');
+        attrName = parts[0].trim();
+        attrValue = parts[1].trim().replaceAll('"', '').replaceAll("'", '');
+        matcher = (actual, expected) => actual != null && actual.endsWith(expected);
+      } else if (attrExpr.contains('~=')) {
+        // [attr~=value] — 包含空格分隔的词
+        final parts = attrExpr.split('~=');
+        attrName = parts[0].trim();
+        attrValue = parts[1].trim().replaceAll('"', '').replaceAll("'", '');
+        // 借鉴 legado：~=` 中的值可能包含 | 分隔符，表示"匹配任意一个"
+        // 例如 [property~=category|status] → 匹配 category 或 status
+        final values = attrValue.split('|');
+        matcher = (actual, expected) {
+          if (actual == null) return false;
+          for (final v in values) {
+            if (actual.split(' ').any((word) => word == v)) return true;
+          }
+          return false;
+        };
+      } else if (attrExpr.contains('^=')) {
+        // [attr^=value] — 以 value 开头
+        final parts = attrExpr.split('^=');
+        attrName = parts[0].trim();
+        attrValue = parts[1].trim().replaceAll('"', '').replaceAll("'", '');
+        matcher = (actual, expected) => actual != null && actual.startsWith(expected);
+      } else if (attrExpr.contains('*=')) {
+        // [attr*=value] — 包含 value
+        final parts = attrExpr.split('*=');
+        attrName = parts[0].trim();
+        attrValue = parts[1].trim().replaceAll('"', '').replaceAll("'", '');
+        matcher = (actual, expected) => actual != null && actual.contains(expected);
+      } else if (attrExpr.contains('=')) {
+        // [attr=value] — 精确匹配
+        final parts = attrExpr.split('=');
+        attrName = parts[0].trim();
+        attrValue = parts[1].trim().replaceAll('"', '').replaceAll("'", '');
+        matcher = (actual, expected) => actual == expected;
+      } else {
+        // [attr] — 属性存在
+        attrName = attrExpr.trim();
+        attrValue = '';
+        matcher = (actual, _) => actual != null;
+      }
+
+      candidates = candidates.where((e) {
+        final actual = e.attributes[attrName] ?? e.attributes[attrName.toLowerCase()];
+        return matcher(actual, attrValue);
+      }).toList();
+    }
+
+    return candidates;
   }
 
   List<dom.Element> _withSelf(
@@ -1058,7 +1724,7 @@ class AnalyzeRule {
 
   /// JS 执行（借鉴 legado 的 evalJS 绑定上下文）
   /// 注入 java/source/book/chapter/cookie/result/baseUrl 等变量
-  dynamic _applyJs(dynamic content, String jsCode) {
+  dynamic _applyJs(dynamic content, String jsCode, {String? ruleStep}) {
     try {
       // 收集规则上下文变量，注入到JS作用域
       final vars = <String, dynamic>{};
@@ -1072,12 +1738,18 @@ class AnalyzeRule {
       // Add src variable (legado: src = content, the original HTML/JSON)
       if (!vars.containsKey('src')) vars['src'] = _content;
 
+      final contentPreview = content?.toString().length ?? 0;
+      final codePreview = jsCode.length > 100 ? '${jsCode.substring(0, 100)}...' : jsCode;
+      AppLogger.instance.debug(LogCategory.js, '[AnalyzeRule] 执行JS规则',
+        detail: 'content=${contentPreview}chars, code=$codePreview');
+
       return JsEngine.instance.executeSync(
         jsCode,
         content,
         baseUrl: _baseUrl,
         sourceEngine: _sourceEngine,
         variables: vars,
+        ruleStep: ruleStep,
       );
     } catch (e) {
       AppLogger.instance.logJsError('AnalyzeRule', e.toString());
@@ -1095,7 +1767,26 @@ class AnalyzeRule {
       };
       env.addAll(_variableMap);
       env.addAll(_variables);
-      if (_sourceInfo != null) env['source'] = _sourceInfo;
+      if (_sourceInfo != null) {
+        env['source'] = _sourceInfo;
+        // 注入书源变量（支持 source.getVariable()/setVariable()）
+        final sourceVars = _sourceInfo!['variable'];
+        if (sourceVars is Map) {
+          env['sourceVars'] = sourceVars;
+        }
+        // 注入书源自定义请求头（支持 java.ajax() 预缓存时使用）
+        final headerStr = _sourceInfo!['header'];
+        if (headerStr is String && headerStr.isNotEmpty) {
+          try {
+            final parsed = jsonDecode(headerStr);
+            if (parsed is Map) {
+              env['headers'] = Map<String, String>.from(parsed);
+            }
+          } catch (_) {
+            // header 不是 JSON 格式，忽略
+          }
+        }
+      }
       if (_bookInfo != null) env['book'] = _bookInfo;
       if (_chapterInfo != null) env['chapter'] = _chapterInfo;
       env['cookie'] = <String, String>{};
@@ -1320,7 +2011,11 @@ class AnalyzeRule {
     if (value is String) return value;
     if (value is dom.Element) return value.text.trim();
     if (value is xml.XmlNode) return LegadoXPath.stringValue(value);
-    if (value is List) return value.isEmpty ? null : _toString(value.first);
+    if (value is List) {
+      if (value.isEmpty) return null;
+      // 对齐 legado：List 用换行符拼接，而非只取第一个元素
+      return value.map((e) => e?.toString() ?? '').where((e) => e.isNotEmpty).join('\n');
+    }
     return value.toString();
   }
 
@@ -1432,8 +2127,16 @@ class _SourceRule {
     final sharpIndex = _findSharpSplit(rule);
     if (sharpIndex >= 0) {
       final mainRule = rule.substring(0, sharpIndex);
-      final parts = rule.substring(sharpIndex + 2).split('##');
+      var afterSharp = rule.substring(sharpIndex + 2);
 
+      // 借鉴 legado：### 是结束标记，### 后面的内容不属于替换模式
+      // 例如：onclick##.*\'(.*)\'##$1###  → regex=.*\'(.*)\', replacement=$1
+      final endMarker = afterSharp.indexOf('###');
+      if (endMarker >= 0) {
+        afterSharp = afterSharp.substring(0, endMarker);
+      }
+
+      final parts = afterSharp.split('##');
       replaceRegex = parts.isNotEmpty ? parts[0] : '';
       replacement = parts.length > 1 ? parts[1] : '';
       replaceFirst = parts.length > 2;
@@ -1726,6 +2429,34 @@ class _ElementSelector {
   /// legado 内部规则关键字，这些关键字的 . 分隔是语义分隔
   static const _legadoKeywords = {'class', 'tag', 'id', 'text', 'children'};
 
+  /// 常见 HTML 标签名，用于识别隐式 tag 前缀
+  static const _htmlTags = {
+    'a', 'abbr', 'address', 'area', 'article', 'aside', 'audio',
+    'b', 'base', 'bdi', 'bdo', 'blockquote', 'body', 'br', 'button',
+    'canvas', 'caption', 'cite', 'code', 'col', 'colgroup',
+    'dd', 'del', 'details', 'dfn', 'dialog', 'div', 'dl', 'dt',
+    'em', 'embed',
+    'fieldset', 'figcaption', 'figure', 'footer', 'form',
+    'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'head', 'header', 'hgroup',
+    'hr', 'html',
+    'i', 'iframe', 'img', 'input', 'ins',
+    'kbd',
+    'label', 'legend', 'li', 'link',
+    'main', 'map', 'mark', 'menu', 'meta', 'meter',
+    'nav',
+    'ol', 'optgroup', 'option', 'output',
+    'p', 'picture', 'pre', 'progress',
+    'q',
+    'rp', 'rt', 'ruby',
+    's', 'samp', 'script', 'section', 'select', 'slot', 'small',
+    'source', 'span', 'strong', 'style', 'sub', 'summary', 'sup',
+    'table', 'tbody', 'td', 'template', 'textarea', 'tfoot', 'th',
+    'thead', 'time', 'title', 'tr', 'track',
+    'u', 'ul',
+    'var', 'video',
+    'wbr',
+  };
+
   factory _ElementSelector.parse(String rawRule) {
     var rule = rawRule.trim();
     var exclude = false;
@@ -1772,9 +2503,100 @@ class _ElementSelector {
         // 只有一个 . 或最后一段不是纯数字，无索引
         return _ElementSelector(rule, indexes, exclude);
       }
+
+      // 借鉴 legado：隐式 tag 前缀识别
+      // dd.0 → 等价于 tag.dd.0（第0个dd元素）
+      // span.0:-1 → 等价于 tag.span[0:-1]
+      // 但 .xxx.yyy（以.开头）是 CSS class 选择器，不处理
+      if (_htmlTags.contains(prefix.toLowerCase())) {
+        final lastDotIdx = rule.lastIndexOf('.');
+        if (lastDotIdx > firstDotIdx) {
+          final lastSegment = rule.substring(lastDotIdx + 1);
+          // 检查最后一段是否是索引或范围（纯数字、!数字、数字:数字）
+          final isIndex = RegExp(r'^!?\d+$').hasMatch(lastSegment);
+          final isRange = RegExp(r'^-?\d+:-?\d+$').hasMatch(lastSegment);
+          if (isIndex || isRange) {
+            // dd.0 → tag.dd, 索引 0
+            // dd.!0 → tag.dd, 排除索引 0
+            // span.0:-1 → tag.span, 范围 0:-1
+            final tagName = rule.substring(firstDotIdx + 1, lastDotIdx);
+            if (isIndex) {
+              final excludeIdx = lastSegment.startsWith('!');
+              final numStr = excludeIdx ? lastSegment.substring(1) : lastSegment;
+              final idx = int.tryParse(numStr);
+              if (idx != null) {
+                rule = 'tag.$tagName';
+                exclude = excludeIdx;
+                indexes.add(idx);
+                return _ElementSelector(rule, indexes, exclude);
+              }
+            } else {
+              // 范围格式
+              rule = 'tag.$tagName';
+              return _ElementSelector(rule, indexes, exclude, rangeExpression: lastSegment);
+            }
+          }
+        }
+        // dd.0 只有一个 . → 检查 . 后面是否是纯数字
+        if (lastDotIdx == firstDotIdx) {
+          final afterDot = rule.substring(firstDotIdx + 1);
+          final isIndex = RegExp(r'^!?\d+$').hasMatch(afterDot);
+          final isRange = RegExp(r'^-?\d+:-?\d+$').hasMatch(afterDot);
+          if (isIndex) {
+            final excludeIdx = afterDot.startsWith('!');
+            final numStr = excludeIdx ? afterDot.substring(1) : afterDot;
+            final idx = int.tryParse(numStr);
+            if (idx != null) {
+              rule = 'tag.$prefix';
+              exclude = excludeIdx;
+              indexes.add(idx);
+              return _ElementSelector(rule, indexes, exclude);
+            }
+          } else if (isRange) {
+            rule = 'tag.$prefix';
+            return _ElementSelector(rule, indexes, exclude, rangeExpression: afterDot);
+          }
+        }
+      }
     }
 
     // 非 legado 关键字格式（CSS 选择器等），不解析索引
+    // 但借鉴 legado：CSS 类选择器（以.开头）末尾的负数索引需要解析
+    // .page-item.-2 → CSS选择器 .page-item，索引 -2
+    if (rule.startsWith('.') && rule.length > 1) {
+      final lastDotIdx = rule.lastIndexOf('.');
+      if (lastDotIdx > 0) {
+        final lastSegment = rule.substring(lastDotIdx + 1);
+        // 检查最后一段是否是索引（纯数字或负数）
+        final isNegativeIndex = RegExp(r'^-\d+$').hasMatch(lastSegment);
+        final isPositiveIndex = RegExp(r'^!?\d+$').hasMatch(lastSegment);
+        final isRange = RegExp(r'^-?\d+:-?\d+$').hasMatch(lastSegment);
+        if (isNegativeIndex) {
+          // .page-item.-2 → beforeRule=.page-item, index=-2
+          final idx = int.tryParse(lastSegment);
+          if (idx != null) {
+            rule = rule.substring(0, lastDotIdx);
+            indexes.add(idx);
+            return _ElementSelector(rule, indexes, exclude);
+          }
+        } else if (isPositiveIndex) {
+          // .page-item.0 → beforeRule=.page-item, index=0
+          final excludeIdx = lastSegment.startsWith('!');
+          final numStr = excludeIdx ? lastSegment.substring(1) : lastSegment;
+          final idx = int.tryParse(numStr);
+          if (idx != null) {
+            rule = rule.substring(0, lastDotIdx);
+            exclude = excludeIdx;
+            indexes.add(idx);
+            return _ElementSelector(rule, indexes, exclude);
+          }
+        } else if (isRange) {
+          rule = rule.substring(0, lastDotIdx);
+          return _ElementSelector(rule, indexes, exclude, rangeExpression: lastSegment);
+        }
+      }
+    }
+
     return _ElementSelector(rule, indexes, exclude);
   }
 

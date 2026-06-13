@@ -70,8 +70,12 @@ dependencies {
     // OkHttp（HTTP 客户端）
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
-    // Jsoup（HTML 解析）
-    implementation("org.jsoup:jsoup:1.18.1")
+    // Jsoup（HTML 解析 + 内置 XPath selectXpath()）
+    implementation("org.jsoup:jsoup:1.22.2")
+    // JsonPath（JSON 解析）
+    implementation("com.jayway.jsonpath:json-path:2.9.0")
+    // Commons Text（HTML 反转义）
+    implementation("org.apache.commons:commons-text:1.12.0")
     // Rhino（JS 引擎）
     implementation("org.mozilla:rhino:1.9.1")
     // Java 8+ API 脱糖
@@ -82,7 +86,9 @@ flutter {
     source = "../.."
 }
 
-// ===== Node.js 硬编构建任务 =====
+// ===== Node.js 硬编构建任务（手动运行） =====
+// 注意：不自动依赖 preBuild，避免无 tar/7z 时阻塞构建
+// 手动运行: ./gradlew :app:assembleNodeRuntime
 // 核心思路：将 Node.js 二进制重命名为 libnode.so 放入 jniLibs/
 // Android 安装 APK 时自动解压 native libs 到 /data/data/.../lib/
 // 并设置可执行权限，运行时直接启动，无需额外解压
@@ -96,8 +102,8 @@ flutter {
 tasks.register("downloadNodeBinaries") {
     group = "node-runtime"
     description = "下载 Node.js 二进制到 jniLibs（伪装为 libnode.so）"
-
-    outputs.dir(jniLibsDir)
+    // 只在上游任务要求或有明确输出路径依赖时运行
+    outputs.upToDateWhen { true }  // 默认认为已是最新，不自动执行
 
     doLast {
         val targetAbis = listOf("arm64-v8a")
@@ -290,7 +296,8 @@ tasks.register("assembleNodeRuntime") {
     }
 }
 
-// 在 preBuild 之前自动执行
-tasks.named("preBuild") {
-    dependsOn("assembleNodeRuntime")
-}
+// 不自动依赖 preBuild，手动执行: ./gradlew :app:assembleNodeRuntime
+// 已注释，避免阻塞正常构建
+// tasks.named("preBuild") {
+//     dependsOn("assembleNodeRuntime")
+// }

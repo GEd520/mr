@@ -1,4 +1,5 @@
 import 'package:flutter/services.dart';
+import '../app_logger.dart';
 
 /// Android 原生平台通道
 /// 桥接 OkHttp（高性能HTTP）、Jsoup（HTML解析）、加解密、数据持久化等原生库
@@ -234,6 +235,66 @@ class NativeChannel {
     }
   }
 
+  /// SHA1 哈希
+  Future<String?> sha1(String data) async {
+    try {
+      final result = await _channel.invokeMethod<String>('sha1', {'data': data});
+      return result;
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  /// SHA256 哈希
+  Future<String?> sha256(String data) async {
+    try {
+      final result = await _channel.invokeMethod<String>('sha256', {'data': data});
+      return result;
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  /// HMAC-SHA256
+  Future<String?> hmacSHA256(String data, String key) async {
+    try {
+      final result = await _channel.invokeMethod<String>('hmacSHA256', {
+        'data': data,
+        'key': key,
+      });
+      return result;
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  /// HTTP HEAD 请求
+  Future<Map<String, String>?> httpHead(String url, {Map<String, String>? headers}) async {
+    try {
+      final result = await _channel.invokeMethod<Map>('httpHead', {
+        'url': url,
+        'headers': headers,
+      });
+      if (result == null) return null;
+      return result.map((k, v) => MapEntry(k, v?.toString() ?? ''));
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  /// 获取 Cookie
+  Future<String?> getCookie(String url, {String? key}) async {
+    try {
+      final result = await _channel.invokeMethod<String>('getCookie', {
+        'url': url,
+        'key': key,
+      });
+      return result;
+    } on PlatformException {
+      return null;
+    }
+  }
+
   /// Base64 编码
   Future<String?> base64Encode(String data) async {
     try {
@@ -365,6 +426,113 @@ class NativeChannel {
         'delayTime': delayTime,
       });
       return result;
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  // ===== 解析规则桥接（直通 Kotlin 原生 AnalyzeRule）=====
+  // 等价于 legado 的 AnalyzeRule.getString/getStringList/getElements
+  // 支持 Default(JSoup/CSS)、@CSS、@XPath、@JSon、{{...}}、@js:、@get:、@put: 等全部 6 种模式
+
+  /// 解析规则取单个字符串
+  /// [content] 原始内容（HTML/JSON/文本）
+  /// [rule] legado 风格规则，如 `class.title@text` 或 `$.data[0].name` 或 `//h1/text()`
+  /// [baseUrl] 基础 URL（用于 isUrl=true 时拼接相对路径）
+  /// [isUrl] 结果是否为 URL（true 时会自动拼接成绝对路径）
+  Future<String?> analyzeRuleGetString(
+    String content,
+    String rule, {
+    String? baseUrl,
+    String? redirectUrl,
+    bool isUrl = false,
+    bool unescape = true,
+    Map<String, dynamic>? sourceInfo,
+    Map<String, dynamic>? bookInfo,
+    Map<String, dynamic>? chapterInfo,
+    String? nextChapterUrl,
+  }) async {
+    try {
+      return await _channel.invokeMethod<String>('analyzeRuleGetString', {
+        'content': content,
+        'rule': rule,
+        'baseUrl': baseUrl,
+        'redirectUrl': redirectUrl,
+        'isUrl': isUrl,
+        'unescape': unescape,
+        'sourceInfo': sourceInfo,
+        'bookInfo': bookInfo,
+        'chapterInfo': chapterInfo,
+        'nextChapterUrl': nextChapterUrl,
+      });
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  /// 解析规则取字符串列表（章节名列表、图片 URL 列表等）
+  Future<List<String>?> analyzeRuleGetStringList(
+    String content,
+    String rule, {
+    String? baseUrl,
+    String? redirectUrl,
+    bool isUrl = false,
+    Map<String, dynamic>? sourceInfo,
+    Map<String, dynamic>? bookInfo,
+    Map<String, dynamic>? chapterInfo,
+    String? nextChapterUrl,
+  }) async {
+    try {
+      final result = await _channel.invokeMethod<Map>('analyzeRuleGetStringList', {
+        'content': content,
+        'rule': rule,
+        'baseUrl': baseUrl,
+        'redirectUrl': redirectUrl,
+        'isUrl': isUrl,
+        'sourceInfo': sourceInfo,
+        'bookInfo': bookInfo,
+        'chapterInfo': chapterInfo,
+        'nextChapterUrl': nextChapterUrl,
+      });
+      if (result == null) return null;
+      // 解析 JS 日志，写入 AppLogger
+      final logs = result['logs'];
+      if (logs is List && logs.isNotEmpty) {
+        for (final log in logs) {
+          AppLogger.instance.debug(LogCategory.js, '[Rhino] $log');
+        }
+      }
+      final data = result['data'];
+      if (data is List) return data.cast<String>();
+      return null;
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  /// 解析规则取元素列表（HTML 节点 outerHtml 列表，用于二次解析）
+  Future<List<String>?> analyzeRuleGetElements(
+    String content,
+    String rule, {
+    String? baseUrl,
+    String? redirectUrl,
+    Map<String, dynamic>? sourceInfo,
+    Map<String, dynamic>? bookInfo,
+    Map<String, dynamic>? chapterInfo,
+    String? nextChapterUrl,
+  }) async {
+    try {
+      final result = await _channel.invokeMethod<List>('analyzeRuleGetElements', {
+        'content': content,
+        'rule': rule,
+        'baseUrl': baseUrl,
+        'redirectUrl': redirectUrl,
+        'sourceInfo': sourceInfo,
+        'bookInfo': bookInfo,
+        'chapterInfo': chapterInfo,
+        'nextChapterUrl': nextChapterUrl,
+      });
+      return result?.cast<String>();
     } on PlatformException {
       return null;
     }
