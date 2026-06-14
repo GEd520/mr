@@ -1335,6 +1335,8 @@ class JsEngine {
         _matchesBase: function(node, selector) {
           if (!node || !node.tag) return false;
           var sel = selector.trim();
+          // 空选择器匹配任何元素（用于 getAttr/selectFirst 从根元素自身取值）
+          if (!sel) return true;
           // #id
           if (sel.startsWith('#') && sel.indexOf('.') < 0 && sel.indexOf('[') < 0) {
             return node.attrs['id'] === sel.substring(1);
