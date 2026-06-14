@@ -84,6 +84,11 @@ class _DetailPageState extends State<DetailPage> {
             final sourceData = StorageService.instance.getBookSource(book.sourceUrl!);
             if (sourceData != null) {
               bookSource = BookSource.fromJson(sourceData);
+              // 参照 Legado：根据书源类型刷新 mediaType，确保类型始终与书源一致
+              final sourceMediaType = bookSource!.bookSourceType.mediaType;
+              if (book.mediaType != sourceMediaType) {
+                book = book.copyWith(mediaType: sourceMediaType);
+              }
             }
           }
         }
@@ -128,6 +133,17 @@ class _DetailPageState extends State<DetailPage> {
           final detailedBook = await _dataProvider!.getBookInfo(_book!.bookUrl);
           if (detailedBook != null) {
             _book = mergeBookMetadata(detailedBook, _book!);
+          }
+          // 参照 Legado：根据书源类型刷新 mediaType
+          if (_book!.sourceUrl != null) {
+            final sourceData = StorageService.instance.getBookSource(_book!.sourceUrl!);
+            if (sourceData != null) {
+              final source = BookSource.fromJson(sourceData);
+              final sourceMediaType = source.bookSourceType.mediaType;
+              if (_book!.mediaType != sourceMediaType) {
+                _book = _book!.copyWith(mediaType: sourceMediaType);
+              }
+            }
           }
         }
         _chapters = await _dataProvider!.getChapterList(_book!);
@@ -1465,6 +1481,15 @@ class _DetailPageState extends State<DetailPage> {
     );
   }
 
+  /// 参照 Legado 路由优先级：video → audio → comic → novel
+  String _readerRouteName() {
+    final mediaType = _book?.mediaType;
+    if (mediaType == MediaType.video) return AppRoutes.videoPlayer;
+    if (mediaType == MediaType.audio) return AppRoutes.audioPlayer;
+    if (mediaType == MediaType.comic) return AppRoutes.comicReader;
+    return AppRoutes.novelReader;
+  }
+
   void _startReading() {
     if (_chapters.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1472,12 +1497,9 @@ class _DetailPageState extends State<DetailPage> {
       );
       return;
     }
-    final routeName = _book?.mediaType == MediaType.comic
-        ? AppRoutes.comicReader
-        : AppRoutes.novelReader;
     Navigator.pushNamed(
       context,
-      routeName,
+      _readerRouteName(),
       arguments: {
         'bookUrl': widget.bookUrl,
         'chapterIndex': _book?.durChapterIndex ?? 0,
@@ -1511,12 +1533,9 @@ class _DetailPageState extends State<DetailPage> {
 
   void _openChapter(Chapter chapter) {
     if (chapter.isVolume) return;
-    final routeName = _book?.mediaType == MediaType.comic
-        ? AppRoutes.comicReader
-        : AppRoutes.novelReader;
     Navigator.pushNamed(
       context,
-      routeName,
+      _readerRouteName(),
       arguments: {
         'bookUrl': widget.bookUrl,
         'chapterIndex': chapter.index,

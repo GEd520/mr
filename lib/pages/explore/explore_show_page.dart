@@ -110,7 +110,10 @@ class _ExploreShowPageState extends State<ExploreShowPage> {
         Navigator.pushNamed(
           context,
           AppRoutes.detail,
-          arguments: {'bookUrl': book['bookUrl']},
+          arguments: {
+            'bookUrl': book['bookUrl'],
+            'bookData': book,
+          },
         );
       },
       child: Card(

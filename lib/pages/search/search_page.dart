@@ -683,8 +683,8 @@ class _SearchPageState extends State<SearchPage> {
   void _openDetail(Map<String, dynamic> result) {
     final bookData = <String, dynamic>{
       ...result,
-      'mediaType': _mediaTypeForResult(result).index,
-      'originType': BookOriginType.online.index,
+      'mediaType': result['mediaType'] ?? _mediaTypeForResult(result).index,
+      'originType': result['originType'] ?? BookOriginType.online.index,
       'addedTime': DateTime.now().toIso8601String(),
     };
     Navigator.pushNamed(

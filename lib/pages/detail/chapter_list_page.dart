@@ -203,13 +203,19 @@ class _ChapterListPageState extends State<ChapterListPage> {
     }
   }
 
+  /// 参照 Legado 路由优先级：video → audio → comic → novel
+  String _readerRouteName() {
+    final mediaType = _book?.mediaType;
+    if (mediaType == MediaType.video) return AppRoutes.videoPlayer;
+    if (mediaType == MediaType.audio) return AppRoutes.audioPlayer;
+    if (mediaType == MediaType.comic) return AppRoutes.comicReader;
+    return AppRoutes.novelReader;
+  }
+
   void _doOpenChapter(Chapter chapter) {
-    final routeName = _book?.mediaType == MediaType.comic
-        ? AppRoutes.comicReader
-        : AppRoutes.novelReader;
     Navigator.pushReplacementNamed(
       context,
-      routeName,
+      _readerRouteName(),
       arguments: {
         'bookUrl': widget.bookUrl,
         'chapterIndex': chapter.index,
@@ -578,12 +584,9 @@ class _ChapterListPageState extends State<ChapterListPage> {
   }
 
   void _doOpenChapterAtIndex(int chapterIndex) {
-    final routeName = _book?.mediaType == MediaType.comic
-        ? AppRoutes.comicReader
-        : AppRoutes.novelReader;
     Navigator.pushReplacementNamed(
       context,
-      routeName,
+      _readerRouteName(),
       arguments: {
         'bookUrl': widget.bookUrl,
         'chapterIndex': chapterIndex,
