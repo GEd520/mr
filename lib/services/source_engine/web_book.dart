@@ -1176,32 +1176,25 @@ class WebBook {
           // legado: 并发模式 flow { for (urlStr in chapterData.second) emit(urlStr) }
           //   .mapAsync { urlStr -> analyzeChapterList(book, urlStr, res.url, res.body!!, ...) }
           AppLogger.instance.info(LogCategory.parse,
-              '目录并发抓取 [count=${nextUrls.length}]');
-          const concurrency = 4;
-          for (int i = 0; i < nextUrls.length; i += concurrency) {
-            final batch = nextUrls.skip(i).take(concurrency).toList();
-            final batchResults = await Future.wait(batch.map((urlStr) async {
-              try {
-                final res =
-                    await _executeRequest(_parseUrlWithOption(urlStr));
-                if (res.body.isEmpty) return <Chapter>[];
-                // legado: analyzeChapterList(book, urlStr, res.url, res.body!!, ..., getNextPageUrl=false)
-                final data = await _analyzeChapterList(
-                  baseUrl: urlStr,
-                  redirectUrl: res.url,
-                  body: res.body,
-                  tocRule: tocRule,
-                  listRule: listRule,
-                  book: book,
-                  getNextUrl: false,
-                );
-                return data.$1;
-              } catch (e) {
-                return <Chapter>[];
-              }
-            }));
-            for (final list in batchResults) {
-              chapterList.addAll(list);
+              '目录顺序抓取 [count=${nextUrls.length}]');
+          for (int i = 0; i < nextUrls.length; i++) {
+            try {
+              final res =
+                  await _executeRequest(_parseUrlWithOption(nextUrls[i]));
+              if (res.body.isEmpty) continue;
+              final data = await _analyzeChapterList(
+                baseUrl: nextUrls[i],
+                redirectUrl: res.url,
+                body: res.body,
+                tocRule: tocRule,
+                listRule: listRule,
+                book: book,
+                getNextUrl: false,
+              );
+              chapterList.addAll(data.$1);
+            } catch (e) {
+              AppLogger.instance.warn(LogCategory.parse,
+                  '目录顺序抓取失败 [${nextUrls[i]}]: $e');
             }
           }
           break;
