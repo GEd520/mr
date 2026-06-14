@@ -630,6 +630,9 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
               _searchController.text = _textFx;
               _submitDebug(_textFx);
             },
+            onLongPress: _exploreKinds.length > 1
+                ? () => _showExploreKindSelector()
+                : null,
           ),
           const SizedBox(height: 14),
           Text('调试详情页>>输入详情页URL，如：', style: labelStyle),
@@ -688,6 +691,7 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
     String value, {
     bool fullWidth = false,
     VoidCallback? onTap,
+    VoidCallback? onLongPress,
   }) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final chipBgColor = isDark ? Colors.grey[800] : const Color(0xFFD9D9D9);
@@ -696,6 +700,7 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
     final width = fullWidth ? double.infinity : null;
     return GestureDetector(
       onTap: onTap ?? () => _fillExample(value),
+      onLongPress: onLongPress,
       child: Container(
         width: width,
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -712,6 +717,47 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
             fontSize: 13,
             height: 1.15,
           ),
+        ),
+      ),
+    );
+  }
+
+  /// 显示发现分类选择器
+  void _showExploreKindSelector() {
+    if (_exploreKinds.isEmpty) return;
+
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) => Container(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              title: Text(
+                '选择发现分类',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+            ),
+            const Divider(height: 1),
+            ..._exploreKinds.map((kind) => ListTile(
+              title: Text(kind.title),
+              subtitle: Text(
+                kind.url,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+              onTap: () {
+                Navigator.pop(ctx);
+                setState(() {
+                  _textFx = '${kind.title}::${kind.url}';
+                });
+                _searchController.text = _textFx;
+                _submitDebug(_textFx);
+              },
+            )),
+          ],
         ),
       ),
     );
