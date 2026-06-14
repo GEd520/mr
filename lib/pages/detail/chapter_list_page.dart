@@ -1,4 +1,9 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../models/book.dart';
 import '../../models/chapter.dart';
@@ -35,10 +40,8 @@ class _ChapterListPageState extends State<ChapterListPage> {
   String _searchQuery = '';
   bool _isChapterReversed = false;
   Set<int> _expandedVolumes = {};
-  int _totalWordCount = 0;
   final ScrollController _scrollController = ScrollController();
   final PageController _pageController = PageController();
-  bool _confirmChapterJump = false;
   BookDataProvider? _dataProvider;
   String? _loadError;
   Set<String> _cachedFiles = {};
@@ -74,10 +77,16 @@ class _ChapterListPageState extends State<ChapterListPage> {
 
   Future<void> _loadPrefs() async {
     final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
     setState(() {
       _showWordCount = prefs.getBool('tocShowWordCount') ?? false;
       _useReplace = prefs.getBool('tocUseReplace') ?? false;
       _foldVolume = prefs.getBool('tocFoldVolume') ?? true;
+      _isChapterReversed =
+          prefs.getBool('tocReverse_${widget.bookUrl}') ?? false;
+      if (_chapters.isNotEmpty) {
+        _groupChaptersByVolume();
+      }
     });
   }
 
@@ -96,8 +105,6 @@ class _ChapterListPageState extends State<ChapterListPage> {
       _dataProvider = createBookDataProvider(_book!);
       _chapters = await _dataProvider!.getChapterList(_book!);
       _filteredChapters = _chapters;
-      _totalWordCount =
-          _chapters.fold<int>(0, (sum, ch) => sum + (ch.wordCount ?? 0));
       _groupChaptersByVolume();
       // 加载缓存信息
       if (_book!.originType == BookOriginType.online) {
@@ -134,7 +141,6 @@ class _ChapterListPageState extends State<ChapterListPage> {
           chapters: [],
         );
         _volumeGroups.add(currentGroup);
-        _expandedVolumes.add(_volumeGroups.length - 1);
       } else if (currentGroup != null) {
         currentGroup.chapters.add(chapter);
       } else {
@@ -145,7 +151,6 @@ class _ChapterListPageState extends State<ChapterListPage> {
             chapters: [],
           );
           _volumeGroups.add(currentGroup);
-          _expandedVolumes.add(0);
         }
         _volumeGroups.first.chapters.add(chapter);
       }
@@ -157,21 +162,43 @@ class _ChapterListPageState extends State<ChapterListPage> {
         chapterIndex: -1,
         chapters: List.from(_chapters),
       ));
-      _expandedVolumes.add(0);
+    }
+
+    if (_foldVolume) {
+      final currentGroup = _volumeGroups.lastWhere(
+        (group) => group.chapters.any(
+          (chapter) => chapter.index == widget.currentChapterIndex,
+        ),
+        orElse: () => _volumeGroups.first,
+      );
+      _expandedVolumes.add(currentGroup.chapterIndex);
+    } else {
+      _expandedVolumes.addAll(
+        _volumeGroups.map((group) => group.chapterIndex),
+      );
     }
   }
 
   void _scrollToCurrentChapter() {
     if (!_scrollController.hasClients) return;
-    if (widget.currentChapterIndex <= 0) return;
-
-    // 找到当前章节在_filteredChapters中的位置
-    final targetIndex = _filteredChapters
+    var targetIndex = _visibleChapterEntries
         .indexWhere((ch) => ch.index == widget.currentChapterIndex);
-    if (targetIndex < 0) return;
+    if (targetIndex < 0) {
+      final group = _volumeGroups.where(
+        (item) => item.chapters.any(
+          (chapter) => chapter.index == widget.currentChapterIndex,
+        ),
+      );
+      if (group.isEmpty) return;
+      setState(() => _expandedVolumes.add(group.first.chapterIndex));
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _scrollToCurrentChapter();
+      });
+      return;
+    }
 
-    // 估算位置 - 每个item大约56高度
-    final estimatedOffset = targetIndex * 56.0;
+    final estimatedOffset = targetIndex * 49.0;
     _scrollController.animateTo(
       estimatedOffset.clamp(0.0, _scrollController.position.maxScrollExtent),
       duration: const Duration(milliseconds: 300),
@@ -194,13 +221,7 @@ class _ChapterListPageState extends State<ChapterListPage> {
 
   void _openChapter(Chapter chapter) {
     if (chapter.isVolume) return;
-    if (!_confirmChapterJump &&
-        (chapter.index - widget.currentChapterIndex).abs() > 3) {
-      // 跨章节跳转超过3章，显示确认
-      _showChapterJumpConfirm(chapter);
-    } else {
-      _doOpenChapter(chapter);
-    }
+    _doOpenChapter(chapter);
   }
 
   /// 参照 Legado 路由优先级：video → audio → comic → novel
@@ -224,34 +245,9 @@ class _ChapterListPageState extends State<ChapterListPage> {
     );
   }
 
-  void _showChapterJumpConfirm(Chapter chapter) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('章节跳转确认'),
-        content: Text('确定要跳转到 "${chapter.title}" 吗？'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _confirmChapterJump = true;
-              _doOpenChapter(chapter);
-            },
-            child: const Text('确定'),
-          ),
-        ],
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final fg = Theme.of(context).colorScheme.onSurface;
-    final isOnline = _book?.originType == BookOriginType.online;
     if (!_isLoading && _loadError != null) {
       return Scaffold(
         appBar: AppBar(title: const Text('目录')),
@@ -260,6 +256,7 @@ class _ChapterListPageState extends State<ChapterListPage> {
     }
     return Scaffold(
       appBar: AppBar(
+        centerTitle: true,
         title: _showSearch
             ? Row(
                 children: [
@@ -284,10 +281,10 @@ class _ChapterListPageState extends State<ChapterListPage> {
                   ),
                   IconButton(
                     icon: Icon(Icons.close, color: fg),
-                    onPressed: () => setState(() {
-                      _showSearch = false;
-                      _searchQuery = '';
-                    }),
+                    onPressed: () {
+                      _filterChapters('');
+                      setState(() => _showSearch = false);
+                    },
                   ),
                 ],
               )
@@ -352,7 +349,7 @@ class _ChapterListPageState extends State<ChapterListPage> {
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
-          : _buildBody(fg, isOnline),
+          : _buildBody(fg),
     );
   }
 
@@ -395,6 +392,7 @@ class _ChapterListPageState extends State<ChapterListPage> {
     switch (action) {
       case 'reverse':
         setState(() => _isChapterReversed = !_isChapterReversed);
+        _saveBool('tocReverse_${widget.bookUrl}', _isChapterReversed);
         break;
       case 'use_replace':
         setState(() => _useReplace = !_useReplace);
@@ -405,7 +403,10 @@ class _ChapterListPageState extends State<ChapterListPage> {
         _saveBool('tocShowWordCount', _showWordCount);
         break;
       case 'fold_volume':
-        setState(() => _foldVolume = !_foldVolume);
+        setState(() {
+          _foldVolume = !_foldVolume;
+          _groupChaptersByVolume();
+        });
         _saveBool('tocFoldVolume', _foldVolume);
         break;
       case 'regex_config':
@@ -429,18 +430,60 @@ class _ChapterListPageState extends State<ChapterListPage> {
     }
   }
 
-  void _exportBookmarks() {
-    // TODO: 导出书签
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('导出书签功能开发中')),
+  Future<void> _exportBookmarks() async {
+    final data = const JsonEncoder.withIndent('  ').convert(
+      _bookmarks.map((bookmark) => bookmark.toJson()).toList(),
+    );
+    await _shareBookmarkFile(
+      fileName: 'bookmark-${_safeFileName(_book?.displayName ?? "book")}.json',
+      content: data,
+      text: '导出书签',
     );
   }
 
-  void _exportBookmarksMarkdown() {
-    // TODO: 导出书签为Markdown
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('导出书签(MD)功能开发中')),
+  Future<void> _exportBookmarksMarkdown() async {
+    final buffer = StringBuffer()
+      ..writeln('## ${_book?.displayName ?? ""} ${_book?.displayAuthor ?? ""}')
+      ..writeln();
+    for (final bookmark in _bookmarks) {
+      buffer
+        ..writeln('#### ${bookmark.chapterTitle}')
+        ..writeln()
+        ..writeln(bookmark.content)
+        ..writeln();
+      if (bookmark.note?.isNotEmpty == true) {
+        buffer
+          ..writeln('> ${bookmark.note}')
+          ..writeln();
+      }
+    }
+    await _shareBookmarkFile(
+      fileName: 'bookmark-${_safeFileName(_book?.displayName ?? "book")}.md',
+      content: buffer.toString(),
+      text: '导出书签 Markdown',
     );
+  }
+
+  Future<void> _shareBookmarkFile({
+    required String fileName,
+    required String content,
+    required String text,
+  }) async {
+    try {
+      final directory = await getTemporaryDirectory();
+      final file = File('${directory.path}${Platform.pathSeparator}$fileName');
+      await file.writeAsString(content);
+      await Share.shareXFiles([XFile(file.path)], text: text);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('导出失败：$error')),
+      );
+    }
+  }
+
+  String _safeFileName(String value) {
+    return value.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
   }
 
   void _showRegexConfig() {
@@ -467,13 +510,77 @@ class _ChapterListPageState extends State<ChapterListPage> {
     await _loadData();
   }
 
-  Widget _buildBody(Color fg, bool isOnline) {
+  Widget _buildBody(Color fg) {
     return PageView(
       controller: _pageController,
       onPageChanged: (index) => setState(() => _currentTab = index),
       children: [
-        _buildChapterContent(isOnline),
+        _buildChapterPage(),
         _buildBookmarkList(fg),
+      ],
+    );
+  }
+
+  Widget _buildChapterPage() {
+    final scheme = Theme.of(context).colorScheme;
+    return Column(
+      children: [
+        Expanded(child: _buildChapterContent()),
+        Material(
+          color: scheme.surface,
+          elevation: 5,
+          child: SafeArea(
+            top: false,
+            child: SizedBox(
+              height: 36,
+              child: Row(
+                children: [
+                  Expanded(
+                    child: InkWell(
+                      onTap: _scrollToCurrentChapter,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 20),
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            _currentChapterInfo,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: scheme.onSurface,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: _scrollToTop,
+                    icon: const Icon(Icons.arrow_drop_up),
+                    tooltip: '置顶',
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints.tightFor(
+                      width: 36,
+                      height: 36,
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: _scrollToBottom,
+                    icon: const Icon(Icons.arrow_drop_down),
+                    tooltip: '置底',
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints.tightFor(
+                      width: 36,
+                      height: 36,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                ],
+              ),
+            ),
+          ),
+        ),
       ],
     );
   }
@@ -513,21 +620,106 @@ class _ChapterListPageState extends State<ChapterListPage> {
     );
   }
 
-  Widget _buildChapterContent(bool isOnline) {
-    if (_searchQuery.isNotEmpty) {
-      final chapters = _isChapterReversed
-          ? _filteredChapters.reversed.toList()
-          : _filteredChapters;
-      return Scrollbar(
-        thumbVisibility: true,
-        child: ListView.builder(
-          itemCount: chapters.length,
-          itemBuilder: (context, index) =>
-              _buildChapterItem(chapters[index]),
+  Widget _buildChapterContent() {
+    final entries = _visibleChapterEntries;
+    if (entries.isEmpty) {
+      return Center(
+        child: Text(
+          _searchQuery.isEmpty ? '目录列表为空' : '没有匹配的章节',
+          style: TextStyle(
+            color: Theme.of(context)
+                .colorScheme
+                .onSurfaceVariant
+                .withValues(alpha: 0.7),
+          ),
         ),
       );
     }
-    return _volumeGroups.length <= 1 ? _buildFlatList() : _buildVolumeList();
+    return Scrollbar(
+      controller: _scrollController,
+      thumbVisibility: true,
+      child: ListView.separated(
+        controller: _scrollController,
+        padding: EdgeInsets.zero,
+        itemCount: entries.length,
+        separatorBuilder: (_, __) => Divider(
+          height: 1,
+          thickness: 0.5,
+          color: Theme.of(context)
+              .colorScheme
+              .outlineVariant
+              .withValues(alpha: 0.65),
+        ),
+        itemBuilder: (context, index) => _buildChapterItem(entries[index]),
+      ),
+    );
+  }
+
+  List<Chapter> get _visibleChapterEntries {
+    if (_searchQuery.isNotEmpty) {
+      final matches = _filteredChapters.where((chapter) => !chapter.isVolume);
+      return _isChapterReversed
+          ? matches.toList().reversed.toList()
+          : matches.toList();
+    }
+
+    final entries = <Chapter>[];
+    final groups = _isChapterReversed
+        ? _volumeGroups.reversed
+        : _volumeGroups;
+    for (final group in groups) {
+      final volume = _chapters.where(
+        (chapter) => chapter.index == group.chapterIndex && chapter.isVolume,
+      );
+      entries.addAll(volume);
+
+      final expanded = _expandedVolumes.contains(group.chapterIndex);
+      if (expanded || volume.isEmpty) {
+        entries.addAll(
+          _isChapterReversed
+              ? group.chapters.reversed
+              : group.chapters,
+        );
+      }
+    }
+    return entries;
+  }
+
+  String get _currentChapterInfo {
+    final current = _chapters.where(
+      (chapter) => chapter.index == widget.currentChapterIndex,
+    );
+    final title = current.isNotEmpty
+        ? current.first.title
+        : (_book?.durChapterTitle.isNotEmpty == true
+            ? _book!.durChapterTitle
+            : '未开始阅读');
+    final total = _chapters.where((chapter) => !chapter.isVolume).length;
+    if (total == 0) return title;
+    final position = _chapters
+            .where((chapter) => !chapter.isVolume)
+            .toList()
+            .indexWhere((chapter) => chapter.index == widget.currentChapterIndex) +
+        1;
+    return '$title(${position > 0 ? position : 1}/$total)';
+  }
+
+  void _scrollToTop() {
+    if (!_scrollController.hasClients) return;
+    _scrollController.animateTo(
+      0,
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOut,
+    );
+  }
+
+  void _scrollToBottom() {
+    if (!_scrollController.hasClients) return;
+    _scrollController.animateTo(
+      _scrollController.position.maxScrollExtent,
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOut,
+    );
   }
 
   List<Bookmark> get _filteredBookmarks {
@@ -552,35 +744,68 @@ class _ChapterListPageState extends State<ChapterListPage> {
     }
     return Scrollbar(
       thumbVisibility: true,
-      child: ListView.builder(
+      child: ListView.separated(
         itemCount: list.length,
+        separatorBuilder: (_, __) => Divider(
+          height: 1,
+          thickness: 0.5,
+          color: Theme.of(context)
+              .colorScheme
+              .outlineVariant
+              .withValues(alpha: 0.65),
+        ),
         itemBuilder: (context, index) {
           final bookmark = list[index];
-          return ListTile(
-            title: Text(bookmark.chapterTitle, style: TextStyle(color: fg)),
-            subtitle: Text(
-              bookmark.note?.isNotEmpty == true ? bookmark.note! : bookmark.content,
-              style: TextStyle(color: fg.withValues(alpha: 0.6)),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
-            trailing: Text(
-              _formatTime(bookmark.createdAt),
-              style: TextStyle(color: fg.withValues(alpha: 0.5), fontSize: 12),
-            ),
-            onTap: () {
-              Navigator.pop(context);
-              _doOpenChapterAtIndex(bookmark.chapterIndex);
-            },
+          return InkWell(
+            onTap: () => _doOpenChapterAtIndex(bookmark.chapterIndex),
             onLongPress: () => _deleteBookmark(bookmark),
+            child: Padding(
+              padding: const EdgeInsets.all(8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.all(4),
+                    child: Text(
+                      bookmark.chapterTitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: fg),
+                    ),
+                  ),
+                  if (bookmark.content.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.all(4),
+                      child: Text(
+                        bookmark.content,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: fg.withValues(alpha: 0.68),
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                  if (bookmark.note?.isNotEmpty == true)
+                    Padding(
+                      padding: const EdgeInsets.all(4),
+                      child: Text(
+                        bookmark.note!,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: fg.withValues(alpha: 0.68),
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
           );
         },
       ),
     );
-  }
-
-  String _formatTime(DateTime time) {
-    return '${time.month}/${time.day} ${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
   }
 
   void _doOpenChapterAtIndex(int chapterIndex) {
@@ -619,161 +844,151 @@ class _ChapterListPageState extends State<ChapterListPage> {
     );
   }
 
-  Widget _buildFlatList() {
-    final chapters =
-        _isChapterReversed ? _chapters.reversed.toList() : _chapters;
-    return Scrollbar(
-      thumbVisibility: true,
-      child: ListView.builder(
-        itemCount: chapters.length,
-        itemBuilder: (context, index) => _buildChapterItem(chapters[index]),
-      ),
-    );
-  }
-
-  Widget _buildVolumeList() {
-    final groups =
-        _isChapterReversed ? _volumeGroups.reversed.toList() : _volumeGroups;
-    return Scrollbar(
-      thumbVisibility: true,
-      child: ListView.builder(
-        itemCount: groups.length,
-        itemBuilder: (context, index) {
-          final group =
-              groups[_isChapterReversed ? groups.length - 1 - index : index];
-          final isExpanded = _expandedVolumes.contains(index);
-          return _buildVolumeGroup(group, index, isExpanded);
-        },
-      ),
-    );
-  }
-
-  Widget _buildVolumeGroup(_VolumeGroup group, int index, bool isExpanded) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        InkWell(
-          onTap: () {
-            setState(() {
-              if (isExpanded) {
-                _expandedVolumes.remove(index);
-              } else {
-                _expandedVolumes.add(index);
-              }
-            });
-          },
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            child: Row(
-              children: [
-                AnimatedRotation(
-                  duration: const Duration(milliseconds: 200),
-                  turns: isExpanded ? 0.25 : 0,
-                  child: Icon(Icons.chevron_right,
-                      color: Theme.of(context).colorScheme.primary),
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  group.title,
-                  style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 15,
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  '(${group.chapters.length})',
-                  style: TextStyle(fontSize: 13, color: Colors.grey[600]),
-                ),
-              ],
-            ),
-          ),
-        ),
-        if (isExpanded)
-          ...group.chapters.map((chapter) => _buildChapterItem(chapter)),
-      ],
-    );
-  }
-
   Widget _buildChapterItem(Chapter chapter) {
-    final fg = Theme.of(context).colorScheme.onSurface;
+    final scheme = Theme.of(context).colorScheme;
     final isOnline = _book?.originType == BookOriginType.online;
     final isCurrent = chapter.index == widget.currentChapterIndex;
+    final isCurrentVolume = chapter.isVolume &&
+        _isChapterInsideVolume(widget.currentChapterIndex, chapter.index);
+    final isExpanded = _expandedVolumes.contains(chapter.index);
     final fileName = ChapterCacheService.instance.getChapterFileName(chapter, suffix: 'cb');
-    final isCached = !isOnline || _cachedFiles.contains(fileName);
+    final isCached =
+        !isOnline || chapter.isVolume || _cachedFiles.contains(fileName);
     final hasTag = chapter.tag != null && chapter.tag!.isNotEmpty;
     final hasWordCount = _showWordCount && chapter.wordCount != null && chapter.wordCount! > 0;
     final showSubtitle = hasTag || hasWordCount;
+    final titleColor =
+        isCurrent || isCurrentVolume ? scheme.primary : scheme.onSurface;
 
-    return InkWell(
-      onTap: () => _openChapter(chapter),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-        child: Row(
-          children: [
-            // VIP锁定图标
-            if (chapter.isVip && !chapter.isPay)
-              Padding(
-                padding: const EdgeInsets.only(right: 8),
-                child: Icon(Icons.lock_outline, size: 18, color: fg.withValues(alpha: 0.6)),
-              ),
-            // 章节信息
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // 章节名称
-                  Text(
-                    chapter.title,
-                    style: TextStyle(
-                      color: isCurrent ? fg : fg.withValues(alpha: 0.85),
-                      fontWeight: isCurrent ? FontWeight.bold : null,
-                      fontSize: 15,
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  // 副标题（tag、字数）
-                  if (showSubtitle)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 2),
-                      child: Row(
-                        children: [
-                          if (hasTag)
-                            Text(
-                              chapter.tag!,
-                              style: TextStyle(
-                                color: fg.withValues(alpha: 0.5),
-                                fontSize: 12,
-                              ),
-                            ),
-                          if (hasTag && hasWordCount)
-                            const SizedBox(width: 8),
-                          if (hasWordCount)
-                            Text(
-                              '${(chapter.wordCount! / 10000).toStringAsFixed(1)}万',
-                              style: TextStyle(
-                                color: fg.withValues(alpha: 0.5),
-                                fontSize: 12,
-                              ),
-                            ),
-                        ],
-                      ),
-                    ),
-                ],
-              ),
+    return Material(
+      color: isCurrentVolume
+          ? scheme.primary.withValues(alpha: 0.08)
+          : Colors.transparent,
+      child: InkWell(
+        onTap: () {
+          if (!chapter.isVolume) {
+            _openChapter(chapter);
+            return;
+          }
+          setState(() {
+            if (isExpanded) {
+              _expandedVolumes.remove(chapter.index);
+            } else {
+              _expandedVolumes.add(chapter.index);
+            }
+          });
+        },
+        onLongPress: () {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(chapter.title),
+              duration: const Duration(seconds: 1),
             ),
-            const SizedBox(width: 8),
-            // 右侧图标
-            if (isCurrent)
-              Icon(Icons.check, size: 18, color: fg)
-            else if (!isCached)
-              Icon(Icons.cloud_outlined, size: 18, color: fg.withValues(alpha: 0.4)),
-          ],
+          );
+        },
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            children: [
+              if (chapter.isVolume)
+                Padding(
+                  padding: const EdgeInsets.only(right: 4),
+                  child: AnimatedRotation(
+                    duration: const Duration(milliseconds: 180),
+                    turns: isExpanded ? 0.25 : 0,
+                    child: Icon(
+                      Icons.arrow_right,
+                      size: 20,
+                      color: titleColor,
+                    ),
+                  ),
+                ),
+              if (chapter.isVip && !chapter.isPay)
+                Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: Icon(
+                    Icons.lock_outline,
+                    size: 16,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      chapter.title,
+                      style: TextStyle(
+                        color: titleColor,
+                        fontSize: 14,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    if (showSubtitle && !chapter.isVolume)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: Row(
+                          children: [
+                            if (hasTag)
+                              Flexible(
+                                child: Padding(
+                                  padding: const EdgeInsets.only(right: 18),
+                                  child: Text(
+                                    chapter.tag!,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      color: scheme.onSurfaceVariant,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            if (hasWordCount)
+                              Text(
+                                '${chapter.wordCount}字',
+                                style: TextStyle(
+                                  color: scheme.onSurfaceVariant,
+                                  fontSize: 12,
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              SizedBox(
+                width: 24,
+                height: 24,
+                child: isCurrent
+                    ? Icon(Icons.check, size: 18, color: scheme.primary)
+                    : !isCached
+                        ? Icon(
+                            Icons.cloud_outlined,
+                            size: 18,
+                            color: scheme.onSurfaceVariant,
+                          )
+                        : null,
+              ),
+            ],
+          ),
         ),
       ),
     );
+  }
+
+  bool _isChapterInsideVolume(int chapterIndex, int volumeIndex) {
+    var activeVolume = -1;
+    for (final chapter in _chapters) {
+      if (chapter.isVolume) activeVolume = chapter.index;
+      if (chapter.index == chapterIndex) {
+        return activeVolume == volumeIndex;
+      }
+    }
+    return false;
   }
 }
 
