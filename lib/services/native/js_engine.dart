@@ -2106,31 +2106,32 @@ class JsEngine {
 
   // ===== TypeScript 编译支持 =====
 
+  // TypeScript 编译正则常量化（避免每次调用创建 RegExp）
+  static final _tsTypeAnnotationRegex = RegExp(r'(\w+)\s*:\s*[\w\[\]<>\|&\s]+([,\)])');
+  static final _tsReturnTypeRegex = RegExp(r'\)\s*:\s*[\w\[\]<>\|&\s]+\s*([=>{])');
+  static final _tsVarTypeRegex = RegExp(r'(const|let|var)\s+(\w+)\s*:\s*[\w\[\]<>\|&\s]+=\s*');
+  static final _tsInterfaceRegex = RegExp(r'interface\s+\w+\s*\{[^}]*\}', multiLine: true);
+  static final _tsTypeAliasRegex = RegExp(r'type\s+\w+\s*=\s*[^;]+;');
+  static final _tsAsCastRegex = RegExp(r'\s+as\s+[\w\[\]<>\|&]+');
+  static final _tsGenericRegex = RegExp(r'(\w+)<[^>]+>\(');
+  static final _tsEnumRegex = RegExp(r'enum\s+(\w+)\s*\{([^}]+)\}');
+  static final _tsOptionalChainRegex = RegExp(r'(\w+)\?\.(?:(\w+)\()?');
+  static final _tsNullishCoalescingRegex = RegExp(r'(\w+)\s*\?\?\s*');
+  static final _tsAccessModifierRegex = RegExp(r'\b(public|private|protected|readonly)\s+');
+  static final _tsAbstractRegex = RegExp(r'\babstract\s+');
+  static final _tsImplementsRegex = RegExp(r'\s+implements\s+[\w,\s]+');
+
   Future<String> compileTypeScript(String tsCode) async {
     String js = tsCode;
 
-    js = js.replaceAllMapped(
-      RegExp(r'(\w+)\s*:\s*[\w\[\]<>\|&\s]+([,\)])'),
-      (m) => '${m[1]}${m[2]}',
-    );
-    js = js.replaceAllMapped(
-      RegExp(r'\)\s*:\s*[\w\[\]<>\|&\s]+\s*([=>{])'),
-      (m) => ') ${m[1]}',
-    );
-    js = js.replaceAllMapped(
-      RegExp(r'(const|let|var)\s+(\w+)\s*:\s*[\w\[\]<>\|&\s]+=\s*'),
-      (m) => '${m[1]} ${m[2]} = ',
-    );
-    js = js.replaceAll(RegExp(r'interface\s+\w+\s*\{[^}]*\}', multiLine: true), '');
-    js = js.replaceAll(RegExp(r'type\s+\w+\s*=\s*[^;]+;'), '');
-    js = js.replaceAllMapped(RegExp(r'\s+as\s+[\w\[\]<>\|&]+'), (m) => '');
-    js = js.replaceAllMapped(
-      RegExp(r'(\w+)<[^>]+>\('),
-      (m) => '${m[1]}(',
-    );
-    js = js.replaceAllMapped(
-      RegExp(r'enum\s+(\w+)\s*\{([^}]+)\}'),
-      (m) {
+    js = js.replaceAllMapped(_tsTypeAnnotationRegex, (m) => '${m[1]}${m[2]}');
+    js = js.replaceAllMapped(_tsReturnTypeRegex, (m) => ') ${m[1]}');
+    js = js.replaceAllMapped(_tsVarTypeRegex, (m) => '${m[1]} ${m[2]} = ');
+    js = js.replaceAll(_tsInterfaceRegex, '');
+    js = js.replaceAll(_tsTypeAliasRegex, '');
+    js = js.replaceAllMapped(_tsAsCastRegex, (m) => '');
+    js = js.replaceAllMapped(_tsGenericRegex, (m) => '${m[1]}(');
+    js = js.replaceAllMapped(_tsEnumRegex, (m) {
         final name = m[1];
         final body = m[2];
         final entries = body!.split(',').asMap().entries.map((e) {
@@ -2141,19 +2142,12 @@ class JsEngine {
           return '$trimmed = ${e.key}';
         }).join(', ');
         return 'var $name = { $entries };';
-      },
-    );
-    js = js.replaceAllMapped(
-      RegExp(r'(\w+)\?\.(?:(\w+)\()?'),
-      (m) => m[2] != null ? '(${m[1]} && ${m[1]}.${m[2]}(' : '(${m[1]} && ${m[1]}.',
-    );
-    js = js.replaceAllMapped(
-      RegExp(r'(\w+)\s*\?\?\s*'),
-      (m) => '(${m[1]} != null ? ${m[1]} : ',
-    );
-    js = js.replaceAll(RegExp(r'\b(public|private|protected|readonly)\s+'), '');
-    js = js.replaceAll(RegExp(r'\babstract\s+'), '');
-    js = js.replaceAllMapped(RegExp(r'\s+implements\s+[\w,\s]+'), (m) => '');
+      });
+    js = js.replaceAllMapped(_tsOptionalChainRegex, (m) => m[2] != null ? '(${m[1]} && ${m[1]}.${m[2]}(' : '(${m[1]} && ${m[1]}.');
+    js = js.replaceAllMapped(_tsNullishCoalescingRegex, (m) => '(${m[1]} != null ? ${m[1]} : ');
+    js = js.replaceAll(_tsAccessModifierRegex, '');
+    js = js.replaceAll(_tsAbstractRegex, '');
+    js = js.replaceAllMapped(_tsImplementsRegex, (m) => '');
 
     return js;
   }
@@ -2498,10 +2492,12 @@ class JsEngine {
     final extracted = _extractJsCode(jsCode) ?? jsCode;
     final resolved = resolveEngine(extracted, sourceEngine: sourceEngine);
 
-    AppLogger.instance.logJsExecute(
-      resolved.engine == JsEngineType.rhino ? 'Rhino' : 'QuickJS',
-      resolved.code,
-    );
+    if (kDebugMode) {
+      AppLogger.instance.logJsExecute(
+        resolved.engine == JsEngineType.rhino ? 'Rhino' : 'QuickJS',
+        resolved.code,
+      );
+    }
 
     // 合并 env：传入的 env 优先，补充 baseUrl
     final mergedEnv = <String, dynamic>{
@@ -2849,88 +2845,52 @@ class JsEngine {
 
   /// 提取 QuickJS 中 console 缓存的日志，同步到 AppLogger
   /// 借鉴 legado 的调试输出机制：JS 中的 console.log/warn/error 输出到调试页面
+  /// 优化：合并为单次 evaluate，Release 模式跳过
   void _flushConsoleLogs() {
     if (!_initialized || _jsRuntime == null) return;
+    // Release 模式跳过日志提取（性能优化）
+    if (kReleaseMode) return;
     try {
-      // 先快速检查是否有日志，避免不必要的 JSON.stringify 调用
-      final hasLogs = evaluate('typeof __consoleLogs !== "undefined" && __consoleLogs.length > 0');
-      if (hasLogs != 'true') {
-        // 回退检查 console._getLogs 模式
-        final checkResult = evaluate('typeof console !== "undefined" ? (typeof console._getLogs === "function" ? "has_getLogs" : "no_getLogs") : "no_console"');
-        if (checkResult == 'no_console') {
-          // 重新注入 console
-          evaluate('var _consoleLogs = []; globalThis.console = { log: function() { var msg = Array.from(arguments).join(" "); _consoleLogs.push({level:"log", msg:msg}); }, warn: function() { var msg = Array.from(arguments).join(" "); _consoleLogs.push({level:"warn", msg:msg}); }, error: function() { var msg = Array.from(arguments).join(" "); _consoleLogs.push({level:"error", msg:msg}); }, info: function() { var msg = Array.from(arguments).join(" "); _consoleLogs.push({level:"info", msg:msg}); }, debug: function() { var msg = Array.from(arguments).join(" "); _consoleLogs.push({level:"debug", msg:msg}); }, _getLogs: function() { return _consoleLogs; }, _clearLogs: function() { _consoleLogs.length = 0; } };');
-          return; // 下次执行时再提取
-        }
-        if (checkResult == 'no_getLogs') {
-          evaluate('var _consoleLogs = []; globalThis.console = { log: function() { var msg = Array.from(arguments).join(" "); _consoleLogs.push({level:"log", msg:msg}); }, warn: function() { var msg = Array.from(arguments).join(" "); _consoleLogs.push({level:"warn", msg:msg}); }, error: function() { var msg = Array.from(arguments).join(" "); _consoleLogs.push({level:"error", msg:msg}); }, info: function() { var msg = Array.from(arguments).join(" "); _consoleLogs.push({level:"info", msg:msg}); }, debug: function() { var msg = Array.from(arguments).join(" "); _consoleLogs.push({level:"debug", msg:msg}); }, _getLogs: function() { return _consoleLogs; }, _clearLogs: function() { _consoleLogs.length = 0; } };');
-          return;
-        }
-
-        final logsResult = evaluate('JSON.stringify(console._getLogs())');
-        if (logsResult == null || logsResult == '[]' || logsResult == 'undefined') return;
-
-        final logsJson = logsResult;
-        if (!logsJson.startsWith('[')) return;
-
-        final logs = jsonDecode(logsJson) as List;
-        for (final log in logs) {
-          if (log is! Map) continue;
-          final level = log['level'] as String? ?? 'log';
-          final msg = log['msg']?.toString() ?? '';
-          if (msg.isEmpty) continue;
-
-          switch (level) {
-            case 'error':
-              AppLogger.instance.error(LogCategory.js, msg);
-              break;
-            case 'warn':
-              AppLogger.instance.warn(LogCategory.js, msg);
-              break;
-            case 'info':
-              AppLogger.instance.info(LogCategory.js, msg);
-              break;
-            case 'debug':
-              AppLogger.instance.debug(LogCategory.js, msg);
-              break;
-            default:
-              AppLogger.instance.info(LogCategory.js, msg);
-          }
-        }
-
-        // 清除已提取的日志
-        evaluate('console._clearLogs()');
+      // 单次 evaluate：检查+获取+清除日志
+      final result = evaluate('''(function(){
+  var logs = [];
+  if(typeof __consoleLogs !== "undefined" && __consoleLogs.length > 0){
+    logs = __consoleLogs.slice();
+    __consoleLogs.length = 0;
+  } else if(typeof console !== "undefined" && typeof console._getLogs === "function"){
+    logs = console._getLogs();
+    if(console._clearLogs) console._clearLogs();
+  } else if(typeof console === "undefined" || typeof console._getLogs !== "function"){
+    return "NEED_REINJECT";
+  }
+  return JSON.stringify(logs);
+})()''');
+      if (result == null || result == 'undefined' || result == '[]' || result.isEmpty) return;
+      if (result == 'NEED_REINJECT') {
+        // 重新注入 console
+        evaluate('var __consoleLogs = []; globalThis.console = { log: function() { var msg = Array.from(arguments).join(" "); __consoleLogs.push({level:"log", msg:msg}); }, warn: function() { var msg = Array.from(arguments).join(" "); __consoleLogs.push({level:"warn", msg:msg}); }, error: function() { var msg = Array.from(arguments).join(" "); __consoleLogs.push({level:"error", msg:msg}); }, info: function() { var msg = Array.from(arguments).join(" "); __consoleLogs.push({level:"info", msg:msg}); }, debug: function() { var msg = Array.from(arguments).join(" "); __consoleLogs.push({level:"debug", msg:msg}); } };');
         return;
       }
-
-      final logsJson = evaluate('JSON.stringify(__consoleLogs)');
-      if (logsJson.isEmpty || logsJson == 'undefined') return;
-
-      final logs = jsonDecode(logsJson) as List;
+      if (!result.startsWith('[')) return;
+      final logs = jsonDecode(result) as List;
       for (final log in logs) {
         if (log is! Map) continue;
         final level = log['level'] as String? ?? 'log';
         final msg = log['msg']?.toString() ?? '';
         if (msg.isEmpty) continue;
-
         switch (level) {
           case 'error':
             AppLogger.instance.error(LogCategory.js, msg);
-            break;
           case 'warn':
             AppLogger.instance.warn(LogCategory.js, msg);
-            break;
           case 'info':
             AppLogger.instance.info(LogCategory.js, msg);
-            break;
           case 'debug':
             AppLogger.instance.debug(LogCategory.js, msg);
-            break;
           default:
             AppLogger.instance.info(LogCategory.js, msg);
         }
       }
-      evaluate('__consoleLogs = []');
     } catch (_) {}
   }
 
@@ -3135,9 +3095,12 @@ class JsEngine {
     if (result == 'false') return false;
     final numVal = num.tryParse(result);
     if (numVal != null) return numVal;
-    try {
-      return jsonDecode(result);
-    } catch (_) {}
+    // 快速判断：只有可能是 JSON 时才尝试 jsonDecode
+    if (result.startsWith('{') || result.startsWith('[') || result.startsWith('"')) {
+      try {
+        return jsonDecode(result);
+      } catch (_) {}
+    }
     return result;
   }
 
@@ -3194,21 +3157,19 @@ class JsEngine {
 
   /// 提取 JS 代码中定义的函数名
   /// 匹配 function xxx() 和 var/const/let/this.xxx = function/()=> 模式
+  static final _funcNamePattern = RegExp(r'function\s+(\w+)\s*\(');
+  static final _varFuncPattern = RegExp(r'(?:var|const|let)\s+(\w+)\s*=\s*(?:function|\(|[^(]*=>)');
+  static final _thisFuncPattern = RegExp(r'this\.(\w+)\s*=\s*(?:function|\(|[^(]*=>)');
+
   void _extractFunctionNames(String jsLib) {
     _currentJsLibFunctions.clear();
-    // 匹配 function xxx( 模式
-    final funcPattern = RegExp(r'function\s+(\w+)\s*\(');
-    for (final m in funcPattern.allMatches(jsLib)) {
+    for (final m in _funcNamePattern.allMatches(jsLib)) {
       _currentJsLibFunctions.add(m.group(1)!);
     }
-    // 匹配 var/const/let xxx = function / xxx = ()=> / xxx = (...) => 模式
-    final varPattern = RegExp(r'(?:var|const|let)\s+(\w+)\s*=\s*(?:function|\(|[^(]*=>)');
-    for (final m in varPattern.allMatches(jsLib)) {
+    for (final m in _varFuncPattern.allMatches(jsLib)) {
       _currentJsLibFunctions.add(m.group(1)!);
     }
-    // 匹配 this.xxx = function / this.xxx = ()=> 模式
-    final thisPattern = RegExp(r'this\.(\w+)\s*=\s*(?:function|\(|[^(]*=>)');
-    for (final m in thisPattern.allMatches(jsLib)) {
+    for (final m in _thisFuncPattern.allMatches(jsLib)) {
       _currentJsLibFunctions.add(m.group(1)!);
     }
   }
@@ -3255,8 +3216,8 @@ class JsEngine {
   /// 解决 QuickJS 同步模式下 java.ajax() 无法异步请求的问题
   Future<void> preCacheHttpResults(Map<String, String> urlResults) async {
     final entries = urlResults.entries.map((e) {
-      _cachedKeys.add('http_get:${e.key}');
-      return '_javaCache["http_get:${e.key}"] = ${jsonEncode(e.value)};';
+      _cachedKeys.add(e.key);
+      return '_javaCache["${e.key}"] = ${jsonEncode(e.value)};';
     }).join('\n');
     if (entries.isNotEmpty) {
       evaluate(entries);
@@ -3278,8 +3239,13 @@ class JsEngine {
   /// 在执行 JS 代码前，扫描代码中的 java.ajax/get/post/aesEncode/md5Encode 等调用
   /// 通过 NativeChannel 预获取结果，写入 _javaCache
   /// 借鉴 legado 的 preCacheHttpResults 机制，但自动扫描而非手动传入
+  /// 优化：快速预检，无桥接调用时直接跳过
+  static final _bridgeCallPattern = RegExp(r'\bjava\.(ajax|get|post|head|connect|aesEncode|aesDecode|md5Encode|sha1Encode|sha256Encode|hmacSHA256|base64Encode|base64Decode)\b|\bCryptoJS\b|\bfetch\s*\(');
+
   Future<void> _preCacheBridgeCalls(String jsCode, {Map<String, dynamic>? env}) async {
     if (_jsRuntime == null) return;
+    // 快速预检：无桥接调用时直接跳过，避免不必要的正则扫描
+    if (!_bridgeCallPattern.hasMatch(jsCode)) return;
 
     final baseUrl = env?['baseUrl'] as String? ?? '';
     final httpUrls = <String>{};
@@ -3301,15 +3267,17 @@ class JsEngine {
     }
 
     // 2. 扫描变量拼接 URL: java.ajax(url), java.get(baseUrl + "/api"), fetch(variable)
-    // 先在 QuickJS 中求值变量，获取完整 URL
+    // 优化：合并所有变量表达式为单次 evaluate，避免逐个求值
+    final varExprs = <String>[];
     for (final match in _varPattern.allMatches(jsCode)) {
       final expr = match.group(1)?.trim();
       if (expr == null || expr.isEmpty) continue;
       // 跳过字面量字符串（已被上面匹配）
       if (expr.startsWith('"') || expr.startsWith("'")) continue;
-      // 尝试在 QuickJS 中求值表达式
+      varExprs.add(expr);
+    }
+    if (varExprs.isNotEmpty) {
       try {
-        // 注入 env 变量后求值
         final varCode = <String>[];
         if (env != null) {
           for (final entry in env.entries) {
@@ -3320,13 +3288,23 @@ class JsEngine {
             }
           }
         }
-        final evalScript = '${varCode.join('\n')} (function() { try { var __url = String($expr); return __url; } catch(e) { return ""; } })()';
-        final urlResult = evaluate(evalScript);
-        if (urlResult != null && urlResult.isNotEmpty && urlResult.startsWith('http')) {
-          httpUrls.add(urlResult);
+        // 合并所有表达式为单次 evaluate，批量返回结果
+        final exprCases = <String>[];
+        for (var i = 0; i < varExprs.length; i++) {
+          exprCases.add('try { var __u$i = String(${varExprs[i]}); if(__u$i.startsWith("http")) __results.push(__u$i); } catch(e) {}');
+        }
+        final evalScript = '${varCode.join('\n')} var __results = []; ${exprCases.join('\n')}; JSON.stringify(__results);';
+        final batchResult = evaluate(evalScript);
+        if (batchResult != null && batchResult.startsWith('[')) {
+          try {
+            final urls = jsonDecode(batchResult) as List;
+            for (final url in urls) {
+              if (url is String && url.isNotEmpty) httpUrls.add(url);
+            }
+          } catch (_) {}
         }
       } catch (_) {
-        // 求值失败，跳过
+        // 批量求值失败，跳过
       }
     }
 

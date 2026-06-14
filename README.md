@@ -1,144 +1,99 @@
-# mmr 
+# MMR - 多媒体阅读器
 
-一款支持小说、漫画、视频、音频的多媒体阅读器应用。
+一款基于 Flutter 的跨平台多媒体阅读器，兼容阅读(Legado)书源规则，支持小说、漫画、音频等内容。
 
-## 功能特性
+## 特性
 
-### 📚 书架管理
-- 本地书籍导入（支持 txt、epub、pdf 等格式）
-- 在线书籍收藏
-- 分组管理
-- 阅读进度同步
+### 兼容 Legado 书源
+- 完整支持 Legado 规则语法（CSS/JSON/XPath/JS/正则/模板）
+- 双 JS 引擎：QuickJS（ES2020）+ Rhino（Android 原生）
+- CryptoJS / java.* 桥接 API 兼容
+- TypeScript 支持（`@ts:` 前缀自动编译）
 
-### 🔍 发现页
-- 基于书源的内容发现
-- 多种分类（推荐、小说、漫画、视频、音频）
-- 榜单推荐
-- 瀑布流展示
+### 跨平台
+- Android / iOS / Web / Desktop
+- 统一规则引擎，无需针对平台修改书源
 
-### 📖 阅读器
-- 小说阅读器（仿真翻页、滚动、滑动模式）
+### 阅读器
+- 小说阅读器（仿真翻页、滚动、滑动）
 - 漫画浏览器（竖向滚动、左右翻页）
-- 视频播放器（倍速播放、线路切换）
 - 音频播放器（后台播放、定时停止）
 
-### 🔧 扩展系统
-- 书源管理（.dan 文件格式）
-- 小程序支持
-- 插件系统
+### 扩展系统
+- 书源管理（兼容 Legado JSON 格式）
+- 书源调试（实时日志 + 源码查看 + 执行追踪树）
+- 小程序 / 插件系统
 
-## 技术栈
+## 技术架构
 
-- **框架**: Flutter 3.x
-- **状态管理**: Provider
-- **本地存储**: Hive
-- **网络请求**: Dio
-- **图片缓存**: cached_network_image
+| 组件 | 技术 | 说明 |
+|------|------|------|
+| 框架 | Flutter 3.x | 跨平台 UI |
+| JS 引擎 | QuickJS (flutter_js) + Rhino (Android) | 双引擎自动分流 |
+| HTML 解析 | package:html | CSS 选择器（兼容 JSoup 规则） |
+| JSON 解析 | 自定义 JSONPath | 递归搜索/过滤器/切片 |
+| XPath 解析 | xml + xpath | HTML 自动补全 |
+| HTTP | Dio + OkHttp (Android) | 双通道请求 |
+| 加密 | NativeChannel (AES/MD5/SHA/HMAC) | 桥接原生加密 |
+| 存储 | Hive | 本地数据库 |
+| 状态管理 | Provider | 响应式 UI |
+
+## 规则引擎兼容性
+
+| 规则类型 | 状态 | 说明 |
+|----------|------|------|
+| CSS/JSoup 选择器 | ✅ | `class.xxx` / `tag.xxx` / `@css:` |
+| JSONPath | ✅ | `$.xxx` / `$[n]` / `$..xxx` |
+| XPath | ✅ | `//div[@class]` / `@xpath:` |
+| JavaScript | ✅ | `@js:` / `<js>` / `@quickjs:` / `@rhino:` |
+| 正则替换 | ✅ | `##regex##replacement` / `###` |
+| 模板规则 | ✅ | `{{@@.xxx@text}}` / `{{$.xxx}}` |
+| 变量系统 | ✅ | `@put` / `@get` / `java.put/getStr` |
+| CryptoJS | ✅ | AES/MD5/SHA/HMAC 全支持 |
+| java.* 桥接 | ✅ | HTTP/加密/解析/缓存/日志 |
+| TypeScript | ➕ | `@ts:` 前缀自动编译 |
+
+> 详见 [书源规则帮助](assets/templates/book_source_help.md) 和 [JS 开发文档](assets/templates/book_source_js_help.md)
 
 ## 项目结构
 
 ```
 lib/
-├── main.dart                 # 应用入口
 ├── models/                   # 数据模型
-│   ├── book.dart
-│   ├── chapter.dart
-│   ├── book_source.dart
-│   ├── miniprogram.dart
-│   └── plugin.dart
-├── providers/                # 状态管理
-│   ├── app_provider.dart
-│   ├── bookshelf_provider.dart
-│   ├── discovery_provider.dart
-│   └── reader_provider.dart
-├── services/                 # 服务层
-│   ├── storage_service.dart
-│   ├── nojs_engine.dart
-│   └── network_service.dart
 ├── pages/                    # 页面
-│   ├── splash/
-│   ├── main/
-│   ├── bookshelf/
-│   ├── discovery/
-│   ├── miniprogram/
-│   ├── profile/
-│   ├── search/
-│   ├── detail/
-│   ├── reader/
-│   └── player/
+│   ├── bookshelf/            # 书架
+│   ├── detail/               # 书籍详情
+│   ├── debug/                # 书源调试
+│   ├── reader/               # 阅读器
+│   ├── search/               # 搜索
+│   └── profile/              # 设置
+├── services/
+│   ├── source_engine/        # 规则引擎核心
+│   │   ├── analyze_rule.dart # 规则解析器
+│   │   ├── web_book.dart     # 网络请求引擎
+│   │   ├── legado_json_path.dart
+│   │   └── legado_xpath.dart
+│   ├── native/
+│   │   └── js_engine.dart    # JS 双引擎
+│   └── source_debug_service.dart
+├── providers/                # 状态管理
 ├── widgets/                  # 公共组件
-├── utils/                    # 工具类
-├── routes/                   # 路由配置
-└── themes/                   # 主题配置
+└── utils/                    # 工具类
 ```
 
-## 开始使用
-
-### 环境要求
-
-- Flutter SDK >= 3.0.0
-- Dart SDK >= 3.0.0
-
-### 安装依赖
+## 开发
 
 ```bash
+# 安装依赖
 flutter pub get
-```
 
-### 运行应用
-
-```bash
+# 运行
 flutter run
-```
 
-### 构建应用
-
-```bash
-# Android
+# 构建 Android
 flutter build apk
-
-# iOS
-flutter build ios
-
-# Web
-flutter build web
 ```
-
-## .dan 文件格式
-
-.dan 文件是本应用的扩展格式，用于封装：
-
-- **书源规则**: 定义网络内容的获取与解析规则
-- **小程序**: 独立的小工具应用
-- **插件**: 系统功能扩展钩子
-
-## 开发说明
-
-### 添加新书源
-
-1. 在"我的"页面进入"书源管理"
-2. 点击右上角"+"按钮
-3. 选择本地 .dan 文件或输入网络地址
-
-### 开发小程序
-
-小程序运行在 nojs.py 解释器提供的沙盒环境中，可以：
-- 打开新视图（WebView 或原生风格界面）
-- 访问系统 API
-- 与主应用交互
-
-### 开发插件
-
-插件用于增强阅读器/播放器或系统行为：
-- 小说阅读器 TTS 增强
-- 漫画自动切边处理
-- 视频播放器手势增强
-- 全局字体替换
 
 ## 许可证
 
 MIT License
-
-## 贡献
-
-欢迎提交 Issue 和 Pull Request！

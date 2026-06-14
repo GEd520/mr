@@ -69,6 +69,7 @@ class AnalyzeRule {
   static final _trailingSpaceRegex = RegExp(r'\s+$');
   static final _anPlusBRegex = RegExp(r'^(-?\d*)n\s*([+-]\s*\d+)?$');
   static final _attributeRegex = RegExp(r'\[([^\]]+)\]');
+  static final _baseTagRegex = RegExp(r'^([a-zA-Z][\w-]*)');
 
   // 反向引用展开正则
   static final _backrefRegex = RegExp(r'\$(\d+)');
@@ -1200,7 +1201,7 @@ class AnalyzeRule {
       baseElements = root.querySelectorAll(baseSelector).whereType<dom.Element>().toList();
     } catch (e) {
       // 基础选择器也失败，尝试用标签名
-      final tagMatch = RegExp(r'^([a-zA-Z][\w-]*)').firstMatch(baseSelector);
+      final tagMatch = _baseTagRegex.firstMatch(baseSelector);
       if (tagMatch != null) {
         baseElements = root.getElementsByTagName(tagMatch.group(1)!).toList();
       } else {
@@ -1667,23 +1668,18 @@ class AnalyzeRule {
 
   /// 从 JS 代码中提取 URL
   /// 支持格式: location.href='url', window.open('url'), ShowRead('url'), etc.
+  static final _jsUrlPatterns = [
+    RegExp(r"""location\.href\s*=\s*['"]([^'"]+)['"]"""),
+    RegExp(r"""location\s*=\s*['"]([^'"]+)['"]"""),
+    RegExp(r"""window\.location\s*=\s*['"]([^'"]+)['"]"""),
+    RegExp(r"""window\.location\.href\s*=\s*['"]([^'"]+)['"]"""),
+    RegExp(r"""window\.open\s*\(\s*['"]([^'"]+)['"]"""),
+    RegExp(r"""['"]([^'"]*(?:\/|\.html?|\.htm|\.php|\.asp|\.jsp)[^'"]*)['"]"""),
+  ];
+
   static String _extractUrlFromJs(String jsCode) {
     if (jsCode.isEmpty) return '';
-    final patterns = [
-      // location.href='url' / location.href="url"
-      RegExp(r"""location\.href\s*=\s*['"]([^'"]+)['"]"""),
-      // location='url' / location="url"
-      RegExp(r"""location\s*=\s*['"]([^'"]+)['"]"""),
-      // window.location='url' / window.location="url"
-      RegExp(r"""window\.location\s*=\s*['"]([^'"]+)['"]"""),
-      // window.location.href='url'
-      RegExp(r"""window\.location\.href\s*=\s*['"]([^'"]+)['"]"""),
-      // window.open('url')
-      RegExp(r"""window\.open\s*\(\s*['"]([^'"]+)['"]"""),
-      // 通用函数调用: funcName('url') / funcName("url")
-      RegExp(r"""['"]([^'"]*(?:\/|\.html?|\.htm|\.php|\.asp|\.jsp)[^'"]*)['"]"""),
-    ];
-    for (final pattern in patterns) {
+    for (final pattern in _jsUrlPatterns) {
       final match = pattern.firstMatch(jsCode);
       if (match != null && match.groupCount > 0) {
         final url = match.group(1) ?? '';
@@ -2200,14 +2196,17 @@ class AnalyzeRule {
     }
   }
 
+  /// HTML 实体解码（单次正则替换，避免链式 replaceAll 创建多个中间字符串）
+  static final _htmlEntityRegex = RegExp(r'&(amp|lt|gt|quot|#39|nbsp);');
+  static const _htmlEntityMap = {
+    'amp': '&', 'lt': '<', 'gt': '>', 'quot': '"', '#39': "'", 'nbsp': ' ',
+  };
+
   String _unescapeHtml(String value) {
-    return value
-        .replaceAll('&amp;', '&')
-        .replaceAll('&lt;', '<')
-        .replaceAll('&gt;', '>')
-        .replaceAll('&quot;', '"')
-        .replaceAll('&#39;', "'")
-        .replaceAll('&nbsp;', ' ');
+    if (!value.contains('&')) return value;
+    return value.replaceAllMapped(_htmlEntityRegex, (m) {
+      return _htmlEntityMap[m.group(1)] ?? m.group(0)!;
+    });
   }
 
   String _cssEscape(String value) {
@@ -2785,11 +2784,11 @@ class _ElementSelector {
     if (elements.isEmpty) return [];
     if (indexes.isEmpty && rangeExpression == null) return elements.toList();
 
-    final selected = <int>[];
+    final selected = <int>{};
     for (final index in indexes) {
       final fixed = index < 0 ? elements.length + index : index;
       if (fixed >= 0 && fixed < elements.length) {
-        if (!selected.contains(fixed)) selected.add(fixed);
+        selected.add(fixed);
       }
     }
     if (rangeExpression != null) {
@@ -2799,9 +2798,7 @@ class _ElementSelector {
           final raw = int.tryParse(parts.first);
           if (raw == null) continue;
           final fixed = raw < 0 ? elements.length + raw : raw;
-          if (fixed >= 0 &&
-              fixed < elements.length &&
-              !selected.contains(fixed)) {
+          if (fixed >= 0 && fixed < elements.length) {
             selected.add(fixed);
           }
           continue;
@@ -2818,13 +2815,13 @@ class _ElementSelector {
         if (step == 0) step = 1;
         if (end < start && step > 0) {
           for (var index = start; index >= end; index -= step) {
-            if (!selected.contains(index)) selected.add(index);
+            selected.add(index);
           }
         } else {
           for (var index = start;
               step > 0 ? index <= end : index >= end;
               index += step) {
-            if (!selected.contains(index)) selected.add(index);
+            selected.add(index);
           }
         }
       }
@@ -2837,6 +2834,7 @@ class _ElementSelector {
       ];
     }
 
-    return [for (final i in selected) elements[i]];
+    final sorted = selected.toList()..sort();
+    return [for (final i in sorted) elements[i]];
   }
 }
