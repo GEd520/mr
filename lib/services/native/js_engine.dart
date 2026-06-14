@@ -245,7 +245,7 @@ class JsEngine {
     multiLine: true,
   );
   static final _htmlParsePattern = RegExp(
-    r'''(?:_JsoupLite\.(selectFirst|selectAll)|java\.(getString|getElement|getElements))\s*\(\s*([^,)]+)(?:\s*,\s*([^)]+))?\s*\)''',
+    r'''(?:_JsoupLite\.(selectFirst|selectAll)|java\.(?:jsoup\.(select|selectFirst|getAttr)|getString|getElement|getElements))\s*\(\s*([^,)]+)(?:\s*,\s*([^,)]+))?(?:\s*,\s*([^)]+))?\s*\)''',
     multiLine: true,
   );
   static final _cacheVarPattern = RegExp(r'\{\{(\w+)\}\}');
@@ -1191,16 +1191,14 @@ class JsEngine {
     // 2.6 注入纯 JS SHA1/SHA256/HMAC-SHA256 引擎
     _injectShaEngine();
     // 注意：不能使用 const，因为字符串中包含 $ 符号（JS 正则替换引用 $&）
-    final helperCode = """
-      // ===== Legado Java 桥接对象（QuickJS 侧）=====
-      // 借鉴 legado 的 JsExtensions 接口，通过 Dart 侧 NativeChannel 桥接
-      // 核心策略：同步模式从 _javaCache 取缓存值，异步模式由 Dart 端预缓存
-      // _javaCache 已在前面注入，这里不再重复声明
-
-      // ===== 内置 HTML 解析器（精简版：优先从 Dart 预缓存取结果，仅做最小正则兜底）=====
-      // Dart 端通过 _nativeJsoupParse + _preCacheBridgeCalls 已将解析结果写入 _javaCache
-      // JS 侧只需查缓存，未命中时用简单正则兜底
+    // _JsoupLite 使用 raw string 避免JS正则中的$被Dart解析为插值
+    final jsoupLiteCode = r"""
       var _JsoupLite = {
+        _voidElements: ['area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr'],
+        // 自动关闭：遇到同标签时自动关闭前一个（HTML5 隐式关闭规则）
+        _autoCloseTags: ['option','optgroup','li','tr','td','th','dt','dd','p','rt','rp'],
+        _debug: false,
+        _log: function(msg) { if (_JsoupLite._debug) console.log('[JsoupLite] ' + msg); },
         _hashStr: function(s) {
           var h = 0;
           for (var i = 0; i < s.length; i++) {
@@ -1211,51 +1209,394 @@ class JsEngine {
         _cacheKey: function(prefix, selector, html) {
           return prefix + ':' + selector + ':' + _JsoupLite._hashStr(html || '');
         },
+        // 栈式 HTML 解析器，正确处理 void 元素和文本
+        _parseHtml: function(html) {
+          if (!html) return [];
+          var nodes = [];
+          var tagRe = /<([\/!]?)([a-zA-Z][a-zA-Z0-9]*)((?:\s+[^>]*?)?)(\/?)>/g;
+          var lastIdx = 0;
+          var stack = [];
+          var m;
+          while ((m = tagRe.exec(html)) !== null) {
+            // 文本节点
+            if (m.index > lastIdx) {
+              var txt = html.substring(lastIdx, m.index);
+              if (stack.length > 0) {
+                stack[stack.length - 1].childNodes.push({type: 'text', text: txt});
+              }
+            }
+            lastIdx = m.index + m[0].length;
+            var isClose = m[1] === '/';
+            var tagName = m[2].toLowerCase();
+            var attrStr = m[3] || '';
+            var isSelfClose = m[4] === '/';
+            // 跳过注释和 <!DOCTYPE>
+            if (m[1] === '!' || tagName === '!doctype') continue;
+            if (isClose) {
+              // 弹栈，找到匹配的开标签
+              var found = -1;
+              for (var si = stack.length - 1; si >= 0; si--) {
+                if (stack[si].tag === tagName) { found = si; break; }
+              }
+              if (found >= 0) {
+                var closed = stack.splice(found)[0];
+                if (found > 0 && stack.length > 0) {
+                  stack[found - 1].childNodes.push(closed);
+                } else {
+                  nodes.push(closed);
+                }
+              }
+              continue;
+            }
+            // 解析属性
+            var attrs = {};
+            var attrRe = /([a-zA-Z_][\w-]*)\s*(?:=\s*(?:"([^"]*)"|'([^']*)'|(\S+)))?/g;
+            var am;
+            while ((am = attrRe.exec(attrStr)) !== null) {
+              attrs[am[1].toLowerCase()] = am[2] !== undefined ? am[2] : (am[3] !== undefined ? am[3] : (am[4] !== undefined ? am[4] : ''));
+            }
+            var node = {tag: tagName, attrs: attrs, childNodes: [], parent: stack.length > 0 ? stack[stack.length - 1] : null};
+            // void 元素或自闭合标签不入栈
+            if (isSelfClose || _JsoupLite._voidElements.indexOf(tagName) >= 0) {
+              if (stack.length > 0) {
+                stack[stack.length - 1].childNodes.push(node);
+              } else {
+                nodes.push(node);
+              }
+            } else {
+              // HTML5 隐式关闭：遇到同类标签时自动关闭前一个
+              // 例如：<option>A<option>B → <option>A</option><option>B
+              if (_JsoupLite._autoCloseTags.indexOf(tagName) >= 0) {
+                for (var si = stack.length - 1; si >= 0; si--) {
+                  if (stack[si].tag === tagName) {
+                    var closed = stack.splice(si)[0];
+                    if (si > 0 && stack.length > 0) {
+                      stack[si - 1].childNodes.push(closed);
+                    } else {
+                      nodes.push(closed);
+                    }
+                    break;
+                  }
+                }
+              }
+              stack.push(node);
+            }
+          }
+          // 处理栈中剩余节点
+          while (stack.length > 0) {
+            var remaining = stack.pop();
+            if (stack.length > 0) {
+              stack[stack.length - 1].childNodes.push(remaining);
+            } else {
+              nodes.push(remaining);
+            }
+          }
+          return nodes;
+        },
+        // 获取元素子节点（不含文本节点）
+        _elementChildren: function(node) {
+          if (!node || !node.childNodes) return [];
+          return node.childNodes.filter(function(c) { return c.tag; });
+        },
+        // 获取文本内容（递归）
+        _getText: function(node) {
+          if (!node) return '';
+          if (node.type === 'text') return node.text || '';
+          if (!node.childNodes) return '';
+          var text = '';
+          for (var i = 0; i < node.childNodes.length; i++) {
+            text += _JsoupLite._getText(node.childNodes[i]);
+          }
+          return text;
+        },
+        // 获取 outerHtml（递归重建）
+        _getOuterHtml: function(node) {
+          if (!node) return '';
+          if (node.type === 'text') return node.text || '';
+          var html = '<' + node.tag;
+          for (var key in node.attrs) {
+            html += ' ' + key + '="' + (node.attrs[key] || '').replace(/"/g, '&quot;') + '"';
+          }
+          html += '>';
+          if (_JsoupLite._voidElements.indexOf(node.tag) >= 0) return html;
+          for (var i = 0; i < node.childNodes.length; i++) {
+            html += _JsoupLite._getOuterHtml(node.childNodes[i]);
+          }
+          html += '</' + node.tag + '>';
+          return html;
+        },
+        // 拆分选择器中的伪类
+        _splitPseudo: function(sel) {
+          var m = sel.match(/^(.+?):(nth-child|nth-of-type)\((.+)\)$/);
+          if (m) return {base: m[1], pseudo: m[2], expr: m[3]};
+          return {base: sel, pseudo: null, expr: null};
+        },
+        // 匹配基础选择器（不含伪类）
+        _matchesBase: function(node, selector) {
+          if (!node || !node.tag) return false;
+          var sel = selector.trim();
+          // 空选择器匹配任何元素（用于 getAttr/selectFirst 从根元素自身取值）
+          if (!sel) return true;
+          // #id
+          if (sel.startsWith('#') && sel.indexOf('.') < 0 && sel.indexOf('[') < 0) {
+            return node.attrs['id'] === sel.substring(1);
+          }
+          // [attr$=val] 裸属性选择器
+          var bareAttr = sel.match(/^\[([a-zA-Z_][\w-]*)([$^*]?=)["']?([^"'\]]*)["']?\]$/);
+          if (bareAttr) {
+            var val = node.attrs[bareAttr[1].toLowerCase()] || '';
+            var op = bareAttr[2], bv = bareAttr[3];
+            if (op === '=') return val === bv;
+            if (op === '$=') return val.endsWith(bv);
+            if (op === '^=') return val.startsWith(bv);
+            if (op === '*=') return val.indexOf(bv) >= 0;
+            return false;
+          }
+          // tag[attr$=val]
+          var tagAttr = sel.match(/^([a-zA-Z][a-zA-Z0-9]*)\[([a-zA-Z_][\w-]*)([$^*]?=)["']?([^"'\]]*)["']?\]$/);
+          if (tagAttr) {
+            if (node.tag !== tagAttr[1].toLowerCase()) return false;
+            var av = node.attrs[tagAttr[2].toLowerCase()] || '';
+            var aop = tagAttr[3], aval = tagAttr[4];
+            if (aop === '=') return av === aval;
+            if (aop === '$=') return av.endsWith(aval);
+            if (aop === '^=') return av.startsWith(aval);
+            if (aop === '*=') return av.indexOf(aval) >= 0;
+            return false;
+          }
+          // tag.class
+          var tagCls = sel.match(/^([a-zA-Z][a-zA-Z0-9]*)\.([a-zA-Z_-][\w-]*)$/);
+          if (tagCls) {
+            if (node.tag !== tagCls[1].toLowerCase()) return false;
+            var nc = (node.attrs['class'] || '').split(/\s+/);
+            return nc.indexOf(tagCls[2]) >= 0;
+          }
+          // tag#id
+          var tagId = sel.match(/^([a-zA-Z][a-zA-Z0-9]*)#([a-zA-Z_-][\w-]*)$/);
+          if (tagId) {
+            return node.tag === tagId[1].toLowerCase() && node.attrs['id'] === tagId[2];
+          }
+          // .class（支持多类 .c1.c2）
+          if (sel.startsWith('.')) {
+            var classes = sel.substring(1).split('.');
+            var nodeClasses = (node.attrs['class'] || '').split(/\s+/);
+            for (var i = 0; i < classes.length; i++) {
+              if (classes[i] && nodeClasses.indexOf(classes[i]) < 0) return false;
+            }
+            return true;
+          }
+          // 纯 tag
+          if (/^[a-zA-Z][a-zA-Z0-9]*$/.test(sel)) {
+            return node.tag === sel.toLowerCase();
+          }
+          return false;
+        },
+        // 解析 nth-child 表达式
+        _resolveNth: function(expr, idx) {
+          expr = expr.trim().replace(/\s+/g, '');
+          if (expr === String(idx)) return true;
+          if (expr === 'odd') return idx % 2 === 1;
+          if (expr === 'even') return idx % 2 === 0;
+          var m = expr.match(/^(-?\d*)n([+-]\d+)?$/);
+          if (m) {
+            var a = m[1] === '' ? 1 : (m[1] === '-' ? -1 : parseInt(m[1]));
+            var b = m[2] ? parseInt(m[2]) : 0;
+            if (a === 0) return idx === b;
+            var n = (idx - b) / a;
+            return n >= 0 && n === Math.floor(n);
+          }
+          return false;
+        },
+        // 核心查询：在节点树中查找匹配选择器的所有元素
+        _queryAll: function(nodes, selector, depth) {
+          depth = depth || 0;
+          if (depth > 30 || !nodes) return [];
+          var results = [];
+
+          // 处理逗号分隔的多选择器
+          if (selector.indexOf(',') >= 0 && selector.indexOf('(') < 0) {
+            var sels = selector.split(',');
+            for (var si = 0; si < sels.length; si++) {
+              var r = _JsoupLite._queryAll(nodes, sels[si].trim(), depth + 1);
+              for (var ri = 0; ri < r.length; ri++) {
+                if (results.indexOf(r[ri]) < 0) results.push(r[ri]);
+              }
+            }
+            return results;
+          }
+
+          // 处理子选择器 (> combinator)
+          if (selector.indexOf(' > ') >= 0) {
+            var childParts = selector.split(/\s*>\s*/);
+            // 关键修复：第一步用后代搜索（_queryAll 递归查找），不是只看直接子元素
+            // 例如 ".row:nth-child(2) > .col-12" 中 .row 可能嵌套在 html>body>div 下
+            var current = _JsoupLite._queryAll(nodes, childParts[0].trim(), depth + 1);
+            // 后续步骤：在匹配元素的直接子元素中查找
+            for (var cp = 1; cp < childParts.length; cp++) {
+              var partSel = childParts[cp].trim();
+              var next = [];
+              for (var ci = 0; ci < current.length; ci++) {
+                var elChildren = _JsoupLite._elementChildren(current[ci]);
+                var matched = _JsoupLite._filterBySelector(elChildren, partSel, current[ci]);
+                next = next.concat(matched);
+              }
+              current = next;
+            }
+            return current;
+          }
+
+          // 处理后代选择器 (空格分隔)
+          var parts = selector.split(/\s+/);
+          if (parts.length > 1) {
+            var cur = nodes;
+            for (var pi = 0; pi < parts.length; pi++) {
+              var pSel = parts[pi].trim();
+              if (!pSel) continue;
+              var found = _JsoupLite._queryAll(cur, pSel, depth + 1);
+              if (pi < parts.length - 1) {
+                // 收集所有后代
+                var desc = [];
+                for (var fi = 0; fi < found.length; fi++) {
+                  _JsoupLite._collectAllElements(found[fi], desc);
+                }
+                cur = desc;
+              } else {
+                cur = found;
+              }
+            }
+            return cur;
+          }
+
+          // 单一选择器：深度优先遍历
+          var sp = _JsoupLite._splitPseudo(selector);
+          for (var ni = 0; ni < nodes.length; ni++) {
+            var node = nodes[ni];
+            if (!node.tag) continue;
+            if (_JsoupLite._matchesBase(node, sp.base)) {
+              if (sp.pseudo) {
+                var parent = node.parent;
+                if (parent) {
+                  var siblings = _JsoupLite._elementChildren(parent);
+                  if (sp.pseudo === 'nth-child') {
+                    // CSS 规范：:nth-child 计数所有兄弟元素，不只是匹配基础选择器的
+                    var pos = 0;
+                    for (var si2 = 0; si2 < siblings.length; si2++) {
+                      pos++;
+                      if (siblings[si2] === node) {
+                        if (_JsoupLite._resolveNth(sp.expr, pos)) results.push(node);
+                        break;
+                      }
+                    }
+                  } else if (sp.pseudo === 'nth-of-type') {
+                    // :nth-of-type 计数同类型（同标签名）的兄弟元素
+                    var pos2 = 0;
+                    for (var si3 = 0; si3 < siblings.length; si3++) {
+                      if (siblings[si3].tag === node.tag) {
+                        pos2++;
+                        if (siblings[si3] === node) {
+                          if (_JsoupLite._resolveNth(sp.expr, pos2)) results.push(node);
+                          break;
+                        }
+                      }
+                    }
+                  }
+                } else {
+                  results.push(node);
+                }
+              } else {
+                results.push(node);
+              }
+            }
+            // 递归搜索子节点
+            var childResults = _JsoupLite._queryAll(_JsoupLite._elementChildren(node), selector, depth + 1);
+            results = results.concat(childResults);
+          }
+          return results;
+        },
+        // 在同级元素中按选择器过滤（含伪类）
+        _filterBySelector: function(elements, selector, parent) {
+          var sp = _JsoupLite._splitPseudo(selector);
+          var matched = [];
+          if (sp.pseudo === 'nth-child') {
+            // CSS 规范：:nth-child 计数所有兄弟元素
+            var pos = 0;
+            for (var i = 0; i < elements.length; i++) {
+              pos++;
+              if (_JsoupLite._matchesBase(elements[i], sp.base)) {
+                if (_JsoupLite._resolveNth(sp.expr, pos)) {
+                  matched.push(elements[i]);
+                }
+              }
+            }
+          } else if (sp.pseudo === 'nth-of-type') {
+            // :nth-of-type 计数同类型（同标签名）的兄弟元素
+            var typePos = {};
+            for (var j = 0; j < elements.length; j++) {
+              var tag = elements[j].tag || '';
+              if (!typePos[tag]) typePos[tag] = 0;
+              typePos[tag]++;
+              if (_JsoupLite._matchesBase(elements[j], sp.base)) {
+                if (_JsoupLite._resolveNth(sp.expr, typePos[tag])) {
+                  matched.push(elements[j]);
+                }
+              }
+            }
+          } else {
+            for (var k = 0; k < elements.length; k++) {
+              if (_JsoupLite._matchesBase(elements[k], sp.base)) {
+                matched.push(elements[k]);
+              }
+            }
+          }
+          return matched;
+        },
+        // 收集节点下所有元素（深度优先）
+        _collectAllElements: function(node, arr) {
+          if (!node || !node.childNodes) return;
+          var children = _JsoupLite._elementChildren(node);
+          for (var i = 0; i < children.length; i++) {
+            arr.push(children[i]);
+            _JsoupLite._collectAllElements(children[i], arr);
+          }
+        },
+        // ===== 公共 API =====
         selectFirst: function(html, selector) {
           var key = _JsoupLite._cacheKey('jsoup_sf', selector, html);
           if (_javaCache[key] !== undefined) return _javaCache[key];
-          return _JsoupLite._fallback(html, selector, true);
+          var nodes = _JsoupLite._parseHtml(html);
+          var found = _JsoupLite._queryAll(nodes, selector, 0);
+          var result = found.length > 0 ? _JsoupLite._getText(found[0]) : '';
+          _JsoupLite._log('selectFirst("' + selector + '") => ' + (result.length > 80 ? result.substring(0, 80) + '...' : result || '(empty)'));
+          return result;
         },
         selectAll: function(html, selector) {
           var key = _JsoupLite._cacheKey('jsoup_sa', selector, html);
           if (_javaCache[key] !== undefined) return _javaCache[key];
-          return _JsoupLite._fallback(html, selector, false);
+          var nodes = _JsoupLite._parseHtml(html);
+          var found = _JsoupLite._queryAll(nodes, selector, 0);
+          var result = found.map(function(n) { return _JsoupLite._getOuterHtml(n); });
+          _JsoupLite._log('selectAll("' + selector + '") => ' + result.length + ' elements');
+          return result;
         },
         getAttr: function(html, selector, attr) {
           var key = _JsoupLite._cacheKey('jsoup_ga', selector + ':' + attr, html);
           if (_javaCache[key] !== undefined) return _javaCache[key];
-          var el = _JsoupLite.selectFirst(html, selector);
-          if (!el) return '';
-          var m = (typeof el === 'string' ? el : '').match(new RegExp(attr + '=["\\']([^"\\']*)["\\']', 'i'));
-          return m ? m[1] : '';
-        },
-        _fallback: function(html, selector, firstOnly) {
-          if (!html || !selector) return firstOnly ? '' : [];
-          var sel = selector.trim();
-          // Simple .class
-          if (sel.startsWith('.') && sel.indexOf(' ', 1) < 0 && sel.indexOf('>') < 0) {
-            var cls = sel.substring(1);
-            var re = new RegExp('<([a-zA-Z][a-zA-Z0-9]*)[^>]*class="[^"]*\\\\b' + cls.replace(/[.*+?^\${}()|[\\]\\\\]/g, '\\\\\$&') + '\\\\b[^"]*"[^>]*>([\\\\s\\\\S]*?)</\\\\1>', 'gi');
-            if (firstOnly) { var m = re.exec(html); return m ? m[0] : ''; }
-            var results = []; var m2; while ((m2 = re.exec(html)) !== null) results.push(m2[0]); return results;
-          }
-          // Simple tag
-          if (/^[a-zA-Z][a-zA-Z0-9]*\$/.test(sel)) {
-            var tagRe = new RegExp('<' + sel + '[^>]*>([\\\\s\\\\S]*?)</' + sel + '>', 'gi');
-            if (firstOnly) { var m = tagRe.exec(html); return m ? m[0] : ''; }
-            var results2 = []; var m3; while ((m3 = tagRe.exec(html)) !== null) results2.push(m3[0]); return results2;
-          }
-          // Simple #id
-          if (sel.startsWith('#')) {
-            var id = sel.substring(1);
-            var idRe = new RegExp('<([a-zA-Z][a-zA-Z0-9]*)[^>]*id="' + id.replace(/[.*+?^\${}()|[\\]\\\\]/g, '\\\\\$&') + '"[^>]*>([\\\\s\\\\S]*?)</\\\\1>', 'i');
-            var m4 = idRe.exec(html);
-            if (firstOnly) return m4 ? m4[0] : '';
-            return m4 ? [m4[0]] : [];
-          }
-          return firstOnly ? '' : [];
+          var nodes = _JsoupLite._parseHtml(html);
+          var found = _JsoupLite._queryAll(nodes, selector, 0);
+          var result = found.length > 0 ? (found[0].attrs[attr] || '') : '';
+          _JsoupLite._log('getAttr("' + selector + '", "' + attr + '") => ' + (result || '(empty)'));
+          return result;
         }
       };
+    """;
+
+    final helperCode = """
+      // ===== Legado Java 桥接对象（QuickJS 侧）=====
+      // 借鉴 legado 的 JsExtensions 接口，通过 Dart 侧 NativeChannel 桥接
+      // 核心策略：同步模式从 _javaCache 取缓存值，异步模式由 Dart 端预缓存
+      // _javaCache 已在前面注入，这里不再重复声明
+
+      // ===== _JsoupLite 已在 jsoupLiteCode 中注入 =====
 
       var java = {
         // ===== HTTP 请求方法（核心，对齐 legado JsExtensions）=====
@@ -1487,8 +1828,15 @@ class JsEngine {
               },
             };
           },
-          select: function(html, selector) { return _JsoupLite.selectAll(html, selector); },
-          selectFirst: function(html, selector) { return _JsoupLite.selectFirst(html, selector); },
+          select: function(html, selector) {
+            // 返回 HTML 元素数组（outerHtml），以便后续对每个元素做子查询
+            return _JsoupLite.selectAll(html, selector);
+          },
+          selectFirst: function(html, selector) {
+            var result = _JsoupLite.selectFirst(html, selector);
+            // 返回文本内容（兼容 legado 行为：selectFirst 提取首个元素的文本）
+            return result ? result.replace(/<[^>]+>/g, '').trim() : '';
+          },
           getAttr: function(html, selector, attr) { return _JsoupLite.getAttr(html, selector, attr); },
           clean: function(html) {
             if (!html) return '';
@@ -1979,6 +2327,7 @@ class JsEngine {
 
     // 3. 注入 HTML 解析辅助函数 + java 对象
     try {
+      evaluate(jsoupLiteCode);
       evaluate(helperCode);
     } catch (e) {
     }
@@ -2003,6 +2352,29 @@ class JsEngine {
         };
       ''');
     }
+
+    // 3.5 将 java 挂到 globalThis，让 jsLib 全局函数（如 search()）也能访问
+    // 同时注册快捷全局方法，省略 java. / java.jsoup. 前缀
+    try {
+      evaluate('''
+        globalThis.java = java;
+        // jsoup 快捷方法
+        globalThis.select = function(html, selector) { return java.jsoup.select(html, selector); };
+        globalThis.selectFirst = function(html, selector) { return java.jsoup.selectFirst(html, selector); };
+        globalThis.getAttr = function(html, selector, attr) { return java.jsoup.getAttr(html, selector, attr); };
+        globalThis.clean = function(html) { return java.jsoup.clean(html); };
+        // java 快捷方法
+        globalThis.getString = function(content, rule) { return java.getString(content, rule); };
+        globalThis.put = function(key, value) { return java.put(key, value); };
+        globalThis.getStr = function(key, def) { return java.getStr(key, def); };
+        globalThis.base64Encode = function(str) { return java.base64Encode(str); };
+        globalThis.base64Decode = function(str) { return java.base64Decode(str); };
+        globalThis.md5Encode = function(str) { return java.md5Encode(str); };
+        globalThis.sha256Encode = function(str) { return java.sha256Encode ? java.sha256Encode(str) : ''; };
+        globalThis.aesEncode = function(data, key, iv) { return java.aesEncode(data, key, iv); };
+        globalThis.aesDecode = function(data, key, iv) { return java.aesDecode(data, key, iv); };
+      ''');
+    } catch (_) {}
 
     // 4. 注入 CryptoJS（使用纯 JS _AES 引擎，支持 WordArray 格式）
     final cryptoCode = '''
@@ -2106,31 +2478,32 @@ class JsEngine {
 
   // ===== TypeScript 编译支持 =====
 
+  // TypeScript 编译正则常量化（避免每次调用创建 RegExp）
+  static final _tsTypeAnnotationRegex = RegExp(r'(\w+)\s*:\s*[\w\[\]<>\|&\s]+([,\)])');
+  static final _tsReturnTypeRegex = RegExp(r'\)\s*:\s*[\w\[\]<>\|&\s]+\s*([=>{])');
+  static final _tsVarTypeRegex = RegExp(r'(const|let|var)\s+(\w+)\s*:\s*[\w\[\]<>\|&\s]+=\s*');
+  static final _tsInterfaceRegex = RegExp(r'interface\s+\w+\s*\{[^}]*\}', multiLine: true);
+  static final _tsTypeAliasRegex = RegExp(r'type\s+\w+\s*=\s*[^;]+;');
+  static final _tsAsCastRegex = RegExp(r'\s+as\s+[\w\[\]<>\|&]+');
+  static final _tsGenericRegex = RegExp(r'(\w+)<[^>]+>\(');
+  static final _tsEnumRegex = RegExp(r'enum\s+(\w+)\s*\{([^}]+)\}');
+  static final _tsOptionalChainRegex = RegExp(r'(\w+)\?\.(?:(\w+)\()?');
+  static final _tsNullishCoalescingRegex = RegExp(r'(\w+)\s*\?\?\s*');
+  static final _tsAccessModifierRegex = RegExp(r'\b(public|private|protected|readonly)\s+');
+  static final _tsAbstractRegex = RegExp(r'\babstract\s+');
+  static final _tsImplementsRegex = RegExp(r'\s+implements\s+[\w,\s]+');
+
   Future<String> compileTypeScript(String tsCode) async {
     String js = tsCode;
 
-    js = js.replaceAllMapped(
-      RegExp(r'(\w+)\s*:\s*[\w\[\]<>\|&\s]+([,\)])'),
-      (m) => '${m[1]}${m[2]}',
-    );
-    js = js.replaceAllMapped(
-      RegExp(r'\)\s*:\s*[\w\[\]<>\|&\s]+\s*([=>{])'),
-      (m) => ') ${m[1]}',
-    );
-    js = js.replaceAllMapped(
-      RegExp(r'(const|let|var)\s+(\w+)\s*:\s*[\w\[\]<>\|&\s]+=\s*'),
-      (m) => '${m[1]} ${m[2]} = ',
-    );
-    js = js.replaceAll(RegExp(r'interface\s+\w+\s*\{[^}]*\}', multiLine: true), '');
-    js = js.replaceAll(RegExp(r'type\s+\w+\s*=\s*[^;]+;'), '');
-    js = js.replaceAllMapped(RegExp(r'\s+as\s+[\w\[\]<>\|&]+'), (m) => '');
-    js = js.replaceAllMapped(
-      RegExp(r'(\w+)<[^>]+>\('),
-      (m) => '${m[1]}(',
-    );
-    js = js.replaceAllMapped(
-      RegExp(r'enum\s+(\w+)\s*\{([^}]+)\}'),
-      (m) {
+    js = js.replaceAllMapped(_tsTypeAnnotationRegex, (m) => '${m[1]}${m[2]}');
+    js = js.replaceAllMapped(_tsReturnTypeRegex, (m) => ') ${m[1]}');
+    js = js.replaceAllMapped(_tsVarTypeRegex, (m) => '${m[1]} ${m[2]} = ');
+    js = js.replaceAll(_tsInterfaceRegex, '');
+    js = js.replaceAll(_tsTypeAliasRegex, '');
+    js = js.replaceAllMapped(_tsAsCastRegex, (m) => '');
+    js = js.replaceAllMapped(_tsGenericRegex, (m) => '${m[1]}(');
+    js = js.replaceAllMapped(_tsEnumRegex, (m) {
         final name = m[1];
         final body = m[2];
         final entries = body!.split(',').asMap().entries.map((e) {
@@ -2141,19 +2514,12 @@ class JsEngine {
           return '$trimmed = ${e.key}';
         }).join(', ');
         return 'var $name = { $entries };';
-      },
-    );
-    js = js.replaceAllMapped(
-      RegExp(r'(\w+)\?\.(?:(\w+)\()?'),
-      (m) => m[2] != null ? '(${m[1]} && ${m[1]}.${m[2]}(' : '(${m[1]} && ${m[1]}.',
-    );
-    js = js.replaceAllMapped(
-      RegExp(r'(\w+)\s*\?\?\s*'),
-      (m) => '(${m[1]} != null ? ${m[1]} : ',
-    );
-    js = js.replaceAll(RegExp(r'\b(public|private|protected|readonly)\s+'), '');
-    js = js.replaceAll(RegExp(r'\babstract\s+'), '');
-    js = js.replaceAllMapped(RegExp(r'\s+implements\s+[\w,\s]+'), (m) => '');
+      });
+    js = js.replaceAllMapped(_tsOptionalChainRegex, (m) => m[2] != null ? '(${m[1]} && ${m[1]}.${m[2]}(' : '(${m[1]} && ${m[1]}.');
+    js = js.replaceAllMapped(_tsNullishCoalescingRegex, (m) => '(${m[1]} != null ? ${m[1]} : ');
+    js = js.replaceAll(_tsAccessModifierRegex, '');
+    js = js.replaceAll(_tsAbstractRegex, '');
+    js = js.replaceAllMapped(_tsImplementsRegex, (m) => '');
 
     return js;
   }
@@ -2365,14 +2731,18 @@ class JsEngine {
       // 构建变量注入代码（排除核心变量，避免覆盖 result/baseUrl/content）
       final coreVars = {'result', 'baseUrl', 'content', 'src'};
       final varInjections = <String>[];
+      final globalVarInjections = <String>[];
       if (variables != null) {
         for (final entry in variables.entries) {
           if (!coreVars.contains(entry.key)) {
             varInjections.add('var ${entry.key} = ${jsonEncode(entry.value)};');
+            // 同步到 globalThis，让 jsLib 全局函数也能访问
+            globalVarInjections.add('globalThis.${entry.key} = ${jsonEncode(entry.value)};');
           }
         }
       }
       final varCode = varInjections.join('\n');
+      final globalVarCode = globalVarInjections.join('\n');
 
       // 构建共享作用域变量注入（借鉴 legado 的 scope 链）
       final sharedVars = <String, String>{};
@@ -2396,6 +2766,13 @@ class JsEngine {
           var src = ${variables?.containsKey('src') == true ? jsonEncode(variables!['src']?.toString() ?? '') : contentStr};
           $sharedVarsCode
           $varCode
+
+          // 同步关键变量到 globalThis，让 jsLib 全局函数也能访问
+          globalThis.result = result;
+          globalThis.baseUrl = baseUrl;
+          globalThis.src = src;
+          $globalVarCode
+
           var __returnValue = (function() { $wrappedCode })();
           if (typeof __returnValue === 'object' && __returnValue !== null) {
             return JSON.stringify(__returnValue);
@@ -2498,10 +2875,12 @@ class JsEngine {
     final extracted = _extractJsCode(jsCode) ?? jsCode;
     final resolved = resolveEngine(extracted, sourceEngine: sourceEngine);
 
-    AppLogger.instance.logJsExecute(
-      resolved.engine == JsEngineType.rhino ? 'Rhino' : 'QuickJS',
-      resolved.code,
-    );
+    if (kDebugMode) {
+      AppLogger.instance.logJsExecute(
+        resolved.engine == JsEngineType.rhino ? 'Rhino' : 'QuickJS',
+        resolved.code,
+      );
+    }
 
     // 合并 env：传入的 env 优先，补充 baseUrl
     final mergedEnv = <String, dynamic>{
@@ -2587,6 +2966,15 @@ class JsEngine {
           var cookie = ${jsonEncode(<String, String>{})};
           var index = ${jsonEncode(index ?? 0)};
           $sharedVarsCode
+
+          // 同步关键变量到 globalThis，让 jsLib 全局函数也能访问
+          globalThis.result = result;
+          globalThis.baseUrl = baseUrl;
+          globalThis.book = book;
+          globalThis.chapter = chapter;
+          globalThis.source = source;
+          globalThis.cookie = cookie;
+
           var __returnValue = (function() { $wrappedCode })();
           if (typeof __returnValue === 'object' && __returnValue !== null) {
             return JSON.stringify(__returnValue);
@@ -2721,14 +3109,19 @@ class JsEngine {
       // 构建额外变量注入代码（排除核心变量，避免覆盖）
       final coreVars = {'result', 'baseUrl', 'content', 'src', 'book', 'chapter', 'source', 'cookie', 'title'};
       final varInjections = <String>[];
+      final globalVarInjections = <String>[];
       if (variables != null) {
         for (final entry in variables.entries) {
           if (!coreVars.contains(entry.key)) {
-            varInjections.add('var ${entry.key} = ${jsonEncode(entry.value)};');
+            final encoded = jsonEncode(entry.value);
+            varInjections.add('var ${entry.key} = $encoded;');
+            // 同步到 globalThis，让 jsLib 全局函数也能访问
+            globalVarInjections.add('globalThis.${entry.key} = $encoded;');
           }
         }
       }
       final varCode = varInjections.join('\n');
+      final globalVarCode = globalVarInjections.join('\n');
 
       // jsLib 已通过 loadJsLib() 加载到全局作用域
       // 借鉴 legado：evalJS 时 bindings.prototype = sharedScope
@@ -2783,6 +3176,17 @@ class JsEngine {
 
           // 注入额外变量（如 key, page 等）
           $varCode
+
+          // 同步关键变量到 globalThis，让 jsLib 全局函数（如 search()）也能访问
+          // jsLib 函数通过 loadJsLib() 加载到全局作用域，无法访问 IIFE 内的局部变量
+          globalThis.result = result;
+          globalThis.baseUrl = baseUrl;
+          globalThis.book = book;
+          globalThis.chapter = chapter;
+          globalThis.source = source;
+          globalThis.cookie = cookie;
+          globalThis.src = src;
+          $globalVarCode
 
           var __returnValue = (function() { $wrappedCode })();
           if (typeof __returnValue === 'object' && __returnValue !== null) {
@@ -2849,88 +3253,52 @@ class JsEngine {
 
   /// 提取 QuickJS 中 console 缓存的日志，同步到 AppLogger
   /// 借鉴 legado 的调试输出机制：JS 中的 console.log/warn/error 输出到调试页面
+  /// 优化：合并为单次 evaluate，Release 模式跳过
   void _flushConsoleLogs() {
     if (!_initialized || _jsRuntime == null) return;
+    // Release 模式跳过日志提取（性能优化）
+    if (kReleaseMode) return;
     try {
-      // 先快速检查是否有日志，避免不必要的 JSON.stringify 调用
-      final hasLogs = evaluate('typeof __consoleLogs !== "undefined" && __consoleLogs.length > 0');
-      if (hasLogs != 'true') {
-        // 回退检查 console._getLogs 模式
-        final checkResult = evaluate('typeof console !== "undefined" ? (typeof console._getLogs === "function" ? "has_getLogs" : "no_getLogs") : "no_console"');
-        if (checkResult == 'no_console') {
-          // 重新注入 console
-          evaluate('var _consoleLogs = []; globalThis.console = { log: function() { var msg = Array.from(arguments).join(" "); _consoleLogs.push({level:"log", msg:msg}); }, warn: function() { var msg = Array.from(arguments).join(" "); _consoleLogs.push({level:"warn", msg:msg}); }, error: function() { var msg = Array.from(arguments).join(" "); _consoleLogs.push({level:"error", msg:msg}); }, info: function() { var msg = Array.from(arguments).join(" "); _consoleLogs.push({level:"info", msg:msg}); }, debug: function() { var msg = Array.from(arguments).join(" "); _consoleLogs.push({level:"debug", msg:msg}); }, _getLogs: function() { return _consoleLogs; }, _clearLogs: function() { _consoleLogs.length = 0; } };');
-          return; // 下次执行时再提取
-        }
-        if (checkResult == 'no_getLogs') {
-          evaluate('var _consoleLogs = []; globalThis.console = { log: function() { var msg = Array.from(arguments).join(" "); _consoleLogs.push({level:"log", msg:msg}); }, warn: function() { var msg = Array.from(arguments).join(" "); _consoleLogs.push({level:"warn", msg:msg}); }, error: function() { var msg = Array.from(arguments).join(" "); _consoleLogs.push({level:"error", msg:msg}); }, info: function() { var msg = Array.from(arguments).join(" "); _consoleLogs.push({level:"info", msg:msg}); }, debug: function() { var msg = Array.from(arguments).join(" "); _consoleLogs.push({level:"debug", msg:msg}); }, _getLogs: function() { return _consoleLogs; }, _clearLogs: function() { _consoleLogs.length = 0; } };');
-          return;
-        }
-
-        final logsResult = evaluate('JSON.stringify(console._getLogs())');
-        if (logsResult == null || logsResult == '[]' || logsResult == 'undefined') return;
-
-        final logsJson = logsResult;
-        if (!logsJson.startsWith('[')) return;
-
-        final logs = jsonDecode(logsJson) as List;
-        for (final log in logs) {
-          if (log is! Map) continue;
-          final level = log['level'] as String? ?? 'log';
-          final msg = log['msg']?.toString() ?? '';
-          if (msg.isEmpty) continue;
-
-          switch (level) {
-            case 'error':
-              AppLogger.instance.error(LogCategory.js, msg);
-              break;
-            case 'warn':
-              AppLogger.instance.warn(LogCategory.js, msg);
-              break;
-            case 'info':
-              AppLogger.instance.info(LogCategory.js, msg);
-              break;
-            case 'debug':
-              AppLogger.instance.debug(LogCategory.js, msg);
-              break;
-            default:
-              AppLogger.instance.info(LogCategory.js, msg);
-          }
-        }
-
-        // 清除已提取的日志
-        evaluate('console._clearLogs()');
+      // 单次 evaluate：检查+获取+清除日志
+      final result = evaluate('''(function(){
+  var logs = [];
+  if(typeof __consoleLogs !== "undefined" && __consoleLogs.length > 0){
+    logs = __consoleLogs.slice();
+    __consoleLogs.length = 0;
+  } else if(typeof console !== "undefined" && typeof console._getLogs === "function"){
+    logs = console._getLogs();
+    if(console._clearLogs) console._clearLogs();
+  } else if(typeof console === "undefined" || typeof console._getLogs !== "function"){
+    return "NEED_REINJECT";
+  }
+  return JSON.stringify(logs);
+})()''');
+      if (result == null || result == 'undefined' || result == '[]' || result.isEmpty) return;
+      if (result == 'NEED_REINJECT') {
+        // 重新注入 console
+        evaluate('var __consoleLogs = []; globalThis.console = { log: function() { var msg = Array.from(arguments).join(" "); __consoleLogs.push({level:"log", msg:msg}); }, warn: function() { var msg = Array.from(arguments).join(" "); __consoleLogs.push({level:"warn", msg:msg}); }, error: function() { var msg = Array.from(arguments).join(" "); __consoleLogs.push({level:"error", msg:msg}); }, info: function() { var msg = Array.from(arguments).join(" "); __consoleLogs.push({level:"info", msg:msg}); }, debug: function() { var msg = Array.from(arguments).join(" "); __consoleLogs.push({level:"debug", msg:msg}); } };');
         return;
       }
-
-      final logsJson = evaluate('JSON.stringify(__consoleLogs)');
-      if (logsJson.isEmpty || logsJson == 'undefined') return;
-
-      final logs = jsonDecode(logsJson) as List;
+      if (!result.startsWith('[')) return;
+      final logs = jsonDecode(result) as List;
       for (final log in logs) {
         if (log is! Map) continue;
         final level = log['level'] as String? ?? 'log';
         final msg = log['msg']?.toString() ?? '';
         if (msg.isEmpty) continue;
-
         switch (level) {
           case 'error':
             AppLogger.instance.error(LogCategory.js, msg);
-            break;
           case 'warn':
             AppLogger.instance.warn(LogCategory.js, msg);
-            break;
           case 'info':
             AppLogger.instance.info(LogCategory.js, msg);
-            break;
           case 'debug':
             AppLogger.instance.debug(LogCategory.js, msg);
-            break;
           default:
             AppLogger.instance.info(LogCategory.js, msg);
         }
       }
-      evaluate('__consoleLogs = []');
     } catch (_) {}
   }
 
@@ -3135,9 +3503,12 @@ class JsEngine {
     if (result == 'false') return false;
     final numVal = num.tryParse(result);
     if (numVal != null) return numVal;
-    try {
-      return jsonDecode(result);
-    } catch (_) {}
+    // 快速判断：只有可能是 JSON 时才尝试 jsonDecode
+    if (result.startsWith('{') || result.startsWith('[') || result.startsWith('"')) {
+      try {
+        return jsonDecode(result);
+      } catch (_) {}
+    }
     return result;
   }
 
@@ -3194,21 +3565,19 @@ class JsEngine {
 
   /// 提取 JS 代码中定义的函数名
   /// 匹配 function xxx() 和 var/const/let/this.xxx = function/()=> 模式
+  static final _funcNamePattern = RegExp(r'function\s+(\w+)\s*\(');
+  static final _varFuncPattern = RegExp(r'(?:var|const|let)\s+(\w+)\s*=\s*(?:function|\(|[^(]*=>)');
+  static final _thisFuncPattern = RegExp(r'this\.(\w+)\s*=\s*(?:function|\(|[^(]*=>)');
+
   void _extractFunctionNames(String jsLib) {
     _currentJsLibFunctions.clear();
-    // 匹配 function xxx( 模式
-    final funcPattern = RegExp(r'function\s+(\w+)\s*\(');
-    for (final m in funcPattern.allMatches(jsLib)) {
+    for (final m in _funcNamePattern.allMatches(jsLib)) {
       _currentJsLibFunctions.add(m.group(1)!);
     }
-    // 匹配 var/const/let xxx = function / xxx = ()=> / xxx = (...) => 模式
-    final varPattern = RegExp(r'(?:var|const|let)\s+(\w+)\s*=\s*(?:function|\(|[^(]*=>)');
-    for (final m in varPattern.allMatches(jsLib)) {
+    for (final m in _varFuncPattern.allMatches(jsLib)) {
       _currentJsLibFunctions.add(m.group(1)!);
     }
-    // 匹配 this.xxx = function / this.xxx = ()=> 模式
-    final thisPattern = RegExp(r'this\.(\w+)\s*=\s*(?:function|\(|[^(]*=>)');
-    for (final m in thisPattern.allMatches(jsLib)) {
+    for (final m in _thisFuncPattern.allMatches(jsLib)) {
       _currentJsLibFunctions.add(m.group(1)!);
     }
   }
@@ -3255,8 +3624,8 @@ class JsEngine {
   /// 解决 QuickJS 同步模式下 java.ajax() 无法异步请求的问题
   Future<void> preCacheHttpResults(Map<String, String> urlResults) async {
     final entries = urlResults.entries.map((e) {
-      _cachedKeys.add('http_get:${e.key}');
-      return '_javaCache["http_get:${e.key}"] = ${jsonEncode(e.value)};';
+      _cachedKeys.add(e.key);
+      return '_javaCache["${e.key}"] = ${jsonEncode(e.value)};';
     }).join('\n');
     if (entries.isNotEmpty) {
       evaluate(entries);
@@ -3278,8 +3647,13 @@ class JsEngine {
   /// 在执行 JS 代码前，扫描代码中的 java.ajax/get/post/aesEncode/md5Encode 等调用
   /// 通过 NativeChannel 预获取结果，写入 _javaCache
   /// 借鉴 legado 的 preCacheHttpResults 机制，但自动扫描而非手动传入
+  /// 优化：快速预检，无桥接调用时直接跳过
+  static final _bridgeCallPattern = RegExp(r'\bjava\.(ajax|get|post|head|connect|aesEncode|aesDecode|md5Encode|sha1Encode|sha256Encode|hmacSHA256|base64Encode|base64Decode)\b|\bCryptoJS\b|\bfetch\s*\(');
+
   Future<void> _preCacheBridgeCalls(String jsCode, {Map<String, dynamic>? env}) async {
     if (_jsRuntime == null) return;
+    // 快速预检：无桥接调用时直接跳过，避免不必要的正则扫描
+    if (!_bridgeCallPattern.hasMatch(jsCode)) return;
 
     final baseUrl = env?['baseUrl'] as String? ?? '';
     final httpUrls = <String>{};
@@ -3301,15 +3675,17 @@ class JsEngine {
     }
 
     // 2. 扫描变量拼接 URL: java.ajax(url), java.get(baseUrl + "/api"), fetch(variable)
-    // 先在 QuickJS 中求值变量，获取完整 URL
+    // 优化：合并所有变量表达式为单次 evaluate，避免逐个求值
+    final varExprs = <String>[];
     for (final match in _varPattern.allMatches(jsCode)) {
       final expr = match.group(1)?.trim();
       if (expr == null || expr.isEmpty) continue;
       // 跳过字面量字符串（已被上面匹配）
       if (expr.startsWith('"') || expr.startsWith("'")) continue;
-      // 尝试在 QuickJS 中求值表达式
+      varExprs.add(expr);
+    }
+    if (varExprs.isNotEmpty) {
       try {
-        // 注入 env 变量后求值
         final varCode = <String>[];
         if (env != null) {
           for (final entry in env.entries) {
@@ -3320,13 +3696,23 @@ class JsEngine {
             }
           }
         }
-        final evalScript = '${varCode.join('\n')} (function() { try { var __url = String($expr); return __url; } catch(e) { return ""; } })()';
-        final urlResult = evaluate(evalScript);
-        if (urlResult != null && urlResult.isNotEmpty && urlResult.startsWith('http')) {
-          httpUrls.add(urlResult);
+        // 合并所有表达式为单次 evaluate，批量返回结果
+        final exprCases = <String>[];
+        for (var i = 0; i < varExprs.length; i++) {
+          exprCases.add('try { var __u$i = String(${varExprs[i]}); if(__u$i.startsWith("http")) __results.push(__u$i); } catch(e) {}');
+        }
+        final evalScript = '${varCode.join('\n')} var __results = []; ${exprCases.join('\n')}; JSON.stringify(__results);';
+        final batchResult = evaluate(evalScript);
+        if (batchResult != null && batchResult.startsWith('[')) {
+          try {
+            final urls = jsonDecode(batchResult) as List;
+            for (final url in urls) {
+              if (url is String && url.isNotEmpty) httpUrls.add(url);
+            }
+          } catch (_) {}
         }
       } catch (_) {
-        // 求值失败，跳过
+        // 批量求值失败，跳过
       }
     }
 
@@ -3593,62 +3979,99 @@ class JsEngine {
       final method = match.group(1) ?? match.group(2);
       final firstArg = match.group(3)?.trim() ?? '';
       final secondArg = match.group(4)?.trim();
+      final thirdArg = match.group(5)?.trim(); // java.jsoup.getAttr 的 attr 参数
 
       String? htmlContent;
       String? selector;
+      String? attrName;
 
-      // 解析 HTML 内容来源
-      if (firstArg == 'result' || firstArg == 'content' || firstArg == 'src') {
-        // 内容来自 result 变量 - 从 HTTP 缓存获取
-        for (final entry in knownHtml.entries) {
-          htmlContent = entry.value;
-          break;
-        }
-      } else if (firstArg.startsWith('"') || firstArg.startsWith("'")) {
-        // 字面量字符串内容
-        try {
-          htmlContent = jsonDecode(firstArg) as String;
-        } catch (_) {}
-      } else {
-        // 变量名 - 尝试从 QuickJS 求值
-        try {
-          final evalResult = evaluate('(function(){ try { var __v = $firstArg; return (typeof __v === "string" && __v.length > 50) ? __v : ""; } catch(e) { return ""; } })()');
-          if (evalResult != null && evalResult.isNotEmpty && evalResult.length > 50) {
-            htmlContent = evalResult;
-          }
-        } catch (_) {}
-      }
+      // 判断方法类型
+      final isJsoupMethod = method == 'select' || method == 'selectFirst' || method == 'getAttr';
 
-      // 解析选择器
-      if (secondArg != null) {
-        if (secondArg.startsWith('"') || secondArg.startsWith("'")) {
-          try {
-            selector = jsonDecode(secondArg);
-          } catch (_) {
-            selector = secondArg;
-          }
-        } else {
-          selector = secondArg;
-        }
-        // 清理选择器前缀
-        if (selector?.startsWith('@@') == true) selector = selector!.substring(2);
-        if (selector?.startsWith('@css:') == true) selector = selector!.substring(5);
-      } else if (method == 'getString' || method == 'getElement' || method == 'getElements') {
-        // 单参数模式：firstArg 是选择器，内容来自 result
-        var sel = firstArg;
-        if (sel.startsWith('"') || sel.startsWith("'")) {
-          try {
-            sel = jsonDecode(sel);
-          } catch (_) {}
-        }
-        if (sel.startsWith('@@')) sel = sel.substring(2);
-        if (sel.startsWith('@css:')) sel = sel.substring(5);
-        selector = sel;
-        // 单参数模式需要从 HTTP 缓存获取内容
-        if (htmlContent == null) {
+      if (isJsoupMethod) {
+        // java.jsoup.select(html, selector) / java.jsoup.getAttr(html, selector, attr)
+        // firstArg = html来源, secondArg = selector, thirdArg = attr
+        if (firstArg == 'result' || firstArg == 'content' || firstArg == 'src' || firstArg == 'html') {
           for (final entry in knownHtml.entries) {
             htmlContent = entry.value;
             break;
+          }
+        } else if (firstArg.startsWith('"') || firstArg.startsWith("'")) {
+          try { htmlContent = jsonDecode(firstArg) as String; } catch (_) {}
+        } else {
+          // 变量名（如 item）- 跳过，运行时处理
+          continue;
+        }
+        // 解析选择器
+        if (secondArg != null) {
+          if (secondArg.startsWith('"') || secondArg.startsWith("'")) {
+            try { selector = jsonDecode(secondArg); } catch (_) { selector = secondArg; }
+          } else {
+            selector = secondArg;
+          }
+        }
+        // 解析属性名
+        if (thirdArg != null && method == 'getAttr') {
+          if (thirdArg.startsWith('"') || thirdArg.startsWith("'")) {
+            try { attrName = jsonDecode(thirdArg); } catch (_) { attrName = thirdArg; }
+          } else {
+            attrName = thirdArg;
+          }
+        }
+      } else {
+        // 原有逻辑：_JsoupLite.selectFirst/selectAll, java.getString/getElement/getElements
+        if (firstArg == 'result' || firstArg == 'content' || firstArg == 'src') {
+          // 内容来自 result 变量 - 从 HTTP 缓存获取
+          for (final entry in knownHtml.entries) {
+            htmlContent = entry.value;
+            break;
+          }
+        } else if (firstArg.startsWith('"') || firstArg.startsWith("'")) {
+          // 字面量字符串内容
+          try {
+            htmlContent = jsonDecode(firstArg) as String;
+          } catch (_) {}
+        } else {
+          // 变量名 - 尝试从 QuickJS 求值
+          try {
+            final evalResult = evaluate('(function(){ try { var __v = $firstArg; return (typeof __v === "string" && __v.length > 50) ? __v : ""; } catch(e) { return ""; } })()');
+            if (evalResult != null && evalResult.isNotEmpty && evalResult.length > 50) {
+              htmlContent = evalResult;
+            }
+          } catch (_) {}
+        }
+
+        // 解析选择器
+        if (secondArg != null) {
+          if (secondArg.startsWith('"') || secondArg.startsWith("'")) {
+            try {
+              selector = jsonDecode(secondArg);
+            } catch (_) {
+              selector = secondArg;
+            }
+          } else {
+            selector = secondArg;
+          }
+          // 清理选择器前缀
+          if (selector?.startsWith('@@') == true) selector = selector!.substring(2);
+          if (selector?.startsWith('@css:') == true) selector = selector!.substring(5);
+        } else if (method == 'getString' || method == 'getElement' || method == 'getElements') {
+          // 单参数模式：firstArg 是选择器，内容来自 result
+          var sel = firstArg;
+          if (sel.startsWith('"') || sel.startsWith("'")) {
+            try {
+              sel = jsonDecode(sel);
+            } catch (_) {}
+          }
+          if (sel.startsWith('@@')) sel = sel.substring(2);
+          if (sel.startsWith('@css:')) sel = sel.substring(5);
+          selector = sel;
+          // 单参数模式需要从 HTTP 缓存获取内容
+          if (htmlContent == null) {
+            for (final entry in knownHtml.entries) {
+              htmlContent = entry.value;
+              break;
+            }
           }
         }
       }
@@ -3683,6 +4106,23 @@ class JsEngine {
       if (parsed['href'] != null && (parsed['href'] as String).isNotEmpty && !_isCached(hrefKey)) {
         evaluate('_javaCache[${jsonEncode(hrefKey)}] = ${jsonEncode(parsed['href'])};');
         _cachedKeys.add(hrefKey);
+      }
+      // 缓存 java.jsoup.getAttr 结果
+      if (attrName != null && attrName.isNotEmpty) {
+        final gaKey = 'jsoup_ga:$selector:$attrName:$htmlHash';
+        if (!_isCached(gaKey)) {
+          // 从解析结果中提取属性值
+          String? attrValue;
+          try {
+            final doc = html_parser.parse(htmlContent);
+            final elements = doc.querySelectorAll(selector);
+            if (elements.isNotEmpty) {
+              attrValue = elements.first.attributes[attrName] ?? '';
+            }
+          } catch (_) {}
+          evaluate('_javaCache[${jsonEncode(gaKey)}] = ${jsonEncode(attrValue ?? '')};');
+          _cachedKeys.add(gaKey);
+        }
       }
     }
   }
