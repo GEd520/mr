@@ -333,12 +333,14 @@ class _DetailPageState extends State<DetailPage> {
               ),
               if (labels.isNotEmpty) ...[
                 const SizedBox(height: 7),
-                Wrap(
-                  alignment: WrapAlignment.center,
-                  runAlignment: WrapAlignment.center,
-                  spacing: 6,
-                  runSpacing: 5,
-                  children: labels,
+                Center(
+                  child: Wrap(
+                    alignment: WrapAlignment.center,
+                    runAlignment: WrapAlignment.center,
+                    spacing: 6,
+                    runSpacing: 5,
+                    children: labels,
+                  ),
                 ),
               ],
               const SizedBox(height: 12),
@@ -361,43 +363,84 @@ class _DetailPageState extends State<DetailPage> {
   }
 
   List<Widget> _buildOriginalLabels() {
-    final values = <String>[];
-    final rawTags = _book!.tags ??
-        (_book!.kind ?? '')
-            .split(RegExp(r'[,，|/\s]+'))
-            .where((tag) => tag.trim().isNotEmpty)
-            .toList();
-    values.addAll(rawTags.map((tag) => tag.trim()).take(2));
+    final labels = <({String text, _BookLabelType type})>[];
+    final seen = <String>{};
 
-    final status = _book!.status?.trim() ?? '';
-    if (status.isNotEmpty && !values.contains(status)) {
-      values.add(status);
+    void addLabel(String? value, _BookLabelType type) {
+      final text = value?.trim() ?? '';
+      if (text.isEmpty || !seen.add(text)) return;
+      labels.add((text: text, type: type));
     }
 
-    final chapterCount =
-        _chapters.isNotEmpty ? _chapters.length : _book!.totalChapterNum;
-    if (chapterCount != null && chapterCount > 0) {
-      values.add('$chapterCount章');
-    } else if (_displayWordCount.isNotEmpty) {
-      values.add(_displayWordCount);
+    final tags = <String>[
+      ...?_book!.tags,
+      ..._splitBookLabels(_book!.kind),
+      ..._splitBookLabels(_book!.category),
+    ];
+    final visibleTags = tags
+        .map((tag) => tag.trim())
+        .where((tag) => tag.isNotEmpty)
+        .take(3);
+    for (final tag in visibleTags) {
+      addLabel(tag, _BookLabelType.tag);
     }
 
-    return values.take(3).toList().asMap().entries.map((entry) {
-      return _buildOriginalLabel(
-        entry.value,
-        filled: entry.key == 0,
-      );
-    }).toList();
+    addLabel(_displayStatus, _BookLabelType.status);
+    if (_book!.showWordCount) {
+      addLabel(_displayWordCount, _BookLabelType.wordCount);
+    }
+
+    return labels
+        .map((label) => _buildOriginalLabel(label.text, type: label.type))
+        .toList();
   }
 
-  Widget _buildOriginalLabel(String text, {required bool filled}) {
+  List<String> _splitBookLabels(String? value) {
+    if (value == null || value.trim().isEmpty) return const [];
+    return value
+        .split(RegExp(r'[,，、|/·\s]+'))
+        .where((item) => item.trim().isNotEmpty)
+        .toList();
+  }
+
+  String get _displayStatus {
+    final status = _book!.status?.trim() ?? '';
+    if (status.isEmpty) return '';
+    switch (status.toLowerCase()) {
+      case '0':
+      case 'serial':
+      case 'ongoing':
+        return '连载';
+      case '1':
+      case 'complete':
+      case 'completed':
+      case 'finished':
+        return '完结';
+      default:
+        return status;
+    }
+  }
+
+  Widget _buildOriginalLabel(
+    String text, {
+    required _BookLabelType type,
+  }) {
     final scheme = Theme.of(context).colorScheme;
+    final filled = type == _BookLabelType.tag;
+    final borderColor = type == _BookLabelType.status
+        ? scheme.primary
+        : scheme.outline;
+    final textColor = filled
+        ? scheme.onPrimary
+        : type == _BookLabelType.status
+            ? scheme.primary
+            : scheme.onSurfaceVariant;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
       decoration: BoxDecoration(
         color: filled ? scheme.primary : Colors.transparent,
         border: Border.all(
-          color: filled ? scheme.primary : scheme.outline,
+          color: filled ? scheme.primary : borderColor,
           width: 0.8,
         ),
         borderRadius: BorderRadius.circular(3),
@@ -405,7 +448,7 @@ class _DetailPageState extends State<DetailPage> {
       child: Text(
         text,
         style: TextStyle(
-          color: filled ? scheme.onPrimary : scheme.onSurfaceVariant,
+          color: textColor,
           fontSize: 13,
           height: 1.25,
         ),
@@ -2183,7 +2226,10 @@ class _DetailPageState extends State<DetailPage> {
   String get _displayWordCount {
     if (_book?.wordCount?.trim().isNotEmpty == true) {
       final value = _book!.wordCount!.trim();
-      return value.endsWith('字') ? value : '$value字';
+      if (RegExp(r'(字|词|页|P|p)$').hasMatch(value)) {
+        return value;
+      }
+      return '$value字';
     }
     return _totalWordCount > 0 ? _formatWordCount(_totalWordCount) : '';
   }
@@ -2616,5 +2662,11 @@ class _BookInfoArcClipper extends CustomClipper<Path> {
 
   @override
   bool shouldReclip(covariant CustomClipper<Path> oldClipper) => false;
+}
+
+enum _BookLabelType {
+  tag,
+  status,
+  wordCount,
 }
 
