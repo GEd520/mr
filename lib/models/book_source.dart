@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'book.dart';
 import '../services/native/js_engine.dart' show JsEngineType;
 import 'rules/search_rule.dart';
 import 'rules/explore_rule.dart';
@@ -8,6 +9,25 @@ import 'rules/content_rule.dart';
 import 'rules/review_rule.dart';
 
 enum BookSourceType { text, audio, image, file, video }
+
+/// BookSourceType 到 MediaType 的统一映射扩展
+extension BookSourceTypeX on BookSourceType {
+  /// 将书源类型映射为书籍媒体类型
+  /// text/file -> novel, image -> comic, audio -> audio, video -> video
+  MediaType get mediaType {
+    switch (this) {
+      case BookSourceType.image:
+        return MediaType.comic;
+      case BookSourceType.video:
+        return MediaType.video;
+      case BookSourceType.audio:
+        return MediaType.audio;
+      case BookSourceType.text:
+      case BookSourceType.file:
+        return MediaType.novel;
+    }
+  }
+}
 
 class BookSource {
   final String bookSourceUrl;

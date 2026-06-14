@@ -3050,10 +3050,14 @@ class _ChapterListPanelState extends State<_ChapterListPanel> {
 
   Future<void> _loadPrefs() async {
     final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
     setState(() {
       _showWordCount = prefs.getBool('tocShowWordCount') ?? false;
       _useReplace = prefs.getBool('tocUseReplace') ?? false;
       _foldVolume = prefs.getBool('tocFoldVolume') ?? true;
+      _isReversed =
+          prefs.getBool('tocReverse_${widget.book?.bookUrl ?? ""}') ?? false;
+      _expandCurrentVolume();
     });
   }
 
@@ -3103,6 +3107,26 @@ class _ChapterListPanelState extends State<_ChapterListPanel> {
       i++;
     }
     return result;
+  }
+
+  void _expandCurrentVolume() {
+    var volumeIndex = -1;
+    for (final chapter in widget.chapters) {
+      if (chapter.isVolume) volumeIndex = chapter.index;
+      if (chapter.index == widget.currentChapterIndex) break;
+    }
+    if (volumeIndex >= 0) _expandedVolumes.add(volumeIndex);
+  }
+
+  bool _isCurrentVolume(int volumeIndex) {
+    var activeVolume = -1;
+    for (final chapter in widget.chapters) {
+      if (chapter.isVolume) activeVolume = chapter.index;
+      if (chapter.index == widget.currentChapterIndex) {
+        return activeVolume == volumeIndex;
+      }
+    }
+    return false;
   }
 
   List<Bookmark> get _filteredBookmarks {
@@ -3291,16 +3315,23 @@ class _ChapterListPanelState extends State<_ChapterListPanel> {
 
   Widget _buildChapterList(Color fg, bool isOnline) {
     final display = _buildDisplayChapters(_filteredChapters);
+    final accent = Theme.of(context).colorScheme.primary;
     return Scrollbar(
       controller: _scrollController,
       thumbVisibility: true,
-      child: ListView.builder(
+      child: ListView.separated(
         controller: _scrollController,
         itemCount: display.length,
+        separatorBuilder: (_, __) => Divider(
+          height: 1,
+          thickness: 0.5,
+          color: fg.withValues(alpha: 0.12),
+        ),
         itemBuilder: (context, index) {
           final chapter = display[index];
           if (chapter.isVolume) {
             final isExpanded = _expandedVolumes.contains(chapter.index);
+            final isCurrentVolume = _isCurrentVolume(chapter.index);
             return InkWell(
               onTap: () => setState(() {
                 if (isExpanded) {
@@ -3310,17 +3341,32 @@ class _ChapterListPanelState extends State<_ChapterListPanel> {
                 }
               }),
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                color: fg.withValues(alpha: 0.06),
+                padding: const EdgeInsets.all(12),
+                color: isCurrentVolume
+                    ? accent.withValues(alpha: 0.1)
+                    : Colors.transparent,
                 child: Row(
                   children: [
-                    Icon(isExpanded ? Icons.keyboard_arrow_down : Icons.chevron_right,
-                        color: fg, size: 20),
+                    AnimatedRotation(
+                      duration: const Duration(milliseconds: 180),
+                      turns: isExpanded ? 0.25 : 0,
+                      child: Icon(
+                        Icons.arrow_right,
+                        color: isCurrentVolume ? accent : fg,
+                        size: 20,
+                      ),
+                    ),
                     const SizedBox(width: 4),
                     Expanded(
-                      child: Text(chapter.title,
-                          style: TextStyle(color: fg, fontWeight: FontWeight.bold),
-                          maxLines: 1, overflow: TextOverflow.ellipsis),
+                      child: Text(
+                        chapter.title,
+                        style: TextStyle(
+                          color: isCurrentVolume ? accent : fg,
+                          fontSize: 14,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
                   ],
                 ),
@@ -3338,13 +3384,17 @@ class _ChapterListPanelState extends State<_ChapterListPanel> {
           return InkWell(
             onTap: () => widget.onChapterSelected(chapter.index),
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              padding: const EdgeInsets.all(12),
               child: Row(
                 children: [
                   if (chapter.isVip && !chapter.isPay)
                     Padding(
                       padding: const EdgeInsets.only(right: 8),
-                      child: Icon(Icons.lock_outline, size: 18, color: fg.withValues(alpha: 0.6)),
+                      child: Icon(
+                        Icons.lock_outline,
+                        size: 16,
+                        color: fg.withValues(alpha: 0.62),
+                      ),
                     ),
                   Expanded(
                     child: Column(
@@ -3353,9 +3403,8 @@ class _ChapterListPanelState extends State<_ChapterListPanel> {
                         Text(
                           chapter.title,
                           style: TextStyle(
-                            color: isSelected ? fg : fg.withValues(alpha: 0.85),
-                            fontWeight: isSelected ? FontWeight.bold : null,
-                            fontSize: 15,
+                            color: isSelected ? accent : fg,
+                            fontSize: 14,
                           ),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
@@ -3366,20 +3415,25 @@ class _ChapterListPanelState extends State<_ChapterListPanel> {
                             child: Row(
                               children: [
                                 if (hasTag)
-                                  Text(
-                                    chapter.tag!,
-                                    style: TextStyle(
-                                      color: fg.withValues(alpha: 0.5),
-                                      fontSize: 12,
+                                  Flexible(
+                                    child: Padding(
+                                      padding: const EdgeInsets.only(right: 18),
+                                      child: Text(
+                                        chapter.tag!,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: TextStyle(
+                                          color: fg.withValues(alpha: 0.62),
+                                          fontSize: 12,
+                                        ),
+                                      ),
                                     ),
                                   ),
-                                if (hasTag && hasWordCount)
-                                  const SizedBox(width: 8),
                                 if (hasWordCount)
                                   Text(
-                                    '${(chapter.wordCount! / 10000).toStringAsFixed(1)}万',
+                                    '${chapter.wordCount}字',
                                     style: TextStyle(
-                                      color: fg.withValues(alpha: 0.5),
+                                      color: fg.withValues(alpha: 0.62),
                                       fontSize: 12,
                                     ),
                                   ),
@@ -3391,9 +3445,13 @@ class _ChapterListPanelState extends State<_ChapterListPanel> {
                   ),
                   const SizedBox(width: 8),
                   if (isSelected)
-                    Icon(Icons.check, size: 18, color: fg)
+                    Icon(Icons.check, size: 18, color: accent)
                   else if (!isCached)
-                    Icon(Icons.cloud_outlined, size: 18, color: fg.withValues(alpha: 0.4)),
+                    Icon(
+                      Icons.cloud_outlined,
+                      size: 18,
+                      color: fg.withValues(alpha: 0.62),
+                    ),
                 ],
               ),
             ),
@@ -3445,6 +3503,10 @@ class _ChapterListPanelState extends State<_ChapterListPanel> {
       switch (action) {
         case 'reverse':
           _isReversed = !_isReversed;
+          _saveBool(
+            'tocReverse_${widget.book?.bookUrl ?? ""}',
+            _isReversed,
+          );
           break;
         case 'use_replace':
           _useReplace = !_useReplace;

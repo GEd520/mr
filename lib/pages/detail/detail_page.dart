@@ -84,6 +84,11 @@ class _DetailPageState extends State<DetailPage> {
             final sourceData = StorageService.instance.getBookSource(book.sourceUrl!);
             if (sourceData != null) {
               bookSource = BookSource.fromJson(sourceData);
+              // 参照 Legado：根据书源类型刷新 mediaType，确保类型始终与书源一致
+              final sourceMediaType = bookSource!.bookSourceType.mediaType;
+              if (book.mediaType != sourceMediaType) {
+                book = book.copyWith(mediaType: sourceMediaType);
+              }
             }
           }
         }
@@ -129,6 +134,17 @@ class _DetailPageState extends State<DetailPage> {
           if (detailedBook != null) {
             _book = mergeBookMetadata(detailedBook, _book!);
           }
+          // 参照 Legado：根据书源类型刷新 mediaType
+          if (_book!.sourceUrl != null) {
+            final sourceData = StorageService.instance.getBookSource(_book!.sourceUrl!);
+            if (sourceData != null) {
+              final source = BookSource.fromJson(sourceData);
+              final sourceMediaType = source.bookSourceType.mediaType;
+              if (_book!.mediaType != sourceMediaType) {
+                _book = _book!.copyWith(mediaType: sourceMediaType);
+              }
+            }
+          }
         }
         _chapters = await _dataProvider!.getChapterList(_book!);
       } catch (_) {
@@ -166,6 +182,8 @@ class _DetailPageState extends State<DetailPage> {
     final hasCustomBackground =
         bookInfoBackground != null && bookInfoBackground.isNotEmpty;
     return Scaffold(
+      backgroundColor: Colors.transparent,
+      bottomNavigationBar: _buildBottomActionBar(),
       body: Stack(
         children: [
           if (hasCustomBackground)
@@ -191,12 +209,12 @@ class _DetailPageState extends State<DetailPage> {
                   sigmaX: hasCustomBackground ? 0 : 10,
                   sigmaY: hasCustomBackground ? 0 : 10,
                 ),
-              child: Container(
-                color: Theme.of(context).colorScheme.surface.withValues(
-                  alpha: hasCustomBackground ? 0.72 : 0.85,
+                child: Container(
+                  color: Colors.black.withValues(
+                    alpha: hasCustomBackground ? 0.24 : 0.31,
+                  ),
                 ),
               ),
-            ),
             ),
           ),
           // 主内容
@@ -206,13 +224,7 @@ class _DetailPageState extends State<DetailPage> {
               physics: const AlwaysScrollableScrollPhysics(),
               slivers: [
                 _buildAppBar(),
-                SliverToBoxAdapter(child: _buildHeader()),
-                SliverToBoxAdapter(child: _buildInfoRows()),
-                SliverToBoxAdapter(child: _buildActionButtons()),
-                SliverToBoxAdapter(child: _buildDescription()),
-                SliverToBoxAdapter(child: _buildTags()),
-                SliverToBoxAdapter(child: _buildChapterHeader()),
-                _buildChapterList(),
+                SliverToBoxAdapter(child: _buildOriginalBookInfoLayout()),
               ],
             ),
           ),
@@ -234,6 +246,620 @@ class _DetailPageState extends State<DetailPage> {
       fit: BoxFit.cover,
       errorBuilder: (_, __, ___) => const SizedBox.shrink(),
     );
+  }
+
+  Widget _buildOriginalBookInfoLayout() {
+    final scheme = Theme.of(context).colorScheme;
+    final labels = _buildOriginalLabels();
+    final availableHeight = MediaQuery.sizeOf(context).height -
+        MediaQuery.paddingOf(context).top -
+        kToolbarHeight -
+        50 -
+        168;
+
+    return Column(
+      children: [
+        SizedBox(
+          height: 168,
+          child: Stack(
+            alignment: Alignment.topCenter,
+            children: [
+              Positioned(
+                top: 90,
+                left: 0,
+                right: 0,
+                child: ClipPath(
+                  clipper: _BookInfoArcClipper(),
+                  child: Container(
+                    height: 78,
+                    color: scheme.surface,
+                  ),
+                ),
+              ),
+              Positioned(
+                top: 3,
+                child: Hero(
+                  tag: 'cover_${widget.bookUrl}',
+                  child: Container(
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(5),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.28),
+                          blurRadius: 12,
+                          offset: const Offset(0, 4),
+                        ),
+                      ],
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(5),
+                      child: SizedBox(
+                        width: 110,
+                        height: 160,
+                        child: _buildDetailCover(),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        Container(
+          width: double.infinity,
+          constraints: BoxConstraints(
+            minHeight: availableHeight > 0 ? availableHeight : 0,
+          ),
+          color: scheme.surface,
+          padding: const EdgeInsets.fromLTRB(16, 6, 16, 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              InkWell(
+                onTap: _searchBookName,
+                onLongPress: _copyBookName,
+                child: SizedBox(
+                  width: double.infinity,
+                  child: Text(
+                    _book!.displayName,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: scheme.onSurface,
+                      fontSize: 18,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+              ),
+              if (labels.isNotEmpty) ...[
+                const SizedBox(height: 7),
+                Center(
+                  child: Wrap(
+                    alignment: WrapAlignment.center,
+                    runAlignment: WrapAlignment.center,
+                    spacing: 6,
+                    runSpacing: 5,
+                    children: labels,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 12),
+              _buildOriginalInfoRows(),
+              const SizedBox(height: 14),
+              Text(
+                '内容简介',
+                style: TextStyle(
+                  color: scheme.onSurfaceVariant,
+                  fontSize: 16,
+                ),
+              ),
+              const SizedBox(height: 9),
+              _buildIntroContent(scheme.onSurfaceVariant),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  List<Widget> _buildOriginalLabels() {
+    final labels = <({String text, _BookLabelType type})>[];
+    final seen = <String>{};
+
+    void addLabel(String? value, _BookLabelType type) {
+      final text = value?.trim() ?? '';
+      if (text.isEmpty || !seen.add(text)) return;
+      labels.add((text: text, type: type));
+    }
+
+    final tags = <String>[
+      ...?_book!.tags,
+      ..._splitBookLabels(_book!.kind),
+      ..._splitBookLabels(_book!.category),
+    ];
+    final visibleTags = tags
+        .map((tag) => tag.trim())
+        .where((tag) => tag.isNotEmpty)
+        .take(3);
+    for (final tag in visibleTags) {
+      addLabel(tag, _BookLabelType.tag);
+    }
+
+    addLabel(_displayStatus, _BookLabelType.status);
+    if (_book!.showWordCount) {
+      addLabel(_displayWordCount, _BookLabelType.wordCount);
+    }
+
+    return labels
+        .map((label) => _buildOriginalLabel(label.text, type: label.type))
+        .toList();
+  }
+
+  List<String> _splitBookLabels(String? value) {
+    if (value == null || value.trim().isEmpty) return const [];
+    return value
+        .split(RegExp(r'[,，、|/·\s]+'))
+        .where((item) => item.trim().isNotEmpty)
+        .toList();
+  }
+
+  String get _displayStatus {
+    final status = _book!.status?.trim() ?? '';
+    if (status.isEmpty) return '';
+    switch (status.toLowerCase()) {
+      case '0':
+      case 'serial':
+      case 'ongoing':
+        return '连载';
+      case '1':
+      case 'complete':
+      case 'completed':
+      case 'finished':
+        return '完结';
+      default:
+        return status;
+    }
+  }
+
+  Widget _buildOriginalLabel(
+    String text, {
+    required _BookLabelType type,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
+    final filled = type == _BookLabelType.tag;
+    final borderColor = type == _BookLabelType.status
+        ? scheme.primary
+        : scheme.outline;
+    final textColor = filled
+        ? scheme.onPrimary
+        : type == _BookLabelType.status
+            ? scheme.primary
+            : scheme.onSurfaceVariant;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+      decoration: BoxDecoration(
+        color: filled ? scheme.primary : Colors.transparent,
+        border: Border.all(
+          color: filled ? scheme.primary : borderColor,
+          width: 0.8,
+        ),
+        borderRadius: BorderRadius.circular(3),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          color: textColor,
+          fontSize: 13,
+          height: 1.25,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildOriginalInfoRows() {
+    final isOnline = _book!.originType == BookOriginType.online;
+    return Column(
+      children: [
+        InkWell(
+          onTap: _searchAuthor,
+          onLongPress: _copyAuthor,
+          child: _buildOriginalInfoRow(
+            icon: Icons.person_outline,
+            text: '作者：${_book!.displayAuthor}',
+          ),
+        ),
+        InkWell(
+          onTap: _editSource,
+          child: _buildOriginalInfoRow(
+            icon: Icons.public_outlined,
+            text: '来源：${_book!.sourceName ?? "本地"}',
+            action: isOnline
+                ? _buildOriginalAction('换源', _showChangeSourceDialog)
+                : null,
+          ),
+        ),
+        if (_book!.latestChapterTitle.isNotEmpty)
+          _buildOriginalInfoRow(
+            icon: Icons.explore_outlined,
+            text: '最新：${_book!.latestChapterTitle}',
+          ),
+        InkWell(
+          onTap: _showChangeGroupDialog,
+          child: _buildOriginalInfoRow(
+            icon: Icons.account_tree_outlined,
+            text: '分组：${_getGroupName()}',
+            action: _buildOriginalAction('设置分组', _showChangeGroupDialog),
+          ),
+        ),
+        InkWell(
+          onTap: _openFullChapterList,
+          child: _buildOriginalInfoRow(
+            icon: Icons.folder_open_outlined,
+            text: '目录：${_chapterSummaryText()}',
+            action: _buildOriginalAction('查看目录', _openFullChapterList),
+          ),
+        ),
+        if (_showReadRecord && _book!.durChapterIndex > 0)
+          InkWell(
+            onTap: _showReadRecordDialog,
+            child: _buildOriginalInfoRow(
+              icon: Icons.history,
+              text: '阅读记录：${_readRecordSummaryText()}',
+              action: _buildOriginalAction('查看', _showReadRecordDialog),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildOriginalInfoRow({
+    required IconData icon,
+    required String text,
+    Widget? action,
+  }) {
+    final color = Theme.of(context).colorScheme.onSurfaceVariant;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        children: [
+          Icon(icon, size: 18, color: color),
+          const SizedBox(width: 5),
+          Expanded(
+            child: Text(
+              text,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: color,
+                fontSize: 13,
+                height: 1.35,
+              ),
+            ),
+          ),
+          if (action != null) ...[
+            const SizedBox(width: 8),
+            action,
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildOriginalAction(String text, VoidCallback onPressed) {
+    final scheme = Theme.of(context).colorScheme;
+    return TextButton(
+      onPressed: onPressed,
+      style: TextButton.styleFrom(
+        foregroundColor: scheme.onPrimary,
+        backgroundColor: scheme.primary,
+        minimumSize: const Size(0, 24),
+        padding: const EdgeInsets.symmetric(horizontal: 5),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(2),
+        ),
+      ),
+      child: Text(
+        text,
+        style: const TextStyle(fontSize: 13, height: 1),
+      ),
+    );
+  }
+
+  Widget _buildLegacyStyleHeader() {
+    final scheme = Theme.of(context).colorScheme;
+    final panelColor = scheme.surface.withValues(alpha: 0.94);
+    final labels = _buildHeaderLabels();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
+      child: Column(
+        children: [
+          SizedBox(
+            height: 188,
+            child: Stack(
+              alignment: Alignment.topCenter,
+              children: [
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  child: ClipPath(
+                    clipper: _BookInfoArcClipper(),
+                    child: Container(height: 86, color: panelColor),
+                  ),
+                ),
+                Positioned(
+                  top: 0,
+                  child: Hero(
+                    tag: 'cover_${widget.bookUrl}',
+                    child: Container(
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(6),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.28),
+                            blurRadius: 14,
+                            offset: const Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(6),
+                        child: Container(
+                          width: 110,
+                          height: 160,
+                          color: scheme.surfaceContainerHighest,
+                          child: _buildDetailCover(),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Container(
+            width: double.infinity,
+            decoration: BoxDecoration(
+              color: panelColor,
+              borderRadius: const BorderRadius.vertical(
+                bottom: Radius.circular(10),
+              ),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+              child: Column(
+                children: [
+                  InkWell(
+                    onTap: _searchBookName,
+                    onLongPress: _copyBookName,
+                    child: Text(
+                      _book!.displayName,
+                      textAlign: TextAlign.center,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                    ),
+                  ),
+                  if (labels.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Wrap(
+                      alignment: WrapAlignment.center,
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: labels,
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  _buildLegacyInfoRows(),
+                  const SizedBox(height: 8),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      '简介',
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: _buildIntroContent(scheme.onSurfaceVariant),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  List<Widget> _buildHeaderLabels() {
+    final labels = <String>[];
+    final status = _book!.status;
+    if (status != null && status.trim().isNotEmpty) {
+      labels.add(status.trim());
+    }
+    if (_book!.sourceName?.trim().isNotEmpty == true) {
+      labels.add(_book!.sourceName!.trim());
+    }
+    final chapterCount = _chapters.isNotEmpty ? _chapters.length : _book!.totalChapterNum;
+    if (chapterCount != null && chapterCount > 0) {
+      labels.add('$chapterCount章');
+    }
+    if (_displayWordCount.isNotEmpty) {
+      labels.add(_displayWordCount);
+    }
+    final extraTags = _book!.tags ??
+        (_book!.kind ?? '')
+            .split(RegExp(r'[,，|/\s]+'))
+            .where((tag) => tag.trim().isNotEmpty)
+            .take(3)
+            .toList();
+    labels.addAll(extraTags.where((tag) => !labels.contains(tag)));
+    return labels.map(_buildInfoChip).toList();
+  }
+
+  Widget _buildLegacyInfoRows() {
+    return Column(
+      children: [
+        InkWell(
+          onTap: _searchAuthor,
+          onLongPress: _copyAuthor,
+          child: _buildLegacyInfoRow(
+            icon: Icons.person_outline,
+            value: '作者：${_book!.displayAuthor}',
+          ),
+        ),
+        InkWell(
+          onTap: _editSource,
+          child: _buildLegacyInfoRow(
+            icon: Icons.public_outlined,
+            value: '来源：${_book!.sourceName ?? "本地"}',
+            trailing: _book!.originType == BookOriginType.online
+                ? _buildInlineAction('换源', _showChangeSourceDialog)
+                : null,
+          ),
+        ),
+        if (_book!.latestChapterTitle.isNotEmpty)
+          _buildLegacyInfoRow(
+            icon: Icons.new_releases_outlined,
+            value: '最新：${_book!.latestChapterTitle}',
+          ),
+        InkWell(
+          onTap: _showChangeGroupDialog,
+          child: _buildLegacyInfoRow(
+            icon: Icons.folder_outlined,
+            value: '分组：${_getGroupName()}',
+            trailing: _buildInlineAction('修改', _showChangeGroupDialog),
+          ),
+        ),
+        InkWell(
+          onTap: _openFullChapterList,
+          child: _buildLegacyInfoRow(
+            icon: Icons.folder_open_outlined,
+            value: '目录：${_chapterSummaryText()}',
+            trailing: _buildInlineAction('查看', _openFullChapterList),
+          ),
+        ),
+        if (_showReadRecord)
+          InkWell(
+            onTap: _showReadRecordDialog,
+            child: _buildLegacyInfoRow(
+              icon: Icons.history,
+              value: '阅读记录：${_readRecordSummaryText()}',
+              trailing: _buildInlineAction('记录', _showReadRecordDialog),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildLegacyInfoRow({
+    required IconData icon,
+    required String value,
+    Widget? trailing,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Row(
+        children: [
+          Icon(
+            icon,
+            size: 18,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              value,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 13,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+          if (trailing != null) ...[
+            const SizedBox(width: 8),
+            trailing,
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInlineAction(String text, VoidCallback onTap) {
+    return TextButton(
+      onPressed: onTap,
+      style: TextButton.styleFrom(
+        minimumSize: const Size(0, 26),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      ),
+      child: Text(text, style: const TextStyle(fontSize: 12)),
+    );
+  }
+
+  Widget _buildIntroContent(Color color) {
+    final intro = _book!.displayIntro;
+    if (intro.isEmpty) {
+      return Text(
+        '暂无简介',
+        style: TextStyle(color: color),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        GestureDetector(
+          onTap: () {
+            setState(() {
+              _isDescExpanded = !_isDescExpanded;
+            });
+          },
+          child: _isDescExpanded ? _buildFullIntro(intro) : _buildCollapsedIntro(intro),
+        ),
+        Align(
+          alignment: Alignment.centerRight,
+          child: TextButton(
+            onPressed: () {
+              setState(() {
+                _isDescExpanded = !_isDescExpanded;
+              });
+            },
+            child: Text(_isDescExpanded ? '收起' : '展开全部'),
+          ),
+        ),
+      ],
+    );
+  }
+
+  String _chapterSummaryText() {
+    if (_chapters.isEmpty) {
+      return '加载中';
+    }
+    if (_book!.durChapterTitle.isNotEmpty) {
+      return _book!.durChapterTitle;
+    }
+    return '共 ${_chapters.length} 章';
+  }
+
+  String _readRecordSummaryText() {
+    if (_book!.durChapterTitle.isNotEmpty) {
+      final index = _book!.durChapterIndex + 1;
+      final total = _chapters.isNotEmpty ? _chapters.length : (_book!.totalChapterNum ?? 0);
+      if (total > 0) {
+        return '$index/$total章 · ${_book!.durChapterTitle}';
+      }
+      return _book!.durChapterTitle;
+    }
+    return '暂无阅读记录';
   }
 
   /// 构建详情页封面 - 接入封面配置
@@ -283,14 +909,21 @@ class _DetailPageState extends State<DetailPage> {
 
   Widget _buildAppBar() {
     final isOnline = _book!.originType == BookOriginType.online;
-    final isLocal = _book!.originType == BookOriginType.local;
-    final fg = Theme.of(context).colorScheme.onSurface;
+    const fg = Colors.white;
 
     return SliverAppBar(
       expandedHeight: 48,
       pinned: true,
       backgroundColor: Colors.transparent,
+      surfaceTintColor: Colors.transparent,
+      foregroundColor: fg,
       elevation: 0,
+      title: const Text('书籍信息'),
+      titleTextStyle: const TextStyle(
+        color: fg,
+        fontSize: 20,
+        fontWeight: FontWeight.w600,
+      ),
       actions: [
         // 定制按钮（书源有定制按钮时才显示）
         if (_bookSource?.customButton == true)
@@ -1154,6 +1787,68 @@ class _DetailPageState extends State<DetailPage> {
     );
   }
 
+  Widget _buildBottomActionBar() {
+    final scheme = Theme.of(context).colorScheme;
+    final canRead = _chapters.isNotEmpty;
+    return SafeArea(
+      top: false,
+      child: Container(
+        decoration: BoxDecoration(
+          color: scheme.surface,
+          border: Border(
+            top: BorderSide(
+              color: scheme.outlineVariant.withValues(alpha: 0.6),
+            ),
+          ),
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: InkWell(
+                onTap: _toggleBookshelf,
+                child: SizedBox(
+                  height: 50,
+                  child: Center(
+                    child: Text(
+                      _isInBookshelf ? '移出书架' : '放入书架',
+                      style: TextStyle(
+                        fontSize: 15,
+                        color: scheme.onSurface,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Expanded(
+              child: Material(
+                color: canRead
+                    ? scheme.primary
+                    : scheme.primary.withValues(alpha: 0.4),
+                child: InkWell(
+                  onTap: canRead ? _startReading : null,
+                  child: SizedBox(
+                    height: 50,
+                    child: Center(
+                      child: Text(
+                        '阅读',
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                          color: scheme.onPrimary,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   /// 检测内容是否包含HTML标签（用于决定是否用Html widget渲染）
   /// 支持两种情况：
   /// 1. 以<开头的纯HTML内容
@@ -1465,6 +2160,15 @@ class _DetailPageState extends State<DetailPage> {
     );
   }
 
+  /// 参照 Legado 路由优先级：video → audio → comic → novel
+  String _readerRouteName() {
+    final mediaType = _book?.mediaType;
+    if (mediaType == MediaType.video) return AppRoutes.videoPlayer;
+    if (mediaType == MediaType.audio) return AppRoutes.audioPlayer;
+    if (mediaType == MediaType.comic) return AppRoutes.comicReader;
+    return AppRoutes.novelReader;
+  }
+
   void _startReading() {
     if (_chapters.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1472,12 +2176,9 @@ class _DetailPageState extends State<DetailPage> {
       );
       return;
     }
-    final routeName = _book?.mediaType == MediaType.comic
-        ? AppRoutes.comicReader
-        : AppRoutes.novelReader;
     Navigator.pushNamed(
       context,
-      routeName,
+      _readerRouteName(),
       arguments: {
         'bookUrl': widget.bookUrl,
         'chapterIndex': _book?.durChapterIndex ?? 0,
@@ -1511,12 +2212,9 @@ class _DetailPageState extends State<DetailPage> {
 
   void _openChapter(Chapter chapter) {
     if (chapter.isVolume) return;
-    final routeName = _book?.mediaType == MediaType.comic
-        ? AppRoutes.comicReader
-        : AppRoutes.novelReader;
     Navigator.pushNamed(
       context,
-      routeName,
+      _readerRouteName(),
       arguments: {
         'bookUrl': widget.bookUrl,
         'chapterIndex': chapter.index,
@@ -1528,7 +2226,10 @@ class _DetailPageState extends State<DetailPage> {
   String get _displayWordCount {
     if (_book?.wordCount?.trim().isNotEmpty == true) {
       final value = _book!.wordCount!.trim();
-      return value.endsWith('字') ? value : '$value字';
+      if (RegExp(r'(字|词|页|P|p)$').hasMatch(value)) {
+        return value;
+      }
+      return '$value字';
     }
     return _totalWordCount > 0 ? _formatWordCount(_totalWordCount) : '';
   }
@@ -1945,5 +2646,27 @@ class _DetailPageState extends State<DetailPage> {
       ),
     );
   }
+}
+
+class _BookInfoArcClipper extends CustomClipper<Path> {
+  @override
+  Path getClip(Size size) {
+    final path = Path()
+      ..moveTo(0, 36)
+      ..quadraticBezierTo(size.width / 2, 0, size.width, 36)
+      ..lineTo(size.width, size.height)
+      ..lineTo(0, size.height)
+      ..close();
+    return path;
+  }
+
+  @override
+  bool shouldReclip(covariant CustomClipper<Path> oldClipper) => false;
+}
+
+enum _BookLabelType {
+  tag,
+  status,
+  wordCount,
 }
 

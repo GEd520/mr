@@ -832,6 +832,8 @@ class WebBook {
             'wordCount': wordCount ?? '',
             'sourceUrl': source.bookSourceUrl,
             'sourceName': source.bookSourceName,
+            'mediaType': source.bookSourceType.mediaType.index,
+            'originType': BookOriginType.online.index,
           });
         }
       }
@@ -979,6 +981,8 @@ class WebBook {
               '',
           'sourceUrl': source.bookSourceUrl,
           'sourceName': source.bookSourceName,
+          'mediaType': source.bookSourceType.mediaType.index,
+          'originType': BookOriginType.online.index,
         });
       }
 
@@ -1055,7 +1059,7 @@ class WebBook {
         author: author ?? '',
         coverUrl: resolvedCoverUrl,
         intro: intro ?? '',
-        mediaType: MediaType.novel,
+        mediaType: source.bookSourceType.mediaType,
         originType: BookOriginType.online,
         sourceUrl: source.bookSourceUrl,
         sourceName: source.bookSourceName,

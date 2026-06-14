@@ -170,13 +170,29 @@ class AppRoutes {
           ),
         );
       case comicReader:
-        final args = settings.arguments as Map<String, dynamic>?;
-        final initialBook = args?['initialBook'];
+        final args = settings.arguments;
+        Map<String, dynamic>? argsMap;
+        if (args is Map<String, dynamic>) {
+          argsMap = args;
+        } else if (args is Map) {
+          argsMap = Map<String, dynamic>.from(args);
+        }
+        final bookData = argsMap?['bookData'];
+        Book? initialBook;
+        if (bookData is Book) {
+          initialBook = bookData;
+        } else if (bookData is Map) {
+          try {
+            initialBook = Book.fromJson(Map<String, dynamic>.from(bookData));
+          } catch (e) {
+            debugPrint('Book.fromJson error: $e');
+          }
+        }
         return AppPageRoute(
           builder: (_) => ComicReaderPage(
-            bookUrl: args?['bookUrl'] ?? '',
-            chapterIndex: args?['chapterIndex'] ?? 0,
-            initialBook: initialBook is Book ? initialBook : null,
+            bookUrl: argsMap?['bookUrl'] ?? argsMap?['bookId'] ?? '',
+            chapterIndex: argsMap?['chapterIndex'] ?? 0,
+            initialBook: initialBook,
           ),
         );
       case videoPlayer:

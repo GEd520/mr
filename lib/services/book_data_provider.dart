@@ -54,7 +54,7 @@ Book mergeBookMetadata(Book primary, Book fallback) {
     author: prefer(primary.author, fallback.author),
     coverUrl: prefer(primary.coverUrl, fallback.coverUrl),
     intro: prefer(primary.intro, fallback.intro),
-    mediaType: fallback.mediaType,
+    mediaType: primary.mediaType,
     originType: fallback.originType,
     sourceUrl: preferNullable(primary.sourceUrl, fallback.sourceUrl),
     sourceName: preferNullable(primary.sourceName, fallback.sourceName),

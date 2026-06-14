@@ -3158,10 +3158,14 @@ class _NovelChapterListPanelState extends State<_NovelChapterListPanel> {
 
   Future<void> _loadPrefs() async {
     final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
     setState(() {
       _showWordCount = prefs.getBool('tocShowWordCount') ?? false;
       _useReplace = prefs.getBool('tocUseReplace') ?? false;
       _foldVolume = prefs.getBool('tocFoldVolume') ?? true;
+      _isReversed =
+          prefs.getBool('tocReverse_${widget.book?.bookUrl ?? ""}') ?? false;
+      _expandCurrentVolume();
     });
   }
 
@@ -3211,6 +3215,26 @@ class _NovelChapterListPanelState extends State<_NovelChapterListPanel> {
       i++;
     }
     return result;
+  }
+
+  void _expandCurrentVolume() {
+    var volumeIndex = -1;
+    for (final chapter in widget.chapters) {
+      if (chapter.isVolume) volumeIndex = chapter.index;
+      if (chapter.index == widget.currentChapterIndex) break;
+    }
+    if (volumeIndex >= 0) _expandedVolumes.add(volumeIndex);
+  }
+
+  bool _isCurrentVolume(int volumeIndex) {
+    var activeVolume = -1;
+    for (final chapter in widget.chapters) {
+      if (chapter.isVolume) activeVolume = chapter.index;
+      if (chapter.index == widget.currentChapterIndex) {
+        return activeVolume == volumeIndex;
+      }
+    }
+    return false;
   }
 
   List<Bookmark> get _filteredBookmarks {
@@ -3323,6 +3347,7 @@ class _NovelChapterListPanelState extends State<_NovelChapterListPanel> {
 
   Widget _buildTab(int index, String text, Color fg) {
     final selected = _currentTab == index;
+    final accent = Theme.of(context).colorScheme.primary;
     return GestureDetector(
       onTap: () => setState(() => _currentTab = index),
       child: Column(
@@ -3340,7 +3365,7 @@ class _NovelChapterListPanelState extends State<_NovelChapterListPanel> {
               margin: const EdgeInsets.only(top: 4),
               width: 24,
               height: 2,
-              color: fg,
+              color: accent,
             ),
         ],
       ),
@@ -3349,12 +3374,19 @@ class _NovelChapterListPanelState extends State<_NovelChapterListPanel> {
 
   Widget _buildChapterList(Color fg, bool isOnline) {
     final display = _buildDisplayChapters(_filteredChapters);
-    return ListView.builder(
+    final accent = Theme.of(context).colorScheme.primary;
+    return ListView.separated(
       itemCount: display.length,
+      separatorBuilder: (_, __) => Divider(
+        height: 1,
+        thickness: 0.5,
+        color: fg.withValues(alpha: 0.12),
+      ),
       itemBuilder: (context, index) {
         final chapter = display[index];
         if (chapter.isVolume) {
           final isExpanded = _expandedVolumes.contains(chapter.index);
+          final isCurrentVolume = _isCurrentVolume(chapter.index);
           return InkWell(
             onTap: () => setState(() {
               if (isExpanded) {
@@ -3364,17 +3396,32 @@ class _NovelChapterListPanelState extends State<_NovelChapterListPanel> {
               }
             }),
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              color: fg.withValues(alpha: 0.06),
+              padding: const EdgeInsets.all(12),
+              color: isCurrentVolume
+                  ? accent.withValues(alpha: 0.1)
+                  : Colors.transparent,
               child: Row(
                 children: [
-                  Icon(isExpanded ? Icons.keyboard_arrow_down : Icons.chevron_right,
-                      color: fg, size: 20),
+                  AnimatedRotation(
+                    duration: const Duration(milliseconds: 180),
+                    turns: isExpanded ? 0.25 : 0,
+                    child: Icon(
+                      Icons.arrow_right,
+                      color: isCurrentVolume ? accent : fg,
+                      size: 20,
+                    ),
+                  ),
                   const SizedBox(width: 4),
                   Expanded(
-                    child: Text(chapter.title,
-                        style: TextStyle(color: fg, fontWeight: FontWeight.bold),
-                        maxLines: 1, overflow: TextOverflow.ellipsis),
+                    child: Text(
+                      chapter.title,
+                      style: TextStyle(
+                        color: isCurrentVolume ? accent : fg,
+                        fontSize: 14,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
                 ],
               ),
@@ -3386,44 +3433,67 @@ class _NovelChapterListPanelState extends State<_NovelChapterListPanel> {
         final fileName = ChapterCacheService.instance.getChapterFileName(chapter);
         final isCached = !isOnline || _cachedFiles.contains(fileName);
 
-        return ListTile(
-          selected: isSelected,
-          selectedTileColor: fg.withValues(alpha: 0.1),
-          title: Row(
+        return InkWell(
+          onTap: () => widget.onChapterSelected(chapter.index),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Row(
             children: [
-              Expanded(
-                child: Text(
-                  chapter.title,
-                  style: TextStyle(
-                    color: isSelected ? fg : fg.withValues(alpha: 0.8),
-                    fontWeight: isSelected ? FontWeight.bold : null,
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              if (_showWordCount && chapter.wordCount != null && chapter.wordCount! > 0)
-                Padding(
-                  padding: const EdgeInsets.only(right: 4),
-                  child: Text(
-                    '${(chapter.wordCount! / 10000).toStringAsFixed(1)}万',
-                    style: TextStyle(color: fg.withValues(alpha: 0.5), fontSize: 12),
-                  ),
-                ),
               if (chapter.isVip && !chapter.isPay)
                 Padding(
-                  padding: const EdgeInsets.only(left: 4),
-                  child: Icon(Icons.lock, size: 16, color: Colors.red.shade400),
+                  padding: const EdgeInsets.only(right: 8),
+                  child: Icon(
+                    Icons.lock_outline,
+                    size: 16,
+                    color: fg.withValues(alpha: 0.62),
+                  ),
                 ),
-              if (!isCached)
-                Padding(
-                  padding: const EdgeInsets.only(left: 4),
-                  child: Icon(Icons.cloud_outlined, size: 16, color: fg.withValues(alpha: 0.5)),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      chapter.title,
+                      style: TextStyle(
+                        color: isSelected ? accent : fg,
+                        fontSize: 14,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    if ((chapter.tag?.isNotEmpty ?? false) ||
+                        (_showWordCount &&
+                            (chapter.wordCount ?? 0) > 0))
+                      Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: Text(
+                          [
+                            if (chapter.tag?.isNotEmpty == true) chapter.tag!,
+                            if (_showWordCount &&
+                                (chapter.wordCount ?? 0) > 0)
+                              '${chapter.wordCount}字',
+                          ].join('  '),
+                          style: TextStyle(
+                            color: fg.withValues(alpha: 0.62),
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              if (isSelected)
+                Icon(Icons.check, size: 18, color: accent)
+              else if (!isCached)
+                Icon(
+                  Icons.cloud_outlined,
+                  size: 18,
+                  color: fg.withValues(alpha: 0.62),
                 ),
             ],
           ),
-          trailing: isSelected ? Icon(Icons.check, color: fg) : null,
-          onTap: () => widget.onChapterSelected(chapter.index),
+          ),
         );
       },
     );
@@ -3468,6 +3538,10 @@ class _NovelChapterListPanelState extends State<_NovelChapterListPanel> {
       switch (action) {
         case 'reverse':
           _isReversed = !_isReversed;
+          _saveBool(
+            'tocReverse_${widget.book?.bookUrl ?? ""}',
+            _isReversed,
+          );
           break;
         case 'use_replace':
           _useReplace = !_useReplace;
