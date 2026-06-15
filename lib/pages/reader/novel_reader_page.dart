@@ -84,7 +84,6 @@ class _NovelReaderPageState extends State<NovelReaderPage>
 
   // 增强版控制
   final bool _useEnhancedControls = true;
-  bool _showSettingsSheet = false;
   bool _hasBookmark = false;
   double _ttsSpeed = 1.0;
 
@@ -191,9 +190,9 @@ class _NovelReaderPageState extends State<NovelReaderPage>
   }
 
   void _showEnhancedSettings() {
-    setState(() {
-      _showSettingsSheet = true;
-    });
+    final provider = context.read<ReaderProvider>();
+    _hideMenu();
+    _showInterfaceSettingsDialog(provider);
   }
 
   void _startTts() {
@@ -694,137 +693,6 @@ class _NovelReaderPageState extends State<NovelReaderPage>
               else if (_showMenu)
                 _buildMenu(provider),
               if (_showHighlightMenu) _buildHighlightMenu(provider),
-              // 设置面板
-              if (_showSettingsSheet)
-                Positioned.fill(
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.translucent,
-                    onTap: () {
-                      setState(() => _showSettingsSheet = false);
-                    },
-                    child: Align(
-                      alignment: Alignment.bottomCenter,
-                      child: GestureDetector(
-                        onTap: () {},
-                        child: ConstrainedBox(
-                          constraints: BoxConstraints(
-                            maxHeight:
-                                MediaQuery.of(context).size.height * 0.72,
-                          ),
-                          child: ReaderSettingsSheet(
-                            fontSize: provider.fontSize,
-                            lineHeight: provider.lineHeight,
-                            letterSpacing: provider.letterSpacing,
-                            paragraphSpacing: provider.paragraphSpacing,
-                            horizontalPadding: provider.horizontalPadding,
-                            verticalPadding: provider.verticalPadding,
-                            paragraphIndent: provider.paragraphIndent,
-                            fontWeightIndex: provider.fontWeightIndex,
-                            fontFamily: provider.fontFamily,
-                            backgroundColor: provider.backgroundColor,
-                            backgroundImagePath: provider.backgroundImagePath,
-                            showReadingInfo: provider.showReadingInfo,
-                            showChapterTitle: provider.showChapterTitle,
-                            showClock: provider.showClock,
-                            showProgress: provider.showProgress,
-                            pageAnim: provider.pageMode.index,
-                            pageAnimDurationMs: provider.pageAnimDurationMs,
-                            screenBrightness: provider.screenBrightness,
-                            keepScreenOn: provider.keepScreenOn,
-                            enableVolumeKeyPage: provider.enableVolumeKeyPage,
-                            volumeKeyPageOnTts: provider.volumeKeyPageOnTts,
-                            enableLongPressMenu: provider.enableLongPressMenu,
-                            autoScrollSpeed: provider.autoScrollSpeed,
-                            autoPageIntervalSeconds:
-                                provider.autoPageIntervalSeconds,
-                            tapZones: provider.tapZones,
-                            isNightMode: provider.isNightMode,
-                            onFontSizeChanged: (value) {
-                              provider.setFontSize(value);
-                              _repaginate();
-                            },
-                            onLineHeightChanged: (value) {
-                              provider.setLineHeight(value);
-                              _repaginate();
-                            },
-                            onLetterSpacingChanged: (value) {
-                              provider.setLetterSpacing(value);
-                              _repaginate();
-                            },
-                            onParagraphSpacingChanged: (value) {
-                              provider.setParagraphSpacing(value);
-                              _repaginate();
-                            },
-                            onHorizontalPaddingChanged: (value) {
-                              provider.setHorizontalPadding(value);
-                              _repaginate();
-                            },
-                            onVerticalPaddingChanged: (value) {
-                              provider.setVerticalPadding(value);
-                              _repaginate();
-                            },
-                            onParagraphIndentChanged: (value) {
-                              provider.setParagraphIndent(value);
-                              _repaginate();
-                            },
-                            onFontWeightChanged: (value) {
-                              provider.setFontWeightIndex(value);
-                              _repaginate();
-                            },
-                            onFontFamilyChanged: (value) =>
-                                provider.setFontFamily(value),
-                            onBackgroundColorChanged: (value) =>
-                                provider.setBackgroundColor(value),
-                            onBackgroundImageChanged: (value) =>
-                                provider.setBackgroundImagePath(value),
-                            onShowReadingInfoChanged: (value) =>
-                                provider.setShowReadingInfo(value),
-                            onShowChapterTitleChanged: (value) {
-                              provider.setShowChapterTitle(value);
-                              _repaginate();
-                            },
-                            onShowClockChanged: (value) =>
-                                provider.setShowClock(value),
-                            onShowProgressChanged: (value) =>
-                                provider.setShowProgress(value),
-                            onPageAnimChanged: (value) {
-                              if (value < PageMode.values.length) {
-                                provider.setPageMode(PageMode.values[value]);
-                                _repaginate();
-                              }
-                            },
-                            onPageAnimDurationChanged: (value) =>
-                                provider.setPageAnimDurationMs(value),
-                            onScreenBrightnessChanged: (value) =>
-                                provider.setScreenBrightness(value),
-                            onKeepScreenOnChanged: (value) =>
-                                provider.setKeepScreenOn(value),
-                            onEnableVolumeKeyPageChanged: (value) =>
-                                provider.setEnableVolumeKeyPage(value),
-                            onVolumeKeyPageOnTtsChanged: (value) =>
-                                provider.setVolumeKeyPageOnTts(value),
-                            onEnableLongPressMenuChanged: (value) =>
-                                provider.setEnableLongPressMenu(value),
-                            onAutoScrollSpeedChanged: (value) =>
-                                provider.setAutoScrollSpeed(value),
-                            onAutoPageIntervalChanged: (value) =>
-                                provider.setAutoPageIntervalSeconds(value),
-                            onTapZonesChanged: (value) =>
-                                provider.setTapZones(value),
-                            onNightModeChanged: (value) {
-                              if (provider.isNightMode != value) {
-                                provider.toggleNightMode();
-                              }
-                            },
-                            onClose: () {
-                              setState(() => _showSettingsSheet = false);
-                            },
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
             ],
           ),
         ),
@@ -2577,6 +2445,136 @@ class _NovelReaderPageState extends State<NovelReaderPage>
           ),
         );
       },
+    );
+  }
+
+  void _showInterfaceSettingsDialog(ReaderProvider provider) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) {
+        return DraggableScrollableSheet(
+          initialChildSize: 0.43,
+          minChildSize: 0.24,
+          maxChildSize: 0.9,
+          expand: false,
+          builder: (context, scrollController) {
+            return ClipRRect(
+              borderRadius: const BorderRadius.vertical(
+                top: Radius.circular(16),
+              ),
+              child: _buildInterfaceSettingsSheet(
+                provider,
+                onClose: () => Navigator.pop(sheetContext),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  ReaderSettingsSheet _buildInterfaceSettingsSheet(
+    ReaderProvider provider, {
+    required VoidCallback onClose,
+  }) {
+    return ReaderSettingsSheet(
+      fontSize: provider.fontSize,
+      lineHeight: provider.lineHeight,
+      letterSpacing: provider.letterSpacing,
+      paragraphSpacing: provider.paragraphSpacing,
+      horizontalPadding: provider.horizontalPadding,
+      verticalPadding: provider.verticalPadding,
+      paragraphIndent: provider.paragraphIndent,
+      fontWeightIndex: provider.fontWeightIndex,
+      fontFamily: provider.fontFamily,
+      backgroundColor: provider.backgroundColor,
+      backgroundImagePath: provider.backgroundImagePath,
+      showReadingInfo: provider.showReadingInfo,
+      showChapterTitle: provider.showChapterTitle,
+      showClock: provider.showClock,
+      showProgress: provider.showProgress,
+      pageAnim: provider.pageMode.index,
+      pageAnimDurationMs: provider.pageAnimDurationMs,
+      screenBrightness: provider.screenBrightness,
+      keepScreenOn: provider.keepScreenOn,
+      enableVolumeKeyPage: provider.enableVolumeKeyPage,
+      volumeKeyPageOnTts: provider.volumeKeyPageOnTts,
+      enableLongPressMenu: provider.enableLongPressMenu,
+      autoScrollSpeed: provider.autoScrollSpeed,
+      autoPageIntervalSeconds: provider.autoPageIntervalSeconds,
+      tapZones: provider.tapZones,
+      isNightMode: provider.isNightMode,
+      onFontSizeChanged: (value) {
+        provider.setFontSize(value);
+        _repaginate();
+      },
+      onLineHeightChanged: (value) {
+        provider.setLineHeight(value);
+        _repaginate();
+      },
+      onLetterSpacingChanged: (value) {
+        provider.setLetterSpacing(value);
+        _repaginate();
+      },
+      onParagraphSpacingChanged: (value) {
+        provider.setParagraphSpacing(value);
+        _repaginate();
+      },
+      onHorizontalPaddingChanged: (value) {
+        provider.setHorizontalPadding(value);
+        _repaginate();
+      },
+      onVerticalPaddingChanged: (value) {
+        provider.setVerticalPadding(value);
+        _repaginate();
+      },
+      onParagraphIndentChanged: (value) {
+        provider.setParagraphIndent(value);
+        _repaginate();
+      },
+      onFontWeightChanged: (value) {
+        provider.setFontWeightIndex(value);
+        _repaginate();
+      },
+      onFontFamilyChanged: (value) => provider.setFontFamily(value),
+      onBackgroundColorChanged: (value) => provider.setBackgroundColor(value),
+      onBackgroundImageChanged: (value) =>
+          provider.setBackgroundImagePath(value),
+      onShowReadingInfoChanged: (value) => provider.setShowReadingInfo(value),
+      onShowChapterTitleChanged: (value) {
+        provider.setShowChapterTitle(value);
+        _repaginate();
+      },
+      onShowClockChanged: (value) => provider.setShowClock(value),
+      onShowProgressChanged: (value) => provider.setShowProgress(value),
+      onPageAnimChanged: (value) {
+        if (value < PageMode.values.length) {
+          provider.setPageMode(PageMode.values[value]);
+          _repaginate();
+        }
+      },
+      onPageAnimDurationChanged: (value) =>
+          provider.setPageAnimDurationMs(value),
+      onScreenBrightnessChanged: (value) => provider.setScreenBrightness(value),
+      onKeepScreenOnChanged: (value) => provider.setKeepScreenOn(value),
+      onEnableVolumeKeyPageChanged: (value) =>
+          provider.setEnableVolumeKeyPage(value),
+      onVolumeKeyPageOnTtsChanged: (value) =>
+          provider.setVolumeKeyPageOnTts(value),
+      onEnableLongPressMenuChanged: (value) =>
+          provider.setEnableLongPressMenu(value),
+      onAutoScrollSpeedChanged: (value) => provider.setAutoScrollSpeed(value),
+      onAutoPageIntervalChanged: (value) =>
+          provider.setAutoPageIntervalSeconds(value),
+      onTapZonesChanged: (value) => provider.setTapZones(value),
+      onNightModeChanged: (value) {
+        if (provider.isNightMode != value) {
+          provider.toggleNightMode();
+        }
+      },
+      onClose: onClose,
     );
   }
 

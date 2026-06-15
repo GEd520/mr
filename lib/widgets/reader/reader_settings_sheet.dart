@@ -221,11 +221,12 @@ class _ReaderSettingsSheetState extends State<ReaderSettingsSheet> {
                 _topButtons(),
                 const SizedBox(height: 6),
                 _detailSlider(
-                  title: '文字大小',
+                  title: '字号',
                   valueText: _fontSize.round().toString(),
                   value: _fontSize,
                   min: 5,
                   max: 50,
+                  step: 1,
                   onChanged: (v) {
                     final value = v.roundToDouble();
                     setState(() => _fontSize = value);
@@ -233,11 +234,12 @@ class _ReaderSettingsSheetState extends State<ReaderSettingsSheet> {
                   },
                 ),
                 _detailSlider(
-                  title: '字间距',
+                  title: '字距',
                   valueText: _letterSpacing.toStringAsFixed(2),
                   value: ((_letterSpacing + 0.5) * 100).clamp(0, 100),
                   min: 0,
                   max: 100,
+                  step: 1,
                   onChanged: (v) {
                     final value = v / 100 - 0.5;
                     setState(() => _letterSpacing = value);
@@ -245,11 +247,12 @@ class _ReaderSettingsSheetState extends State<ReaderSettingsSheet> {
                   },
                 ),
                 _detailSlider(
-                  title: '行间距',
+                  title: '行距',
                   valueText: _lineHeight.toStringAsFixed(1),
                   value: ((_lineHeight - 1.0) * 10).clamp(0, 20),
                   min: 0,
                   max: 20,
+                  step: 1,
                   onChanged: (v) {
                     final value = 1.0 + v / 10;
                     setState(() => _lineHeight = value);
@@ -257,11 +260,12 @@ class _ReaderSettingsSheetState extends State<ReaderSettingsSheet> {
                   },
                 ),
                 _detailSlider(
-                  title: '段落间距',
+                  title: '段距',
                   valueText: (_paragraphSpacing / 10).toStringAsFixed(1),
                   value: _paragraphSpacing.clamp(0, 20),
                   min: 0,
                   max: 20,
+                  step: 1,
                   onChanged: (v) {
                     setState(() => _paragraphSpacing = v);
                     widget.onParagraphSpacingChanged(v);
@@ -343,30 +347,49 @@ class _ReaderSettingsSheetState extends State<ReaderSettingsSheet> {
     required double value,
     required double min,
     required double max,
+    required double step,
     required ValueChanged<double> onChanged,
   }) {
+    final current = value.toDouble().clamp(min, max);
+    final canDecrease = current > min;
+    final canIncrease = current < max;
+    void adjust(double delta) {
+      onChanged((current + delta).clamp(min, max).toDouble());
+    }
+
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 1),
+      padding: const EdgeInsets.symmetric(horizontal: 16),
       child: Row(
         children: [
           SizedBox(
-            width: 76,
+            width: 38,
             child: Text(
               title,
               style: TextStyle(color: _textColor, fontSize: 14),
             ),
           ),
+          _seekStepButton('-', canDecrease ? () => adjust(-step) : null),
+          const SizedBox(width: 4),
           Expanded(
-            child: Slider(
-              value: value.toDouble().clamp(min, max),
-              min: min,
-              max: max,
-              divisions: (max - min).round(),
-              onChanged: onChanged,
+            child: SliderTheme(
+              data: SliderTheme.of(context).copyWith(
+                trackHeight: 3,
+                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
+                overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
+              ),
+              child: Slider(
+                value: current,
+                min: min,
+                max: max,
+                divisions: (max - min).round(),
+                onChanged: onChanged,
+              ),
             ),
           ),
+          const SizedBox(width: 4),
+          _seekStepButton('+', canIncrease ? () => adjust(step) : null),
           SizedBox(
-            width: 48,
+            width: 38,
             child: Text(
               valueText,
               textAlign: TextAlign.end,
@@ -374,6 +397,29 @@ class _ReaderSettingsSheetState extends State<ReaderSettingsSheet> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _seekStepButton(String text, VoidCallback? onTap) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(14),
+      onTap: onTap,
+      child: SizedBox(
+        width: 28,
+        height: 28,
+        child: Center(
+          child: Text(
+            text,
+            style: TextStyle(
+              color: onTap == null
+                  ? _subColor.withValues(alpha: 0.35)
+                  : _textColor,
+              fontSize: 20,
+              height: 1,
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -818,6 +864,7 @@ class _ReaderSettingsSheetState extends State<ReaderSettingsSheet> {
               value: _pageAnimDurationMs.toDouble(),
               min: 120,
               max: 800,
+              step: 10,
               onChanged: (v) {
                 final value = v.round();
                 setState(() => _pageAnimDurationMs = value);
