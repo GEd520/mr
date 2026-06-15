@@ -571,9 +571,9 @@ class AnalyzeRule {
         final jsCode = appliedRule.mode == RuleMode.webJs
             ? appliedRule.rule.substring(7) : appliedRule.rule;
         final jsResult = await _applyJsAsync(result, jsCode, ruleStep: stepDesc);
-        // JS 返回空/undefined 时不覆盖前一步结果（console.log 调试步骤）
-        // 这样可以在规则链中插入 <js>console.log("debug")</js> 而不影响结果
-        if (jsResult != null && jsResult.toString().isNotEmpty) {
+        // JS 返回 null/undefined 时不覆盖前一步结果（console.log 调试步骤）
+        // 但空字符串 "" 是有效返回值（如 nextContentUrl 返回空表示没有下一页），必须覆盖
+        if (jsResult != null) {
           result = jsResult;
         }
       } else {
@@ -789,8 +789,9 @@ class AnalyzeRule {
         final jsCode = appliedRule.mode == RuleMode.webJs
             ? appliedRule.rule.substring(7) : appliedRule.rule;
         final jsResult = await _applyJsAsync(result, jsCode, ruleStep: stepDesc);
-        // JS 返回空/undefined 时不覆盖前一步结果（console.log 调试步骤）
-        if (jsResult != null && jsResult.toString().isNotEmpty) {
+        // JS 返回 null/undefined 时不覆盖前一步结果（console.log 调试步骤）
+        // 但空字符串 "" 是有效返回值（如 nextContentUrl 返回空表示没有下一页），必须覆盖
+        if (jsResult != null) {
           result = jsResult;
         }
       } else if (appliedRule.mode == RuleMode.default_) {
@@ -921,8 +922,9 @@ class AnalyzeRule {
         final jsCode = appliedRule.mode == RuleMode.webJs
             ? appliedRule.rule.substring(7) : appliedRule.rule;
         final jsResult = await _applyJsAsync(result, jsCode, ruleStep: stepDesc);
-        // JS 返回空/undefined 时不覆盖前一步结果（console.log 调试步骤）
-        if (jsResult != null && jsResult.toString().isNotEmpty) {
+        // JS 返回 null/undefined 时不覆盖前一步结果（console.log 调试步骤）
+        // 但空字符串 "" 是有效返回值，必须覆盖
+        if (jsResult != null) {
           result = jsResult;
         }
       } else if (result is List && appliedRule.mode == RuleMode.default_) {

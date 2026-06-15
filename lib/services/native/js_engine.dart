@@ -1243,9 +1243,15 @@ class JsEngine {
                 if (stack[si].tag === tagName) { found = si; break; }
               }
               if (found >= 0) {
-                var closed = stack.splice(found)[0];
-                if (found > 0 && stack.length > 0) {
-                  stack[found - 1].childNodes.push(closed);
+                // 先把 found 之上的未关闭子元素归入 found 的 childNodes
+                // （例如 </ul> 关闭时，栈上未关闭的 <li> 应成为 <ul> 的子节点）
+                while (stack.length > found + 1) {
+                  var orphan = stack.pop();
+                  stack[found].childNodes.push(orphan);
+                }
+                var closed = stack.pop(); // 取出匹配的父元素
+                if (stack.length > 0) {
+                  stack[stack.length - 1].childNodes.push(closed);
                 } else {
                   nodes.push(closed);
                 }
@@ -1273,9 +1279,14 @@ class JsEngine {
               if (_JsoupLite._autoCloseTags.indexOf(tagName) >= 0) {
                 for (var si = stack.length - 1; si >= 0; si--) {
                   if (stack[si].tag === tagName) {
-                    var closed = stack.splice(si)[0];
-                    if (si > 0 && stack.length > 0) {
-                      stack[si - 1].childNodes.push(closed);
+                    // 先把 si 之上的未关闭子元素归入 si 的 childNodes
+                    while (stack.length > si + 1) {
+                      var orphan = stack.pop();
+                      stack[si].childNodes.push(orphan);
+                    }
+                    var closed = stack.pop();
+                    if (stack.length > 0) {
+                      stack[stack.length - 1].childNodes.push(closed);
                     } else {
                       nodes.push(closed);
                     }
@@ -1570,7 +1581,6 @@ class JsEngine {
           var nodes = _JsoupLite._parseHtml(html);
           var found = _JsoupLite._queryAll(nodes, selector, 0);
           var result = found.length > 0 ? _JsoupLite._getText(found[0]) : '';
-          _JsoupLite._log('selectFirst("' + selector + '") => ' + (result.length > 80 ? result.substring(0, 80) + '...' : result || '(empty)'));
           return result;
         },
         selectAll: function(html, selector) {
@@ -1579,7 +1589,6 @@ class JsEngine {
           var nodes = _JsoupLite._parseHtml(html);
           var found = _JsoupLite._queryAll(nodes, selector, 0);
           var result = found.map(function(n) { return _JsoupLite._getOuterHtml(n); });
-          _JsoupLite._log('selectAll("' + selector + '") => ' + result.length + ' elements');
           return result;
         },
         getAttr: function(html, selector, attr) {
@@ -1588,7 +1597,6 @@ class JsEngine {
           var nodes = _JsoupLite._parseHtml(html);
           var found = _JsoupLite._queryAll(nodes, selector, 0);
           var result = found.length > 0 ? (found[0].attrs[attr] || '') : '';
-          _JsoupLite._log('getAttr("' + selector + '", "' + attr + '") => ' + (result || '(empty)'));
           return result;
         }
       };
@@ -2906,6 +2914,11 @@ class JsEngine {
       await _preCacheBridgeCalls(resolved.code, env: mergedEnv);
     } catch (e) {
       AppLogger.instance.warn(LogCategory.js, '预缓存桥接调用失败，继续执行JS', detail: e.toString());
+    }
+
+    // 调试：输出 processJsRule 的 result 参数类型和长度
+    if (kDebugMode) {
+      AppLogger.instance.debug(LogCategory.js, '[processJsRule] result type=${actualResult.runtimeType}, len=${actualResult is String ? (actualResult as String).length : (actualResult is List ? (actualResult as List).length : '?')}');
     }
 
     return _evalLock.synchronized(() =>

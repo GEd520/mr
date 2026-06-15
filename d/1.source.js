@@ -127,7 +127,6 @@ function bookInfo(result) {
 // ===== 章节目录 =====
 function toc(result) {
   var html = result;
-  // .list_xm!0 表示排除第一个匹配，即跳过索引0
   var allItems = select(html, ".list_xm li");
   var chapters = [];
 
