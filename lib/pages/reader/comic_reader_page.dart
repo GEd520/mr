@@ -281,7 +281,7 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
       if (!_chapters.any((chapter) => chapter.index == _currentChapterIndex)) {
         _currentChapterIndex = _chapters.first.index;
       }
-      await _loadChapter();
+      await _loadChapter(pageIndex: _currentPageIndex);
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -809,10 +809,7 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
   /// 保存阅读记录
   void _saveReadRecord() {
     if (_book != null && _readStartTime > 0) {
-      final chapterTitle =
-          _chapters.isNotEmpty && _currentChapterIndex < _chapters.length
-          ? _chapters[_currentChapterIndex].title
-          : '';
+      final chapterTitle = _chapter?.title ?? '';
       debugPrint('[ComicReader] Saving read record: ${_book!.name}');
       ReadRecordService.instance.endReading(
         bookUrl: _book!.bookUrl,

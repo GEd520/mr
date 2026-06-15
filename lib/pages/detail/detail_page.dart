@@ -2153,13 +2153,18 @@ class _DetailPageState extends State<DetailPage> {
         );
         if (confirmed != true) return;
       }
-      provider.removeFromBookshelf(_book!.bookUrl);
+      await provider.removeFromBookshelf(_book!.bookUrl);
+      if (!mounted) return;
+      setState(() {
+        _isInBookshelf = false;
+      });
     } else {
-      provider.addToBookshelf(_book!);
+      await provider.addToBookshelf(_book!);
+      if (!mounted) return;
+      setState(() {
+        _isInBookshelf = true;
+      });
     }
-    setState(() {
-      _isInBookshelf = !_isInBookshelf;
-    });
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(_isInBookshelf ? '已加入书架' : '已从书架移除'),
@@ -2177,14 +2182,14 @@ class _DetailPageState extends State<DetailPage> {
     return AppRoutes.novelReader;
   }
 
-  void _startReading() {
+  Future<void> _startReading() async {
     if (_chapters.isEmpty) {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('目录为空，无法开始阅读')));
       return;
     }
-    Navigator.pushNamed(
+    await Navigator.pushNamed(
       context,
       _readerRouteName(),
       arguments: {
@@ -2197,10 +2202,13 @@ class _DetailPageState extends State<DetailPage> {
         'bookData': _book,
       },
     );
+    if (mounted) {
+      await _loadData();
+    }
   }
 
-  void _openFullChapterList() {
-    Navigator.pushNamed(
+  Future<void> _openFullChapterList() async {
+    await Navigator.pushNamed(
       context,
       AppRoutes.chapterList,
       arguments: {
@@ -2209,6 +2217,9 @@ class _DetailPageState extends State<DetailPage> {
         'currentChapterIndex': _book?.durChapterIndex ?? 0,
       },
     );
+    if (mounted) {
+      await _loadData();
+    }
   }
 
   void _showBookEditSheet() {
@@ -2219,9 +2230,9 @@ class _DetailPageState extends State<DetailPage> {
     );
   }
 
-  void _openChapter(Chapter chapter) {
+  Future<void> _openChapter(Chapter chapter) async {
     if (chapter.isVolume) return;
-    Navigator.pushNamed(
+    await Navigator.pushNamed(
       context,
       _readerRouteName(),
       arguments: {
@@ -2234,6 +2245,9 @@ class _DetailPageState extends State<DetailPage> {
         'bookData': _book,
       },
     );
+    if (mounted) {
+      await _loadData();
+    }
   }
 
   String get _displayWordCount {

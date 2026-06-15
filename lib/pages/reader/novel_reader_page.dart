@@ -50,12 +50,15 @@ class _NovelReaderPageState extends State<NovelReaderPage>
   int _currentChapterIndex = 0;
   int _totalChapters = 0;
   bool _isLoading = true;
+  bool _restoreInitialPosition = false;
+  int _initialChapterPos = 0;
   Book? _book;
   BookSource? _bookSource;
   List<Chapter> _chapters = [];
   BookDataProvider? _dataProvider;
   double _sliderValue = 0; // 滑动进度条的实时值
   String? _nextContent;
+  int? _nextContentChapterIndex;
   int _chapterLoadToken = 0;
 
   // Pagination for non-scroll modes
@@ -89,6 +92,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
 
   // 阅读记录
   int _readStartTime = 0;
+  Timer? _progressSaveTimer;
 
   @override
   void initState() {
@@ -114,6 +118,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
 
   @override
   void dispose() {
+    _progressSaveTimer?.cancel();
     _menuAnimController.dispose();
     _scrollController.dispose();
     _pageController?.dispose();
@@ -237,6 +242,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
 
     final maxScroll = _scrollController.position.maxScrollExtent;
     final currentScroll = _scrollController.position.pixels;
+    _scheduleProgressSave(pos: currentScroll.round());
 
     // Auto-load next chapter when near bottom
     if (maxScroll - currentScroll < 500 && _nextContent == null) {
@@ -256,7 +262,10 @@ class _NovelReaderPageState extends State<NovelReaderPage>
           final initialIndex = widget.resumeProgress
               ? _book!.durChapterIndex
               : widget.chapterIndex;
-          _currentChapterIndex = initialIndex.clamp(0, _totalChapters - 1);
+          _currentChapterIndex = _readableChapterIndex(initialIndex);
+          _initialChapterPos = widget.resumeProgress ? _book!.durChapterPos : 0;
+          _restoreInitialPosition =
+              widget.resumeProgress && _initialChapterPos > 0;
           _sliderValue = _currentChapterIndex.toDouble();
         }
         // 加载书源信息
@@ -295,13 +304,14 @@ class _NovelReaderPageState extends State<NovelReaderPage>
       _isLoading = true;
       _sliderValue = _currentChapterIndex.toDouble();
       _nextContent = null;
+      _nextContentChapterIndex = null;
     });
 
     final chapter = chapterIndex < _chapters.length
         ? _chapters[chapterIndex]
         : null;
 
-    if (chapter == null) {
+    if (chapter == null || chapter.isVolume) {
       setState(() {
         _isLoading = false;
         _content = '章节不存在';
@@ -355,40 +365,91 @@ class _NovelReaderPageState extends State<NovelReaderPage>
       // 检查书签
       _checkBookmark();
 
-      _repaginate();
+      final provider = context.read<ReaderProvider>();
+      final restorePos = _restoreInitialPosition ? _initialChapterPos : 0;
+      _restoreInitialPosition = false;
+      _repaginate(initialPage: restorePos);
 
       // 滚动模式下重置滚动位置到顶部
-      final provider = context.read<ReaderProvider>();
       if (provider.pageMode == PageMode.scroll) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted && _scrollController.hasClients) {
-            _scrollController.jumpTo(0);
+            final target = restorePos > 0 ? restorePos.toDouble() : 0.0;
+            _scrollController.jumpTo(
+              target.clamp(0.0, _scrollController.position.maxScrollExtent),
+            );
           }
         });
       }
 
-      unawaited(_saveCurrentProgress(chapter));
+      unawaited(_saveCurrentProgress(chapter: chapter, pos: restorePos));
       unawaited(_preloadAdjacentChapters(_currentChapterIndex));
     }
   }
 
-  Future<void> _saveCurrentProgress(Chapter chapter) async {
+  int _readableChapterIndex(int index) {
+    if (_chapters.isEmpty) return 0;
+    var target = index.clamp(0, _chapters.length - 1);
+    if (!_chapters[target].isVolume) return target;
+
+    for (var i = target + 1; i < _chapters.length; i++) {
+      if (!_chapters[i].isVolume) return i;
+    }
+    for (var i = target - 1; i >= 0; i--) {
+      if (!_chapters[i].isVolume) return i;
+    }
+    return target;
+  }
+
+  int? _nextReadableChapterIndex(int fromIndex) {
+    for (var i = fromIndex + 1; i < _chapters.length; i++) {
+      if (!_chapters[i].isVolume) return i;
+    }
+    return null;
+  }
+
+  int? _previousReadableChapterIndex(int fromIndex) {
+    for (var i = fromIndex - 1; i >= 0; i--) {
+      if (!_chapters[i].isVolume) return i;
+    }
+    return null;
+  }
+
+  void _scheduleProgressSave({int? pos}) {
+    _progressSaveTimer?.cancel();
+    _progressSaveTimer = Timer(const Duration(milliseconds: 700), () {
+      unawaited(_saveCurrentProgress(pos: pos));
+    });
+  }
+
+  Future<void> _saveCurrentProgress({Chapter? chapter, int? pos}) async {
+    if (!mounted) return;
     final book = _book;
     if (book == null) return;
+    final chapterTitle = chapter?.title ?? _chapterTitle;
+    final chapterPos = pos ?? _currentChapterPos();
 
     _book = book.copyWith(
       durChapterIndex: _currentChapterIndex,
-      durChapterTitle: chapter.title,
-      durChapterPos: 0,
+      durChapterTitle: chapterTitle,
+      durChapterPos: chapterPos,
       durChapterTime: DateTime.now(),
     );
 
     await context.read<BookshelfProvider>().updateBookProgress(
       book.bookUrl,
       durChapterIndex: _currentChapterIndex,
-      durChapterTitle: chapter.title,
-      durChapterPos: 0,
+      durChapterTitle: chapterTitle,
+      durChapterPos: chapterPos,
     );
+  }
+
+  int _currentChapterPos() {
+    final provider = context.read<ReaderProvider>();
+    if (provider.pageMode == PageMode.scroll && _scrollController.hasClients) {
+      return _scrollController.offset.round();
+    }
+    return _currentPage;
   }
 
   Future<void> _preloadAdjacentChapters(int chapterIndex) async {
@@ -396,8 +457,9 @@ class _NovelReaderPageState extends State<NovelReaderPage>
 
     String? nextContent;
 
-    if (chapterIndex < _totalChapters - 1) {
-      final nextChapter = _chapters[chapterIndex + 1];
+    final nextIndex = _nextReadableChapterIndex(chapterIndex);
+    if (nextIndex != null) {
+      final nextChapter = _chapters[nextIndex];
       nextContent = await _dataProvider!.getContent(
         _book!,
         nextChapter,
@@ -408,32 +470,35 @@ class _NovelReaderPageState extends State<NovelReaderPage>
     if (!mounted || _currentChapterIndex != chapterIndex) return;
     setState(() {
       _nextContent = nextContent;
+      _nextContentChapterIndex = nextContent == null ? null : nextIndex;
     });
   }
 
   Future<void> _preloadNextChapter() async {
     if (_book == null || _nextContent != null) return;
-    if (_currentChapterIndex < _totalChapters - 1) {
-      final nextChapter = _chapters[_currentChapterIndex + 1];
+    final nextIndex = _nextReadableChapterIndex(_currentChapterIndex);
+    if (nextIndex != null) {
+      final nextChapter = _chapters[nextIndex];
       _nextContent = await _dataProvider!.getContent(
         _book!,
         nextChapter,
         allChapters: _chapters,
       );
+      _nextContentChapterIndex = nextIndex;
       if (mounted) setState(() {});
     }
   }
 
   // ==================== Pagination ====================
 
-  void _repaginate() {
+  void _repaginate({int initialPage = 0}) {
     final provider = context.read<ReaderProvider>();
     if (provider.pageMode == PageMode.scroll) return;
 
     _pages = _splitContentToPages(_content, provider);
-    _currentPage = 0;
+    _currentPage = initialPage.clamp(0, max(_pages.length - 1, 0));
     _pageController?.dispose();
-    _pageController = PageController(initialPage: 0);
+    _pageController = PageController(initialPage: _currentPage);
     if (mounted) setState(() {});
   }
 
@@ -496,14 +561,12 @@ class _NovelReaderPageState extends State<NovelReaderPage>
   ({double width, double height}) _pageMetrics(ReaderProvider provider) {
     final mq = MediaQuery.of(context);
     final width = max(80.0, mq.size.width - provider.horizontalPadding * 2);
-    final reservedMenuHeight = _showMenu ? kToolbarHeight + 120 : 0.0;
     final height = max(
       120.0,
       mq.size.height -
           mq.padding.top -
           mq.padding.bottom -
-          provider.verticalPadding * 2 -
-          reservedMenuHeight,
+          provider.verticalPadding * 2,
     );
     return (width: width, height: height);
   }
@@ -625,6 +688,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
       if (_currentPage > 0) {
         if (provider.pageMode == PageMode.simulation) {
           setState(() => _currentPage--);
+          _scheduleProgressSave(pos: _currentPage);
         } else if (_pageController?.hasClients == true) {
           _pageController?.previousPage(
             duration: _pageAnimationDuration(provider),
@@ -632,6 +696,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
           );
         } else {
           setState(() => _currentPage--);
+          _scheduleProgressSave(pos: _currentPage);
         }
       } else {
         _previousChapter();
@@ -657,6 +722,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
       if (_currentPage < _pages.length - 1) {
         if (provider.pageMode == PageMode.simulation) {
           setState(() => _currentPage++);
+          _scheduleProgressSave(pos: _currentPage);
         } else if (_pageController?.hasClients == true) {
           _pageController?.nextPage(
             duration: _pageAnimationDuration(provider),
@@ -664,6 +730,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
           );
         } else {
           setState(() => _currentPage++);
+          _scheduleProgressSave(pos: _currentPage);
         }
       } else {
         _nextChapter();
@@ -683,18 +750,20 @@ class _NovelReaderPageState extends State<NovelReaderPage>
   }
 
   void _previousChapter() {
-    if (_currentChapterIndex > 0) {
+    final previousIndex = _previousReadableChapterIndex(_currentChapterIndex);
+    if (previousIndex != null) {
       setState(() {
-        _currentChapterIndex--;
+        _currentChapterIndex = previousIndex;
       });
       _loadChapterContent();
     }
   }
 
   void _nextChapter() {
-    if (_currentChapterIndex < _totalChapters - 1) {
+    final nextIndex = _nextReadableChapterIndex(_currentChapterIndex);
+    if (nextIndex != null) {
       setState(() {
-        _currentChapterIndex++;
+        _currentChapterIndex = nextIndex;
       });
       _loadChapterContent();
     }
@@ -776,8 +845,11 @@ class _NovelReaderPageState extends State<NovelReaderPage>
                   currentChapter: _currentChapterIndex,
                   totalChapters: _totalChapters,
                   hasBookmark: _hasBookmark,
-                  hasPrev: _currentChapterIndex > 0,
-                  hasNext: _currentChapterIndex < _totalChapters - 1,
+                  hasPrev:
+                      _previousReadableChapterIndex(_currentChapterIndex) !=
+                      null,
+                  hasNext:
+                      _nextReadableChapterIndex(_currentChapterIndex) != null,
                   isAutoScroll: false,
                   isNightMode: provider.isNightMode,
                   sliderValue: _sliderValue,
@@ -794,12 +866,14 @@ class _NovelReaderPageState extends State<NovelReaderPage>
                   onToggleBookmark: _toggleBookmark,
                   onClose: _hideMenu,
                   onPrevChapter: () {
-                    if (_currentChapterIndex > 0) {
+                    if (_previousReadableChapterIndex(_currentChapterIndex) !=
+                        null) {
                       _previousChapter();
                     }
                   },
                   onNextChapter: () {
-                    if (_currentChapterIndex < _totalChapters - 1) {
+                    if (_nextReadableChapterIndex(_currentChapterIndex) !=
+                        null) {
                       _nextChapter();
                     }
                   },
@@ -825,7 +899,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
                     });
                   },
                   onSliderChangeEnd: (value) {
-                    _currentChapterIndex = value;
+                    _currentChapterIndex = _readableChapterIndex(value);
                     _loadChapterContent();
                   },
                 )
@@ -865,35 +939,40 @@ class _NovelReaderPageState extends State<NovelReaderPage>
 
   Widget _buildScrollContent(ReaderProvider provider) {
     return SafeArea(
-      child: Column(
-        children: [
-          if (_showMenu)
-            Container(
-              height: kToolbarHeight,
-              color: Theme.of(context).colorScheme.surface,
-            ),
-          Expanded(
-            child: SingleChildScrollView(
-              controller: _scrollController,
-              padding: EdgeInsets.symmetric(
-                horizontal: provider.horizontalPadding,
-                vertical: provider.verticalPadding,
+      child: SingleChildScrollView(
+        controller: _scrollController,
+        padding: EdgeInsets.symmetric(
+          horizontal: provider.horizontalPadding,
+          vertical: provider.verticalPadding,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _buildChapterContent(provider, _content, _chapterTitle),
+            if (_nextContent != null &&
+                _nextContentChapterIndex != null &&
+                _nextContentChapterIndex! < _chapters.length &&
+                _nextContentChapterIndex ==
+                    _nextReadableChapterIndex(_currentChapterIndex))
+              _buildAdjacentChapterContent(
+                provider,
+                _nextContent!,
+                _chapters[_nextContentChapterIndex!].title,
               ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _buildChapterContent(provider, _content, _chapterTitle),
-                ],
-              ),
-            ),
-          ),
-          if (_showMenu)
-            Container(
-              height: 120,
-              color: Theme.of(context).colorScheme.surface,
-            ),
-        ],
+          ],
+        ),
       ),
+    );
+  }
+
+  Widget _buildAdjacentChapterContent(
+    ReaderProvider provider,
+    String content,
+    String title,
+  ) {
+    return Padding(
+      padding: EdgeInsets.only(top: provider.paragraphSpacing * 2),
+      child: _buildChapterContent(provider, content, title),
     );
   }
 
@@ -1085,7 +1164,10 @@ class _NovelReaderPageState extends State<NovelReaderPage>
   List<Highlight> _getActiveHighlights() {
     if (_book == null) return [];
     return StorageService.instance
-        .getChapterHighlights(widget.bookUrl, _currentChapterIndex)
+        .getChapterHighlights(
+          _book?.bookUrl ?? widget.bookUrl,
+          _currentChapterIndex,
+        )
         .map((e) => Highlight.fromJson(e))
         .toList();
   }
@@ -1093,164 +1175,82 @@ class _NovelReaderPageState extends State<NovelReaderPage>
   // ==================== Slide Mode (PageView) ====================
 
   Widget _buildSlideContent(ReaderProvider provider) {
-    return SafeArea(
-      child: Column(
-        children: [
-          if (_showMenu)
-            Container(
-              height: kToolbarHeight,
-              color: Theme.of(context).colorScheme.surface,
-            ),
-          Expanded(
-            child: _pages.isEmpty
-                ? Center(
-                    child: Text(
-                      '无内容',
-                      style: TextStyle(color: provider.textColor),
-                    ),
-                  )
-                : PageView.builder(
-                    controller: _pageController,
-                    onPageChanged: (index) {
-                      setState(() {
-                        _currentPage = index;
-                      });
-                    },
-                    itemCount: _pages.length,
-                    itemBuilder: (context, index) {
-                      return RepaintBoundary(
-                        child: _buildPageContent(
-                          provider,
-                          _pages[index],
-                          pageIndex: index,
-                        ),
-                      );
-                    },
-                  ),
-          ),
-          if (_showMenu)
-            Container(
-              height: 120,
-              color: Theme.of(context).colorScheme.surface,
-            ),
-        ],
-      ),
-    );
+    return SafeArea(child: _buildPagedView(provider));
   }
 
   // ==================== Cover Mode ====================
 
   Widget _buildCoverContent(ReaderProvider provider) {
-    return SafeArea(
-      child: Column(
-        children: [
-          if (_showMenu)
-            Container(
-              height: kToolbarHeight,
-              color: Theme.of(context).colorScheme.surface,
-            ),
-          Expanded(
-            child: _pages.isEmpty
-                ? Center(
-                    child: Text(
-                      '无内容',
-                      style: TextStyle(color: provider.textColor),
-                    ),
-                  )
-                : PageView.builder(
-                    controller: _pageController,
-                    onPageChanged: (index) {
-                      setState(() {
-                        _currentPage = index;
-                      });
-                    },
-                    itemCount: _pages.length,
-                    itemBuilder: (context, index) {
-                      return RepaintBoundary(
-                        child: _buildPageContent(
-                          provider,
-                          _pages[index],
-                          pageIndex: index,
-                        ),
-                      );
-                    },
-                  ),
-          ),
-          if (_showMenu)
-            Container(
-              height: 120,
-              color: Theme.of(context).colorScheme.surface,
-            ),
-        ],
-      ),
+    return SafeArea(child: _buildPagedView(provider));
+  }
+
+  Widget _buildPagedView(ReaderProvider provider) {
+    if (_pages.isEmpty) {
+      return Center(
+        child: Text('无内容', style: TextStyle(color: provider.textColor)),
+      );
+    }
+    return PageView.builder(
+      controller: _pageController,
+      onPageChanged: _onPageChanged,
+      itemCount: _pages.length,
+      itemBuilder: (context, index) {
+        return RepaintBoundary(
+          child: _buildPageContent(provider, _pages[index], pageIndex: index),
+        );
+      },
     );
+  }
+
+  void _onPageChanged(int index) {
+    setState(() {
+      _currentPage = index;
+    });
+    unawaited(_saveCurrentProgress(pos: index));
   }
 
   // ==================== Simulation Mode ====================
 
   Widget _buildSimulationContent(ReaderProvider provider) {
     return SafeArea(
-      child: Column(
-        children: [
-          if (_showMenu)
-            Container(
-              height: kToolbarHeight,
-              color: Theme.of(context).colorScheme.surface,
-            ),
-          Expanded(
-            child: _pages.isEmpty
-                ? Center(
-                    child: Text(
-                      '无内容',
-                      style: TextStyle(color: provider.textColor),
-                    ),
-                  )
-                : GestureDetector(
-                    onHorizontalDragStart: (details) {
-                      _dragStartX = details.globalPosition.dx;
-                      _isDragging = true;
-                    },
-                    onHorizontalDragUpdate: (details) {
-                      if (!_isDragging) return;
-                      _dragCurrentX = details.globalPosition.dx;
-                      setState(() {});
-                    },
-                    onHorizontalDragEnd: (details) {
-                      if (!_isDragging) return;
-                      _isDragging = false;
-                      final delta = _dragCurrentX - _dragStartX;
-                      if (delta < -50) {
-                        _nextPage();
-                      } else if (delta > 50) {
-                        _previousPage();
-                      }
-                      _dragCurrentX = 0;
-                      _dragStartX = 0;
-                      setState(() {});
-                    },
-                    child: Stack(
-                      children: [
-                        // Current page
-                        _buildPageContent(
-                          provider,
-                          _pages.isNotEmpty
-                              ? _pages[_currentPage.clamp(0, _pages.length - 1)]
-                              : '',
-                          pageIndex: _currentPage,
-                        ),
-                        // Curl effect overlay
-                        if (_isDragging) _buildCurlEffect(provider),
-                      ],
-                    ),
+      child: _pages.isEmpty
+          ? Center(
+              child: Text('无内容', style: TextStyle(color: provider.textColor)),
+            )
+          : GestureDetector(
+              onHorizontalDragStart: (details) {
+                _dragStartX = details.globalPosition.dx;
+                _isDragging = true;
+              },
+              onHorizontalDragUpdate: (details) {
+                if (!_isDragging) return;
+                _dragCurrentX = details.globalPosition.dx;
+                setState(() {});
+              },
+              onHorizontalDragEnd: (details) {
+                if (!_isDragging) return;
+                _isDragging = false;
+                final delta = _dragCurrentX - _dragStartX;
+                if (delta < -50) {
+                  _nextPage();
+                } else if (delta > 50) {
+                  _previousPage();
+                }
+                _dragCurrentX = 0;
+                _dragStartX = 0;
+                setState(() {});
+              },
+              child: Stack(
+                children: [
+                  _buildPageContent(
+                    provider,
+                    _pages[_currentPage.clamp(0, _pages.length - 1)],
+                    pageIndex: _currentPage,
                   ),
-          ),
-          if (_showMenu)
-            Container(
-              height: 120,
-              color: Theme.of(context).colorScheme.surface,
+                  if (_isDragging) _buildCurlEffect(provider),
+                ],
+              ),
             ),
-        ],
-      ),
     );
   }
 
@@ -1484,7 +1484,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
 
     final highlight = Highlight(
       id: DateTime.now().millisecondsSinceEpoch.toString(),
-      bookUrl: widget.bookUrl,
+      bookUrl: _book!.bookUrl,
       chapterIndex: _currentChapterIndex,
       startIndex: _selectionStart,
       endIndex: _selectionEnd,
@@ -1540,7 +1540,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
 
     final highlight = Highlight(
       id: DateTime.now().millisecondsSinceEpoch.toString(),
-      bookUrl: widget.bookUrl,
+      bookUrl: _book!.bookUrl,
       chapterIndex: _currentChapterIndex,
       startIndex: _selectionStart,
       endIndex: _selectionEnd,
@@ -1983,7 +1983,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
         currentChapterIndex: _currentChapterIndex,
         foregroundColor: Theme.of(context).colorScheme.onSurface,
         onChapterSelected: (index) {
-          setState(() => _currentChapterIndex = index);
+          setState(() => _currentChapterIndex = _readableChapterIndex(index));
           _loadChapterContent();
           Navigator.pop(context);
         },

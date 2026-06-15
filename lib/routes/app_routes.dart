@@ -117,7 +117,10 @@ class AppRoutes {
       case txtTocRule:
         return AppPageRoute(builder: (_) => const TxtTocRulePage());
       case search:
-        return AppPageRoute(builder: (_) => const SearchPage());
+        final args = settings.arguments as Map<String, dynamic>?;
+        return AppPageRoute(
+          builder: (_) => SearchPage(initialKeyword: args?['keyword']),
+        );
       case detail:
         final args = settings.arguments;
         Map<String, dynamic>? argsMap;

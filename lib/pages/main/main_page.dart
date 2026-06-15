@@ -24,10 +24,10 @@ class _MainPageState extends State<MainPage> {
   bool _isLoading = true;
   String? _error;
   late PageController _pageController;
-  
+
   // 侧边栏状态
   bool _sidebarOpen = false;
-  
+
   @override
   void initState() {
     super.initState();
@@ -41,7 +41,7 @@ class _MainPageState extends State<MainPage> {
     _pageController.dispose();
     super.dispose();
   }
-  
+
   void _navigateToDiscovery() {
     _pageController.animateToPage(
       1,
@@ -54,9 +54,7 @@ class _MainPageState extends State<MainPage> {
     if (kIsWeb || !Platform.isAndroid) return;
 
     try {
-      await [
-        Permission.notification,
-      ].request();
+      await [Permission.notification].request();
     } catch (e) {
       debugPrint('⚠️ 权限请求异常: $e');
     }
@@ -164,8 +162,7 @@ class _MainPageState extends State<MainPage> {
     final bottomSafeArea = MediaQuery.paddingOf(context).bottom;
     const bottomBarHeight = 48.0;
     const bottomBarGap = 10.0;
-    final contentBottomInset =
-        bottomBarHeight + bottomBarGap + bottomSafeArea;
+    final contentBottomInset = bottomBarHeight + bottomBarGap + bottomSafeArea;
 
     return Scaffold(
       body: Stack(
@@ -204,40 +201,38 @@ class _MainPageState extends State<MainPage> {
     // main_bottom_nav_icon_size: 23dp
     // main_bottom_bar_gap: 10dp
     // main_bottom_bar_elevation: 12dp
-    
+
     final bottomBarHeight = 48.0;
     final cornerRadius = 24.0;
     final horizontalPadding = 20.0;
     final bottomPadding = 10.0;
     final bottomSafeArea = MediaQuery.paddingOf(context).bottom;
     final iconSize = 23.0;
-    
+
     final navBarColor = appProvider.currentNavBarColor;
     final navBarIsDark =
         ThemeData.estimateBrightnessForColor(navBarColor) == Brightness.dark;
-    
+
     // 从配置获取不透明度
     final opacity = appProvider.navBarOpacity / 100.0;
     final effectMode = appProvider.navBarEffectMode;
-    final borderColor = appProvider.navBarBorderColor != null 
-      ? Color(appProvider.navBarBorderColor!).withOpacity(appProvider.navBarBorderAlpha / 100.0)
-      : null;
-    
+    final borderColor = appProvider.navBarBorderColor != null
+        ? Color(
+            appProvider.navBarBorderColor!,
+          ).withOpacity(appProvider.navBarBorderAlpha / 100.0)
+        : null;
+
     // 根据材质模式设置背景色
     Color bgColor;
     if (effectMode == 'solid') {
       bgColor = navBarColor.withOpacity(opacity);
     } else if (effectMode == 'frosted') {
-      bgColor = navBarColor.withOpacity(
-        (navBarIsDark ? 0.7 : 0.85) * opacity,
-      );
+      bgColor = navBarColor.withOpacity((navBarIsDark ? 0.7 : 0.85) * opacity);
     } else {
       // glass
-      bgColor = navBarColor.withOpacity(
-        (navBarIsDark ? 0.85 : 0.9) * opacity,
-      );
+      bgColor = navBarColor.withOpacity((navBarIsDark ? 0.85 : 0.9) * opacity);
     }
-    
+
     return Padding(
       padding: EdgeInsets.only(
         left: horizontalPadding,
@@ -260,22 +255,46 @@ class _MainPageState extends State<MainPage> {
               decoration: BoxDecoration(
                 color: bgColor,
                 borderRadius: BorderRadius.circular(cornerRadius),
-                border: borderColor != null 
-                  ? Border.all(color: borderColor, width: 1)
-                  : Border.all(
-                      color: navBarIsDark
-                        ? Colors.white.withOpacity(0.08)
-                        : Colors.black.withOpacity(0.04),
-                      width: 1,
-                    ),
+                border: borderColor != null
+                    ? Border.all(color: borderColor, width: 1)
+                    : Border.all(
+                        color: navBarIsDark
+                            ? Colors.white.withOpacity(0.08)
+                            : Colors.black.withOpacity(0.04),
+                        width: 1,
+                      ),
               ),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 children: [
-                  _buildNavItem(0, Icons.menu_book_outlined, Icons.menu_book, iconSize, '书架'),
-                  _buildNavItem(1, Icons.explore_outlined, Icons.explore, iconSize, '发现'),
-                  _buildNavItem(2, Icons.rss_feed_outlined, Icons.rss_feed, iconSize, '订阅'),
-                  _buildNavItem(3, Icons.person_outline, Icons.person, iconSize, '我的'),
+                  _buildNavItem(
+                    0,
+                    Icons.menu_book_outlined,
+                    Icons.menu_book,
+                    iconSize,
+                    '书架',
+                  ),
+                  _buildNavItem(
+                    1,
+                    Icons.explore_outlined,
+                    Icons.explore,
+                    iconSize,
+                    '发现',
+                  ),
+                  _buildNavItem(
+                    2,
+                    Icons.rss_feed_outlined,
+                    Icons.rss_feed,
+                    iconSize,
+                    '订阅',
+                  ),
+                  _buildNavItem(
+                    3,
+                    Icons.person_outline,
+                    Icons.person,
+                    iconSize,
+                    '我的',
+                  ),
                 ],
               ),
             ),
@@ -285,11 +304,17 @@ class _MainPageState extends State<MainPage> {
     );
   }
 
-  Widget _buildNavItem(int index, IconData icon, IconData activeIcon, double iconSize, String label) {
+  Widget _buildNavItem(
+    int index,
+    IconData icon,
+    IconData activeIcon,
+    double iconSize,
+    String label,
+  ) {
     final isSelected = _currentIndex == index;
     final colorScheme = Theme.of(context).colorScheme;
     final navBarColor = context.read<AppProvider>().currentNavBarColor;
-    
+
     return Expanded(
       child: Tooltip(
         message: label,
@@ -310,9 +335,9 @@ class _MainPageState extends State<MainPage> {
             child: Icon(
               isSelected ? activeIcon : icon,
               size: iconSize,
-              color: isSelected 
-                ? colorScheme.secondary
-                : _navBarContentColor(navBarColor),
+              color: isSelected
+                  ? colorScheme.secondary
+                  : _navBarContentColor(navBarColor),
             ),
           ),
         ),
@@ -331,9 +356,11 @@ class _MainPageState extends State<MainPage> {
 
     final navBarColor = appProvider.currentNavBarColor;
     final opacity = appProvider.navBarOpacity / 100.0;
-    final borderColor = appProvider.navBarBorderColor != null 
-      ? Color(appProvider.navBarBorderColor!).withOpacity(appProvider.navBarBorderAlpha / 100.0)
-      : null;
+    final borderColor = appProvider.navBarBorderColor != null
+        ? Color(
+            appProvider.navBarBorderColor!,
+          ).withOpacity(appProvider.navBarBorderAlpha / 100.0)
+        : null;
 
     return Scaffold(
       body: PageView(
@@ -348,16 +375,31 @@ class _MainPageState extends State<MainPage> {
       bottomNavigationBar: Container(
         decoration: BoxDecoration(
           color: navBarColor.withOpacity(opacity),
-          border: borderColor != null 
-            ? Border(top: BorderSide(color: borderColor, width: 1))
-            : null,
+          border: borderColor != null
+              ? Border(top: BorderSide(color: borderColor, width: 1))
+              : null,
         ),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceEvenly,
           children: [
-            _buildStandardNavItem(0, Icons.menu_book_outlined, Icons.menu_book, '书架'),
-            _buildStandardNavItem(1, Icons.explore_outlined, Icons.explore, '发现'),
-            _buildStandardNavItem(2, Icons.rss_feed_outlined, Icons.rss_feed, '订阅'),
+            _buildStandardNavItem(
+              0,
+              Icons.menu_book_outlined,
+              Icons.menu_book,
+              '书架',
+            ),
+            _buildStandardNavItem(
+              1,
+              Icons.explore_outlined,
+              Icons.explore,
+              '发现',
+            ),
+            _buildStandardNavItem(
+              2,
+              Icons.rss_feed_outlined,
+              Icons.rss_feed,
+              '订阅',
+            ),
             _buildStandardNavItem(3, Icons.person_outline, Icons.person, '我的'),
           ],
         ),
@@ -365,10 +407,15 @@ class _MainPageState extends State<MainPage> {
     );
   }
 
-  Widget _buildStandardNavItem(int index, IconData icon, IconData activeIcon, String label) {
+  Widget _buildStandardNavItem(
+    int index,
+    IconData icon,
+    IconData activeIcon,
+    String label,
+  ) {
     final isSelected = _currentIndex == index;
     final colorScheme = Theme.of(context).colorScheme;
-    
+
     return Tooltip(
       message: label,
       child: GestureDetector(
@@ -388,22 +435,22 @@ class _MainPageState extends State<MainPage> {
               Icon(
                 isSelected ? activeIcon : icon,
                 size: 24,
-                color: isSelected 
-                  ? colorScheme.secondary
-                  : _navBarContentColor(
-                      context.read<AppProvider>().currentNavBarColor,
-                    ),
+                color: isSelected
+                    ? colorScheme.secondary
+                    : _navBarContentColor(
+                        context.read<AppProvider>().currentNavBarColor,
+                      ),
               ),
               const SizedBox(height: 4),
               Text(
                 label,
                 style: TextStyle(
                   fontSize: 12,
-                  color: isSelected 
-                    ? colorScheme.secondary
-                    : _navBarContentColor(
-                        context.read<AppProvider>().currentNavBarColor,
-                      ),
+                  color: isSelected
+                      ? colorScheme.secondary
+                      : _navBarContentColor(
+                          context.read<AppProvider>().currentNavBarColor,
+                        ),
                   fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
                 ),
               ),
@@ -450,12 +497,8 @@ class _MainPageState extends State<MainPage> {
           AnimatedPositioned(
             duration: const Duration(milliseconds: 250),
             curve: Curves.easeOutCubic,
-            left: sidebarGravity == 'start' 
-              ? (_sidebarOpen ? 0 : -280)
-              : null,
-            right: sidebarGravity == 'end'
-              ? (_sidebarOpen ? 0 : -280)
-              : null,
+            left: sidebarGravity == 'start' ? (_sidebarOpen ? 0 : -280) : null,
+            right: sidebarGravity == 'end' ? (_sidebarOpen ? 0 : -280) : null,
             top: 0,
             bottom: 0,
             child: _buildSidebar(),
@@ -468,7 +511,7 @@ class _MainPageState extends State<MainPage> {
   Widget _buildSidebar() {
     final colorScheme = Theme.of(context).colorScheme;
     final isDark = colorScheme.brightness == Brightness.dark;
-    
+
     return Container(
       width: 280,
       decoration: BoxDecoration(
@@ -542,11 +585,14 @@ class _MainPageState extends State<MainPage> {
             Container(
               padding: const EdgeInsets.all(16),
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 12,
+                ),
                 decoration: BoxDecoration(
-                  color: isDark 
-                    ? Colors.white.withOpacity(0.1)
-                    : Colors.black.withOpacity(0.05),
+                  color: isDark
+                      ? Colors.white.withOpacity(0.1)
+                      : Colors.black.withOpacity(0.05),
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: Row(
@@ -576,7 +622,7 @@ class _MainPageState extends State<MainPage> {
   Widget _buildSidebarItem(int index, IconData icon, String label) {
     final isSelected = _currentIndex == index && index < 4;
     final colorScheme = Theme.of(context).colorScheme;
-    
+
     return Tooltip(
       message: label,
       child: ListTile(
@@ -595,9 +641,7 @@ class _MainPageState extends State<MainPage> {
         ),
         selected: isSelected,
         selectedTileColor: colorScheme.secondary.withOpacity(0.12),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12),
-        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         onTap: () {
           if (index < 4) {
             _pageController.animateToPage(
@@ -607,11 +651,19 @@ class _MainPageState extends State<MainPage> {
             );
             _closeSidebar();
           } else if (index == 4) {
-            Navigator.pushNamed(context, '/settings');
+            _pageController.animateToPage(
+              3,
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeInOut,
+            );
             _closeSidebar();
           } else if (index == 5) {
-            Navigator.pushNamed(context, '/about');
             _closeSidebar();
+            showAboutDialog(
+              context: context,
+              applicationName: 'Legado Max',
+              applicationVersion: '1.0.0',
+            );
           }
         },
       ),

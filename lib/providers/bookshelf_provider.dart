@@ -271,7 +271,12 @@ class BookshelfProvider extends ChangeNotifier {
 
   Future<void> addToBookshelf(Book book) async {
     await StorageService.instance.addToBookshelf(book.toJson());
-    _books.insert(0, book);
+    final index = _books.indexWhere((item) => item.bookUrl == book.bookUrl);
+    if (index >= 0) {
+      _books[index] = book;
+    } else {
+      _books.insert(0, book);
+    }
     _applyFilterAndSort();
     notifyListeners();
   }
