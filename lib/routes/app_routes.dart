@@ -117,7 +117,10 @@ class AppRoutes {
       case txtTocRule:
         return AppPageRoute(builder: (_) => const TxtTocRulePage());
       case search:
-        return AppPageRoute(builder: (_) => const SearchPage());
+        final args = settings.arguments as Map<String, dynamic>?;
+        return AppPageRoute(
+          builder: (_) => SearchPage(initialKeyword: args?['keyword']),
+        );
       case detail:
         final args = settings.arguments;
         Map<String, dynamic>? argsMap;
@@ -166,6 +169,9 @@ class AppRoutes {
           builder: (_) => NovelReaderPage(
             bookUrl: argsMap?['bookUrl'] ?? argsMap?['bookId'] ?? '',
             chapterIndex: argsMap?['chapterIndex'] ?? 0,
+            resumeProgress:
+                argsMap?['resumeProgress'] == true ||
+                !(argsMap?.containsKey('chapterIndex') ?? false),
             initialBook: initialBook,
           ),
         );
@@ -192,6 +198,9 @@ class AppRoutes {
           builder: (_) => ComicReaderPage(
             bookUrl: argsMap?['bookUrl'] ?? argsMap?['bookId'] ?? '',
             chapterIndex: argsMap?['chapterIndex'] ?? 0,
+            resumeProgress:
+                argsMap?['resumeProgress'] == true ||
+                !(argsMap?.containsKey('chapterIndex') ?? false),
             initialBook: initialBook,
           ),
         );

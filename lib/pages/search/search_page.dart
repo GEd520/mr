@@ -28,12 +28,16 @@ class _SearchPageState extends State<SearchPage> {
   void initState() {
     super.initState();
 
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
       final provider = context.read<SearchProvider>();
       // 清空上次搜索结果
       provider.clearResults();
-      provider.loadBookSources();
-      provider.loadSearchHistory();
+      await provider.loadBookSources();
+      await provider.loadSearchHistory();
+      if (!mounted) return;
+      if (_searchController.text.trim().isNotEmpty) {
+        _performSearch();
+      }
     });
 
     if (widget.initialKeyword != null) {
@@ -87,10 +91,16 @@ class _SearchPageState extends State<SearchPage> {
                                 decoration: InputDecoration(
                                   hintText: '搜索书籍、漫画、视频...',
                                   hintStyle: const TextStyle(fontSize: 13),
-                                  prefixIcon: const Icon(Icons.search, size: 16),
+                                  prefixIcon: const Icon(
+                                    Icons.search,
+                                    size: 16,
+                                  ),
                                   suffixIcon: _searchController.text.isNotEmpty
                                       ? IconButton(
-                                          icon: const Icon(Icons.clear, size: 16),
+                                          icon: const Icon(
+                                            Icons.clear,
+                                            size: 16,
+                                          ),
                                           padding: EdgeInsets.zero,
                                           constraints: const BoxConstraints(),
                                           onPressed: () {
@@ -99,24 +109,25 @@ class _SearchPageState extends State<SearchPage> {
                                           },
                                         )
                                       : null,
-                                   border: OutlineInputBorder(
-                                     borderRadius: BorderRadius.circular(
-                                       searchRadius,
-                                     ),
-                                   ),
-                                   filled: appProvider.currentSearchFollow,
-                                   fillColor: appProvider.currentSearchFollow
-                                       ? Theme.of(context)
-                                             .colorScheme
-                                             .surface
-                                             .withValues(
-                                               alpha:
-                                                   appProvider
-                                                       .currentLayoutAlpha /
-                                                   100,
-                                             )
-                                       : null,
-                                  contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0),
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(
+                                      searchRadius,
+                                    ),
+                                  ),
+                                  filled: appProvider.currentSearchFollow,
+                                  fillColor: appProvider.currentSearchFollow
+                                      ? Theme.of(
+                                          context,
+                                        ).colorScheme.surface.withValues(
+                                          alpha:
+                                              appProvider.currentLayoutAlpha /
+                                              100,
+                                        )
+                                      : null,
+                                  contentPadding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 0,
+                                  ),
                                   isDense: true,
                                 ),
                                 style: const TextStyle(fontSize: 13),
@@ -130,7 +141,8 @@ class _SearchPageState extends State<SearchPage> {
                             icon: const Icon(Icons.more_vert),
                             tooltip: '更多选项',
                             offset: const Offset(0, 48),
-                            onSelected: (value) => _handleMenuSelection(value, provider),
+                            onSelected: (value) =>
+                                _handleMenuSelection(value, provider),
                             itemBuilder: (context) => [
                               PopupMenuItem(
                                 value: 'precision_search',
@@ -145,7 +157,8 @@ class _SearchPageState extends State<SearchPage> {
                                       child: Checkbox(
                                         value: _precisionSearch,
                                         onChanged: null,
-                                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                        materialTapTargetSize:
+                                            MaterialTapTargetSize.shrinkWrap,
                                       ),
                                     ),
                                   ],
@@ -164,7 +177,8 @@ class _SearchPageState extends State<SearchPage> {
                                       child: Checkbox(
                                         value: _showSearchProgress,
                                         onChanged: null,
-                                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                        materialTapTargetSize:
+                                            MaterialTapTargetSize.shrinkWrap,
                                       ),
                                     ),
                                   ],
@@ -183,7 +197,8 @@ class _SearchPageState extends State<SearchPage> {
                                       child: Checkbox(
                                         value: _isGridView,
                                         onChanged: null,
-                                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                        materialTapTargetSize:
+                                            MaterialTapTargetSize.shrinkWrap,
                                       ),
                                     ),
                                   ],
@@ -218,7 +233,9 @@ class _SearchPageState extends State<SearchPage> {
               if (provider.isLoading)
                 const LinearProgressIndicator(minHeight: 2),
               // 搜索进度显示
-              if (_showSearchProgress && provider.searchResults.isNotEmpty && provider.isLoading)
+              if (_showSearchProgress &&
+                  provider.searchResults.isNotEmpty &&
+                  provider.isLoading)
                 Container(
                   padding: const EdgeInsets.symmetric(vertical: 8),
                   child: Text(
@@ -234,10 +251,10 @@ class _SearchPageState extends State<SearchPage> {
                 child: provider.error != null
                     ? _buildErrorState(provider)
                     : provider.searchResults.isNotEmpty
-                        ? _buildResultsView(provider)
-                        : provider.isLoading
-                            ? const Center(child: CircularProgressIndicator())
-                            : _buildEmptyState(provider),
+                    ? _buildResultsView(provider)
+                    : provider.isLoading
+                    ? const Center(child: CircularProgressIndicator())
+                    : _buildEmptyState(provider),
               ),
             ],
           );
@@ -291,9 +308,7 @@ class _SearchPageState extends State<SearchPage> {
           const SizedBox(height: 16),
           Text(
             provider.error!,
-            style: TextStyle(
-              color: Theme.of(context).colorScheme.error,
-            ),
+            style: TextStyle(color: Theme.of(context).colorScheme.error),
           ),
           const SizedBox(height: 16),
           ElevatedButton(
@@ -316,10 +331,7 @@ class _SearchPageState extends State<SearchPage> {
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Text(
-                    '搜索历史',
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
+                  Text('搜索历史', style: Theme.of(context).textTheme.titleMedium),
                   TextButton(
                     onPressed: () => provider.clearHistory(),
                     child: const Text('清空'),
@@ -402,117 +414,123 @@ class _SearchPageState extends State<SearchPage> {
 
     return RepaintBoundary(
       child: InkWell(
-      onTap: () => _openDetail(result),
-      child: Padding(
-        padding: const EdgeInsets.all(8),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // 封面（参考原版：80x110）
-            ClipRRect(
-              borderRadius: BorderRadius.circular(4),
-              child: SizedBox(
-                width: 80,
-                height: 110,
-                child: _buildSearchCoverImage(
-                  coverUrl,
-                  bookName: result['name']?.toString(),
-                  bookAuthor: author,
+        onTap: () => _openDetail(result),
+        child: Padding(
+          padding: const EdgeInsets.all(8),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // 封面（参考原版：80x110）
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: SizedBox(
+                  width: 80,
+                  height: 110,
+                  child: _buildSearchCoverImage(
+                    coverUrl,
+                    bookName: result['name']?.toString(),
+                    bookAuthor: author,
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(width: 8),
-            // 右侧信息
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // 书名（参考原版：16sp）
-                  Text(
-                    result['name']?.toString() ?? '未知书名',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                  const SizedBox(height: 3),
-                  // 作者（参考原版：12sp）
-                  Text(
-                    '作者：$author',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                  const SizedBox(height: 3),
-                  // 分类标签
-                  if (tags.isNotEmpty)
-                    Wrap(
-                      spacing: 4,
-                      runSpacing: 2,
-                      children: tags.take(3).map((tag) {
-                        return Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                          decoration: BoxDecoration(
-                            color: Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.3),
-                            borderRadius: BorderRadius.circular(2),
-                          ),
-                          child: Text(
-                            tag,
-                            style: TextStyle(
-                              fontSize: 10,
-                              color: Theme.of(context).colorScheme.primary,
-                            ),
-                          ),
-                        );
-                      }).toList(),
-                    ),
-                  if (tags.isNotEmpty) const SizedBox(height: 3),
-                  // 最新章节（参考原版：12sp）
-                  Text(
-                    lastChapter.isEmpty ? '暂无章节' : '最新：$lastChapter',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: Theme.of(context).colorScheme.primary,
-                    ),
-                  ),
-                  const SizedBox(height: 3),
-                  // 简介（参考原版：12sp）
-                  Text(
-                    intro.isEmpty ? '暂无简介' : intro,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 12,
-                      height: 1.3,
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                  // 书源名称
-                  if (sourceName.isNotEmpty) ...[
-                    const SizedBox(height: 2),
+              const SizedBox(width: 8),
+              // 右侧信息
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // 书名（参考原版：16sp）
                     Text(
-                      sourceName,
+                      result['name']?.toString() ?? '未知书名',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    // 作者（参考原版：12sp）
+                    Text(
+                      '作者：$author',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        fontSize: 10,
-                        color: Theme.of(context).colorScheme.outline,
+                        fontSize: 12,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
                       ),
                     ),
+                    const SizedBox(height: 3),
+                    // 分类标签
+                    if (tags.isNotEmpty)
+                      Wrap(
+                        spacing: 4,
+                        runSpacing: 2,
+                        children: tags.take(3).map((tag) {
+                          return Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 4,
+                              vertical: 1,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .primaryContainer
+                                  .withValues(alpha: 0.3),
+                              borderRadius: BorderRadius.circular(2),
+                            ),
+                            child: Text(
+                              tag,
+                              style: TextStyle(
+                                fontSize: 10,
+                                color: Theme.of(context).colorScheme.primary,
+                              ),
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                    if (tags.isNotEmpty) const SizedBox(height: 3),
+                    // 最新章节（参考原版：12sp）
+                    Text(
+                      lastChapter.isEmpty ? '暂无章节' : '最新：$lastChapter',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Theme.of(context).colorScheme.primary,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    // 简介（参考原版：12sp）
+                    Text(
+                      intro.isEmpty ? '暂无简介' : intro,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12,
+                        height: 1.3,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                    // 书源名称
+                    if (sourceName.isNotEmpty) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        sourceName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: Theme.of(context).colorScheme.outline,
+                        ),
+                      ),
+                    ],
                   ],
-                ],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
-      ),
       ),
     );
   }
@@ -540,15 +558,13 @@ class _SearchPageState extends State<SearchPage> {
     final lastChapter = result['lastChapter']?.toString().trim() ?? '';
     final author = result['author']?.toString().trim() ?? '未知作者';
     final sourceName = result['sourceName']?.toString().trim() ?? '';
-    
+
     return GestureDetector(
       onTap: () => _openDetail(result),
       child: Card(
         clipBehavior: Clip.antiAlias,
         elevation: 0,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(4),
-        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -636,7 +652,11 @@ class _SearchPageState extends State<SearchPage> {
   }
 
   /// 构建搜索结果封面 - 接入封面配置
-  Widget _buildSearchCoverImage(String coverUrl, {String? bookName, String? bookAuthor}) {
+  Widget _buildSearchCoverImage(
+    String coverUrl, {
+    String? bookName,
+    String? bookAuthor,
+  }) {
     final coverConfig = CoverConfigService.instance;
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
@@ -656,8 +676,10 @@ class _SearchPageState extends State<SearchPage> {
         fit: BoxFit.cover,
         memCacheWidth: memCacheWidth,
         maxWidthDiskCache: maxWidthDiskCache,
-        placeholder: (_, __) => _coverPlaceholder(bookName: bookName, bookAuthor: bookAuthor),
-        errorWidget: (_, __, ___) => _coverPlaceholder(bookName: bookName, bookAuthor: bookAuthor),
+        placeholder: (_, __) =>
+            _coverPlaceholder(bookName: bookName, bookAuthor: bookAuthor),
+        errorWidget: (_, __, ___) =>
+            _coverPlaceholder(bookName: bookName, bookAuthor: bookAuthor),
       );
     }
 
@@ -690,10 +712,7 @@ class _SearchPageState extends State<SearchPage> {
     Navigator.pushNamed(
       context,
       AppRoutes.detail,
-      arguments: {
-        'bookUrl': result['bookUrl'],
-        'bookData': bookData,
-      },
+      arguments: {'bookUrl': result['bookUrl'], 'bookData': bookData},
     );
   }
 
@@ -719,7 +738,10 @@ class _SearchPageState extends State<SearchPage> {
   void _performSearch() {
     final keyword = _searchController.text.trim();
     if (keyword.isEmpty) return;
-    context.read<SearchProvider>().search(keyword, precisionSearch: _precisionSearch);
+    context.read<SearchProvider>().search(
+      keyword,
+      precisionSearch: _precisionSearch,
+    );
   }
 
   void _handleMenuSelection(String value, SearchProvider provider) {
@@ -766,7 +788,9 @@ class _SearchPageState extends State<SearchPage> {
                   title: const Text('全部书源'),
                   trailing: Radio<bool>(
                     value: true,
-                    groupValue: provider.selectedSourceUrls.length == provider.bookSources.length,
+                    groupValue:
+                        provider.selectedSourceUrls.length ==
+                        provider.bookSources.length,
                     onChanged: (_) {
                       provider.selectAllSources();
                       Navigator.pop(context);
@@ -779,7 +803,9 @@ class _SearchPageState extends State<SearchPage> {
                 ),
                 const Divider(),
                 ...provider.bookSources.map((source) {
-                  final isSelected = provider.selectedSourceUrls.contains(source.bookSourceUrl);
+                  final isSelected = provider.selectedSourceUrls.contains(
+                    source.bookSourceUrl,
+                  );
                   return ListTile(
                     title: Text(source.bookSourceName),
                     subtitle: Text(
@@ -823,9 +849,7 @@ class _SearchPageState extends State<SearchPage> {
           content: const SizedBox(
             width: double.maxFinite,
             height: 300,
-            child: Center(
-              child: Text('暂无日志'),
-            ),
+            child: Center(child: Text('暂无日志')),
           ),
           actions: [
             TextButton(
@@ -888,7 +912,9 @@ class _SearchPageState extends State<SearchPage> {
                                 onPressed: () {
                                   Navigator.pop(context);
                                   Navigator.pushNamed(
-                                      context, AppRoutes.profile);
+                                    context,
+                                    AppRoutes.profile,
+                                  );
                                 },
                                 child: const Text('导入书源'),
                               ),
@@ -906,16 +932,17 @@ class _SearchPageState extends State<SearchPage> {
                               value: isSelected,
                               onChanged: (checked) {
                                 provider.toggleSourceSelection(
-                                    source.bookSourceUrl);
+                                  source.bookSourceUrl,
+                                );
                               },
                               title: Text(source.bookSourceName),
                               subtitle: Text(
                                 source.bookSourceGroup ?? '默认分组',
                                 style: TextStyle(
                                   fontSize: 12,
-                                  color: Theme.of(context)
-                                      .colorScheme
-                                      .onSurfaceVariant,
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.onSurfaceVariant,
                                 ),
                               ),
                               secondary: _buildSourceTypeIcon(source),

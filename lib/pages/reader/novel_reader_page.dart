@@ -26,12 +26,14 @@ import '../../routes/app_routes.dart';
 class NovelReaderPage extends StatefulWidget {
   final String bookUrl;
   final int chapterIndex;
+  final bool resumeProgress;
   final Book? initialBook;
 
   const NovelReaderPage({
     super.key,
     required this.bookUrl,
     this.chapterIndex = 0,
+    this.resumeProgress = false,
     this.initialBook,
   });
 
@@ -48,17 +50,19 @@ class _NovelReaderPageState extends State<NovelReaderPage>
   int _currentChapterIndex = 0;
   int _totalChapters = 0;
   bool _isLoading = true;
+  bool _restoreInitialPosition = false;
+  int _initialChapterPos = 0;
+  int? _pendingInitialPage;
+  bool _pendingInitialPageToEnd = false;
+  bool _isChangingChapterByPageView = false;
   Book? _book;
   BookSource? _bookSource;
   List<Chapter> _chapters = [];
   BookDataProvider? _dataProvider;
   double _sliderValue = 0; // 滑动进度条的实时值
-  bool _isSliderDragging = false; // 进度条是否正在拖拽
-
-  String? _prevContent;
   String? _nextContent;
-  String? _prevChapterTitle;
-  String? _nextChapterTitle;
+  int? _nextContentChapterIndex;
+  int _chapterLoadToken = 0;
 
   // Pagination for non-scroll modes
   List<String> _pages = [];
@@ -86,18 +90,18 @@ class _NovelReaderPageState extends State<NovelReaderPage>
 
   // 增强版控制
   final bool _useEnhancedControls = true;
-  bool _showSettingsSheet = false;
   bool _hasBookmark = false;
   double _ttsSpeed = 1.0;
-  
+
   // 阅读记录
   int _readStartTime = 0;
+  Timer? _progressSaveTimer;
 
   @override
   void initState() {
     super.initState();
-    _currentChapterIndex = widget.chapterIndex;
-    _sliderValue = widget.chapterIndex.toDouble();
+    _currentChapterIndex = widget.resumeProgress ? 0 : widget.chapterIndex;
+    _sliderValue = _currentChapterIndex.toDouble();
     _readStartTime = ReadRecordService.instance.startReading();
 
     _menuAnimController = AnimationController(
@@ -117,6 +121,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
 
   @override
   void dispose() {
+    _progressSaveTimer?.cancel();
     _menuAnimController.dispose();
     _scrollController.dispose();
     _pageController?.dispose();
@@ -170,9 +175,11 @@ class _NovelReaderPageState extends State<NovelReaderPage>
     if (_hasBookmark) {
       // 移除书签
       final bookmarks = provider.bookmarks
-          .where((b) =>
-              b.bookUrl == _book!.bookUrl &&
-              b.chapterIndex == _currentChapterIndex)
+          .where(
+            (b) =>
+                b.bookUrl == _book!.bookUrl &&
+                b.chapterIndex == _currentChapterIndex,
+          )
           .toList();
       for (final b in bookmarks) {
         await provider.removeBookmark(_book!.bookUrl, b.id);
@@ -191,9 +198,9 @@ class _NovelReaderPageState extends State<NovelReaderPage>
   }
 
   void _showEnhancedSettings() {
-    setState(() {
-      _showSettingsSheet = true;
-    });
+    final provider = context.read<ReaderProvider>();
+    _hideMenu();
+    _showInterfaceSettingsDialog(provider);
   }
 
   void _startTts() {
@@ -238,6 +245,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
 
     final maxScroll = _scrollController.position.maxScrollExtent;
     final currentScroll = _scrollController.position.pixels;
+    _scheduleProgressSave(pos: currentScroll.round());
 
     // Auto-load next chapter when near bottom
     if (maxScroll - currentScroll < 500 && _nextContent == null) {
@@ -254,12 +262,21 @@ class _NovelReaderPageState extends State<NovelReaderPage>
         _chapters = await _dataProvider!.getChapterList(_book!);
         _totalChapters = _chapters.length;
         if (_totalChapters > 0) {
-          _currentChapterIndex =
-              widget.chapterIndex.clamp(0, _totalChapters - 1);
+          final initialIndex = widget.resumeProgress
+              ? _book!.durChapterIndex
+              : widget.chapterIndex;
+          _currentChapterIndex = _readableChapterIndex(initialIndex);
+          _initialChapterPos = widget.resumeProgress ? _book!.durChapterPos : 0;
+          _restoreInitialPosition =
+              widget.resumeProgress && _initialChapterPos > 0;
+          _sliderValue = _currentChapterIndex.toDouble();
         }
         // 加载书源信息
-        if (_book!.originType == BookOriginType.online && _book!.sourceUrl != null) {
-          final sourceData = StorageService.instance.getBookSource(_book!.sourceUrl!);
+        if (_book!.originType == BookOriginType.online &&
+            _book!.sourceUrl != null) {
+          final sourceData = StorageService.instance.getBookSource(
+            _book!.sourceUrl!,
+          );
           if (sourceData != null) {
             _bookSource = BookSource.fromJson(sourceData);
           }
@@ -284,16 +301,20 @@ class _NovelReaderPageState extends State<NovelReaderPage>
       return;
     }
 
+    final loadToken = ++_chapterLoadToken;
+    final chapterIndex = _currentChapterIndex;
     setState(() {
       _isLoading = true;
       _sliderValue = _currentChapterIndex.toDouble();
+      _nextContent = null;
+      _nextContentChapterIndex = null;
     });
 
-    final chapter = _currentChapterIndex < _chapters.length
-        ? _chapters[_currentChapterIndex]
+    final chapter = chapterIndex < _chapters.length
+        ? _chapters[chapterIndex]
         : null;
 
-    if (chapter == null) {
+    if (chapter == null || chapter.isVolume) {
       setState(() {
         _isLoading = false;
         _content = '章节不存在';
@@ -304,21 +325,36 @@ class _NovelReaderPageState extends State<NovelReaderPage>
     // 优先从缓存读取
     String? content;
     if (_book!.originType == BookOriginType.online) {
-      content = await ChapterCacheService.instance.readChapterContent(_book!, chapter);
+      content = await ChapterCacheService.instance.readChapterContent(
+        _book!,
+        chapter,
+      );
     }
 
     // 缓存没有则从网络获取
     if (content == null || content.isEmpty) {
-      content = await _dataProvider!.getContent(_book!, chapter, allChapters: _chapters);
+      content = await _dataProvider!.getContent(
+        _book!,
+        chapter,
+        allChapters: _chapters,
+      );
       // 保存到缓存
-      if (content != null && content.isNotEmpty && _book!.originType == BookOriginType.online) {
-        unawaited(ChapterCacheService.instance.saveChapterContent(_book!, chapter, content));
+      if (content != null &&
+          content.isNotEmpty &&
+          _book!.originType == BookOriginType.online) {
+        unawaited(
+          ChapterCacheService.instance.saveChapterContent(
+            _book!,
+            chapter,
+            content,
+          ),
+        );
       }
     }
 
-    _preloadAdjacentChapters();
-
-    if (mounted) {
+    if (mounted &&
+        loadToken == _chapterLoadToken &&
+        chapterIndex == _currentChapterIndex) {
       setState(() {
         _chapterTitle = chapter.title;
         _chapterUrl = chapter.url?.split(',{').first.trim();
@@ -332,98 +368,305 @@ class _NovelReaderPageState extends State<NovelReaderPage>
       // 检查书签
       _checkBookmark();
 
-      _repaginate();
+      final provider = context.read<ReaderProvider>();
+      final restorePos = _pendingInitialPageToEnd
+          ? 1 << 30
+          : _pendingInitialPage ??
+                (_restoreInitialPosition ? _initialChapterPos : 0);
+      _restoreInitialPosition = false;
+      _pendingInitialPage = null;
+      _pendingInitialPageToEnd = false;
+      _repaginate(initialPage: restorePos);
 
       // 滚动模式下重置滚动位置到顶部
-      final provider = context.read<ReaderProvider>();
-      if (provider.pageMode == PageMode.scroll && _scrollController.hasClients) {
-        _scrollController.jumpTo(0);
+      if (provider.pageMode == PageMode.scroll) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && _scrollController.hasClients) {
+            final target = restorePos > 0 ? restorePos.toDouble() : 0.0;
+            _scrollController.jumpTo(
+              target.clamp(0.0, _scrollController.position.maxScrollExtent),
+            );
+          }
+        });
       }
 
-      context.read<BookshelfProvider>().updateBookProgress(
-            widget.bookUrl,
-            durChapterIndex: _currentChapterIndex,
-            durChapterTitle: chapter.title,
-          );
+      unawaited(_saveCurrentProgress(chapter: chapter, pos: restorePos));
+      unawaited(_preloadAdjacentChapters(_currentChapterIndex));
     }
   }
 
-  Future<void> _preloadAdjacentChapters() async {
+  int _readableChapterIndex(int index) {
+    if (_chapters.isEmpty) return 0;
+    var target = index.clamp(0, _chapters.length - 1);
+    if (!_chapters[target].isVolume) return target;
+
+    for (var i = target + 1; i < _chapters.length; i++) {
+      if (!_chapters[i].isVolume) return i;
+    }
+    for (var i = target - 1; i >= 0; i--) {
+      if (!_chapters[i].isVolume) return i;
+    }
+    return target;
+  }
+
+  int? _nextReadableChapterIndex(int fromIndex) {
+    for (var i = fromIndex + 1; i < _chapters.length; i++) {
+      if (!_chapters[i].isVolume) return i;
+    }
+    return null;
+  }
+
+  int? _previousReadableChapterIndex(int fromIndex) {
+    for (var i = fromIndex - 1; i >= 0; i--) {
+      if (!_chapters[i].isVolume) return i;
+    }
+    return null;
+  }
+
+  void _scheduleProgressSave({int? pos}) {
+    _progressSaveTimer?.cancel();
+    _progressSaveTimer = Timer(const Duration(milliseconds: 700), () {
+      unawaited(_saveCurrentProgress(pos: pos));
+    });
+  }
+
+  Future<void> _saveCurrentProgress({Chapter? chapter, int? pos}) async {
+    if (!mounted) return;
+    final book = _book;
+    if (book == null) return;
+    final chapterTitle = chapter?.title ?? _chapterTitle;
+    final chapterPos = pos ?? _currentChapterPos();
+
+    _book = book.copyWith(
+      durChapterIndex: _currentChapterIndex,
+      durChapterTitle: chapterTitle,
+      durChapterPos: chapterPos,
+      durChapterTime: DateTime.now(),
+    );
+
+    await context.read<BookshelfProvider>().updateBookProgress(
+      book.bookUrl,
+      durChapterIndex: _currentChapterIndex,
+      durChapterTitle: chapterTitle,
+      durChapterPos: chapterPos,
+    );
+  }
+
+  int _currentChapterPos() {
+    final provider = context.read<ReaderProvider>();
+    if (provider.pageMode == PageMode.scroll && _scrollController.hasClients) {
+      return _scrollController.offset.round();
+    }
+    return _currentPage;
+  }
+
+  Future<void> _preloadAdjacentChapters(int chapterIndex) async {
     if (_book == null) return;
 
-    if (_currentChapterIndex > 0) {
-      final prevChapter = _chapters[_currentChapterIndex - 1];
-      _prevContent = await _dataProvider!.getContent(_book!, prevChapter,
-          allChapters: _chapters);
-      _prevChapterTitle = prevChapter.title;
-    } else {
-      _prevContent = null;
-      _prevChapterTitle = null;
+    String? nextContent;
+
+    final nextIndex = _nextReadableChapterIndex(chapterIndex);
+    if (nextIndex != null) {
+      final nextChapter = _chapters[nextIndex];
+      nextContent = await _dataProvider!.getContent(
+        _book!,
+        nextChapter,
+        allChapters: _chapters,
+      );
     }
 
-    if (_currentChapterIndex < _totalChapters - 1) {
-      final nextChapter = _chapters[_currentChapterIndex + 1];
-      _nextContent = await _dataProvider!.getContent(_book!, nextChapter,
-          allChapters: _chapters);
-      _nextChapterTitle = nextChapter.title;
-    } else {
-      _nextContent = null;
-      _nextChapterTitle = null;
-    }
+    if (!mounted || _currentChapterIndex != chapterIndex) return;
+    setState(() {
+      _nextContent = nextContent;
+      _nextContentChapterIndex = nextContent == null ? null : nextIndex;
+    });
   }
 
   Future<void> _preloadNextChapter() async {
     if (_book == null || _nextContent != null) return;
-    if (_currentChapterIndex < _totalChapters - 1) {
-      final nextChapter = _chapters[_currentChapterIndex + 1];
-      _nextContent = await _dataProvider!.getContent(_book!, nextChapter,
-          allChapters: _chapters);
-      _nextChapterTitle = nextChapter.title;
+    final nextIndex = _nextReadableChapterIndex(_currentChapterIndex);
+    if (nextIndex != null) {
+      final nextChapter = _chapters[nextIndex];
+      _nextContent = await _dataProvider!.getContent(
+        _book!,
+        nextChapter,
+        allChapters: _chapters,
+      );
+      _nextContentChapterIndex = nextIndex;
       if (mounted) setState(() {});
     }
   }
 
   // ==================== Pagination ====================
 
-  void _repaginate() {
+  void _repaginate({int initialPage = 0}) {
     final provider = context.read<ReaderProvider>();
     if (provider.pageMode == PageMode.scroll) return;
 
     _pages = _splitContentToPages(_content, provider);
-    _currentPage = 0;
+    _currentPage = initialPage.clamp(0, max(_pages.length - 1, 0));
     _pageController?.dispose();
-    _pageController = PageController(initialPage: 0);
+    _pageController = PageController(
+      initialPage: _currentPage + _pagedLeadingCount,
+    );
+    _isChangingChapterByPageView = false;
     if (mounted) setState(() {});
   }
 
-  List<String> _splitContentToPages(String content, ReaderProvider provider) {
-    final charsPerPage = _estimateCharsPerPage(provider);
-    final paragraphs = _splitToParagraphs(content);
-    final pages = <String>[];
-    var currentPage = StringBuffer();
-
-    for (final para in paragraphs) {
-      if (currentPage.length + para.length > charsPerPage &&
-          currentPage.isNotEmpty) {
-        pages.add(currentPage.toString());
-        currentPage = StringBuffer();
-      }
-      currentPage.writeln(para);
+  void _repaginatePreservingPosition() {
+    final provider = context.read<ReaderProvider>();
+    var fraction = 0.0;
+    if (_pages.length > 1) {
+      fraction = _currentPage / (_pages.length - 1);
+    } else if (_scrollController.hasClients &&
+        _scrollController.position.maxScrollExtent > 0) {
+      fraction =
+          _scrollController.offset / _scrollController.position.maxScrollExtent;
     }
 
-    if (currentPage.isNotEmpty) {
-      pages.add(currentPage.toString());
+    if (provider.pageMode == PageMode.scroll) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !_scrollController.hasClients) return;
+        _scrollController.jumpTo(
+          (_scrollController.position.maxScrollExtent *
+                  fraction.clamp(0.0, 1.0))
+              .clamp(0.0, _scrollController.position.maxScrollExtent),
+        );
+      });
+      return;
+    }
+
+    _pages = _splitContentToPages(_content, provider);
+    final lastPage = max(_pages.length - 1, 0);
+    _currentPage = (fraction.clamp(0.0, 1.0) * lastPage).round();
+    _pageController?.dispose();
+    _pageController = PageController(
+      initialPage: _currentPage + _pagedLeadingCount,
+    );
+    _isChangingChapterByPageView = false;
+    if (mounted) setState(() {});
+    unawaited(_saveCurrentProgress(pos: _currentPage));
+  }
+
+  List<String> _splitContentToPages(String content, ReaderProvider provider) {
+    final paragraphs = _splitToParagraphs(content);
+    final pages = <String>[];
+    if (paragraphs.isEmpty) return [''];
+
+    final metrics = _pageMetrics(provider);
+    final textStyle = _readerTextStyle(provider);
+    var page = StringBuffer();
+    var usedHeight = provider.showChapterTitle
+        ? _measureTextHeight(
+                _chapterTitle,
+                _titleTextStyle(provider),
+                metrics.width,
+              ) +
+              provider.paragraphSpacing
+        : 0.0;
+
+    for (final rawParagraph in paragraphs) {
+      var paragraph = _applyIndent(rawParagraph, provider);
+      while (paragraph.isNotEmpty) {
+        final paragraphHeight =
+            _measureTextHeight(paragraph, textStyle, metrics.width) +
+            provider.paragraphSpacing;
+
+        if (usedHeight + paragraphHeight <= metrics.height) {
+          page.writeln(paragraph);
+          usedHeight += paragraphHeight;
+          paragraph = '';
+          continue;
+        }
+
+        if (page.isNotEmpty) {
+          pages.add(page.toString().trimRight());
+          page = StringBuffer();
+          usedHeight = 0;
+          continue;
+        }
+
+        final splitIndex = _findFittingTextIndex(
+          paragraph,
+          textStyle,
+          metrics.width,
+          max(metrics.height - provider.paragraphSpacing, provider.fontSize),
+        );
+        pages.add(paragraph.substring(0, splitIndex).trimRight());
+        paragraph = paragraph.substring(splitIndex).trimLeft();
+      }
+    }
+
+    if (page.isNotEmpty) {
+      pages.add(page.toString().trimRight());
     }
 
     return pages.isEmpty ? [''] : pages;
   }
 
-  int _estimateCharsPerPage(ReaderProvider provider) {
-    // Rough estimate: assume ~800 chars per page for typical novel reading
-    // Adjust based on font size
-    final baseChars = 800;
-    final fontSizeRatio = 18.0 / provider.fontSize;
-    return (baseChars * fontSizeRatio).round().clamp(200, 2000);
+  ({double width, double height}) _pageMetrics(ReaderProvider provider) {
+    final mq = MediaQuery.of(context);
+    final width = max(80.0, mq.size.width - provider.horizontalPadding * 2);
+    final height = max(
+      120.0,
+      mq.size.height -
+          mq.padding.top -
+          mq.padding.bottom -
+          provider.verticalPadding * 2,
+    );
+    return (width: width, height: height);
+  }
+
+  TextStyle _titleTextStyle(ReaderProvider provider) {
+    return TextStyle(
+      fontSize: provider.fontSize + 4,
+      fontWeight: FontWeight.bold,
+      color: provider.textColor,
+      height: provider.lineHeight,
+      fontFamily: provider.fontFamily.isNotEmpty ? provider.fontFamily : null,
+    );
+  }
+
+  TextStyle _readerTextStyle(ReaderProvider provider) {
+    return TextStyle(
+      fontSize: provider.fontSize,
+      color: provider.textColor,
+      height: provider.lineHeight,
+      letterSpacing: provider.letterSpacing,
+      fontWeight: _readerFontWeight(provider),
+      fontFamily: provider.fontFamily.isNotEmpty ? provider.fontFamily : null,
+    );
+  }
+
+  double _measureTextHeight(String text, TextStyle style, double width) {
+    final painter = TextPainter(
+      text: TextSpan(text: text, style: style),
+      textDirection: TextDirection.ltr,
+      maxLines: null,
+    )..layout(maxWidth: width);
+    return painter.height;
+  }
+
+  int _findFittingTextIndex(
+    String text,
+    TextStyle style,
+    double width,
+    double height,
+  ) {
+    var low = 1;
+    var high = text.length;
+    var best = 1;
+    while (low <= high) {
+      final mid = (low + high) >> 1;
+      final candidate = text.substring(0, mid);
+      if (_measureTextHeight(candidate, style, width) <= height) {
+        best = mid;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    return best.clamp(1, text.length);
   }
 
   List<String> _splitToParagraphs(String content) {
@@ -435,7 +678,8 @@ class _NovelReaderPageState extends State<NovelReaderPage>
 
   // ==================== Tap Zone ====================
 
-  void _handleTap(TapDownDetails details) {
+  void _handleTap(TapUpDetails details) {
+    if (_showMenu || _isLoading) return;
     final provider = context.read<ReaderProvider>();
     final size = MediaQuery.of(context).size;
     final x = details.globalPosition.dx;
@@ -476,19 +720,32 @@ class _NovelReaderPageState extends State<NovelReaderPage>
   void _previousPage() {
     final provider = context.read<ReaderProvider>();
     if (provider.pageMode == PageMode.scroll) {
+      if (!_scrollController.hasClients) return;
+      if (_scrollController.offset <= 8) {
+        _previousChapter(toLastPage: true);
+        return;
+      }
       _scrollController.animateTo(
-        max(_scrollController.offset - 300, 0),
-        duration: const Duration(milliseconds: 300),
+        max(_scrollController.offset - _scrollPageExtent(), 0),
+        duration: _pageAnimationDuration(provider),
         curve: Curves.easeOut,
       );
     } else {
       if (_currentPage > 0) {
-        _pageController?.previousPage(
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeOut,
-        );
+        if (provider.pageMode == PageMode.simulation) {
+          setState(() => _currentPage--);
+          _scheduleProgressSave(pos: _currentPage);
+        } else if (_pageController?.hasClients == true) {
+          _pageController?.previousPage(
+            duration: _pageAnimationDuration(provider),
+            curve: Curves.easeOut,
+          );
+        } else {
+          setState(() => _currentPage--);
+          _scheduleProgressSave(pos: _currentPage);
+        }
       } else {
-        _previousChapter();
+        _previousChapter(toLastPage: true);
       }
     }
   }
@@ -496,36 +753,64 @@ class _NovelReaderPageState extends State<NovelReaderPage>
   void _nextPage() {
     final provider = context.read<ReaderProvider>();
     if (provider.pageMode == PageMode.scroll) {
+      if (!_scrollController.hasClients) return;
+      final maxScroll = _scrollController.position.maxScrollExtent;
+      if (_scrollController.offset >= maxScroll - 8) {
+        _nextChapter();
+        return;
+      }
       _scrollController.animateTo(
-        _scrollController.offset + 300,
-        duration: const Duration(milliseconds: 300),
+        min(_scrollController.offset + _scrollPageExtent(), maxScroll),
+        duration: _pageAnimationDuration(provider),
         curve: Curves.easeOut,
       );
     } else {
       if (_currentPage < _pages.length - 1) {
-        _pageController?.nextPage(
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeOut,
-        );
+        if (provider.pageMode == PageMode.simulation) {
+          setState(() => _currentPage++);
+          _scheduleProgressSave(pos: _currentPage);
+        } else if (_pageController?.hasClients == true) {
+          _pageController?.nextPage(
+            duration: _pageAnimationDuration(provider),
+            curve: Curves.easeOut,
+          );
+        } else {
+          setState(() => _currentPage++);
+          _scheduleProgressSave(pos: _currentPage);
+        }
       } else {
         _nextChapter();
       }
     }
   }
 
-  void _previousChapter() {
-    if (_currentChapterIndex > 0) {
+  double _scrollPageExtent() {
+    final viewport = _scrollController.hasClients
+        ? _scrollController.position.viewportDimension
+        : MediaQuery.of(context).size.height;
+    return max(120.0, viewport - 48);
+  }
+
+  Duration _pageAnimationDuration(ReaderProvider provider) {
+    return Duration(milliseconds: provider.pageAnimDurationMs.clamp(80, 1200));
+  }
+
+  void _previousChapter({bool toLastPage = false}) {
+    final previousIndex = _previousReadableChapterIndex(_currentChapterIndex);
+    if (previousIndex != null) {
+      _pendingInitialPageToEnd = toLastPage;
       setState(() {
-        _currentChapterIndex--;
+        _currentChapterIndex = previousIndex;
       });
       _loadChapterContent();
     }
   }
 
   void _nextChapter() {
-    if (_currentChapterIndex < _totalChapters - 1) {
+    final nextIndex = _nextReadableChapterIndex(_currentChapterIndex);
+    if (nextIndex != null) {
       setState(() {
-        _currentChapterIndex++;
+        _currentChapterIndex = nextIndex;
       });
       _loadChapterContent();
     }
@@ -567,7 +852,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
       child: Scaffold(
         backgroundColor: provider.backgroundColor,
         body: GestureDetector(
-          onTapDown: _handleTap,
+          onTapUp: _handleTap,
           onLongPressStart: _onLongPressStart,
           child: Stack(
             children: [
@@ -589,163 +874,89 @@ class _NovelReaderPageState extends State<NovelReaderPage>
                   onStop: _stopTts,
                   onCycleSpeed: _cycleTtsSpeed,
                   onSpeedChanged: (speed) {
-                  _ttsSpeed = speed;
-                  provider.setTtsRate(speed);
-                },
-                speed: _ttsSpeed,
-              ),
-            // 增强版控制面板
-            if (_useEnhancedControls && _showMenu)
-              ReaderControlOverlay(
-                bookName: _book?.name ?? '',
-                chapterTitle: _chapterTitle,
-                chapterUrl: _chapterUrl,
-                sourceName: _book?.sourceName ?? (_book?.originType == BookOriginType.local ? '本地书籍' : ''),
-                hasBookSource: _bookSource != null,
-                currentChapter: _currentChapterIndex,
-                totalChapters: _totalChapters,
-                hasBookmark: _hasBookmark,
-                hasPrev: _currentChapterIndex > 0,
-                hasNext: _currentChapterIndex < _totalChapters - 1,
-                isAutoScroll: false,
-                isNightMode: provider.isNightMode,
-                sliderValue: _sliderValue,
-                onBack: () => Navigator.pop(context),
-                onChangeSource: _showChangeSourceDialog,
-                onOpenDetail: _openBookDetail,
-                onOpenChapterUrl: _openChapterUrl,
-                onEditSource: () => _handleSourceAction('edit'),
-                onDisableSource: () => _handleSourceAction('disable'),
-                onRefresh: () {
-                  _loadChapterContent();
-                },
-                onDownload: _showCacheOptions,
-                onToggleBookmark: _toggleBookmark,
-                onClose: _hideMenu,
-                onPrevChapter: () {
-                  if (_currentChapterIndex > 0) {
-                    _previousChapter();
-                  }
-                },
-                onNextChapter: () {
-                  if (_currentChapterIndex < _totalChapters - 1) {
-                    _nextChapter();
-                  }
-                },
-                onStartSearch: () {},
-                onToggleAutoScroll: () {},
-                onToggleNightMode: () {
-                  provider.toggleNightMode();
-                },
-                onOpenReplaceRules: () {},
-                onShowDirectory: () {
-                  _hideMenu();
-                  _showChapterList();
-                },
-                onStartTts: _startTts,
-                onShowSettings: _showEnhancedSettings,
-                onSliderChanged: (value) {
-                  setState(() {
-                    _sliderValue = value;
-                  });
-                },
-                onSliderChangeStart: () {
-                  setState(() {
-                    _isSliderDragging = true;
-                  });
-                },
-                onSliderChangeEnd: (value) {
-                  setState(() {
-                    _isSliderDragging = false;
-                  });
-                  _currentChapterIndex = value;
-                  _loadChapterContent();
-                },
-              )
-            // 原版菜单
-            else if (_showMenu)
-              _buildMenu(provider),
-            if (_showHighlightMenu) _buildHighlightMenu(provider),
-            // 设置面板
-            if (_showSettingsSheet)
-              DraggableScrollableSheet(
-                initialChildSize: 0.8,
-                minChildSize: 0.3,
-                maxChildSize: 0.9,
-                expand: false,
-                builder: (context, scrollController) {
-                  return ReaderSettingsSheet(
-                    fontSize: provider.fontSize,
-                    lineHeight: provider.lineHeight,
-                    letterSpacing: provider.letterSpacing,
-                    paragraphSpacing: provider.paragraphSpacing,
-                    horizontalPadding: 16.0,
-                    verticalPadding: 12.0,
-                    paragraphIndent: '\u3000\u3000',
-                    fontWeightIndex: 1,
-                    fontFamily: provider.fontFamily,
-                    backgroundColor: provider.backgroundColor,
-                    backgroundImagePath: null,
-                    showReadingInfo: true,
-                    showChapterTitle: true,
-                    showClock: true,
-                    showProgress: true,
-                    pageAnim: provider.pageMode.index,
-                    pageAnimDurationMs: 300,
-                    screenBrightness: provider.brightness,
-                    keepScreenOn: false,
-                    enableVolumeKeyPage: false,
-                    volumeKeyPageOnTts: false,
-                    enableLongPressMenu: true,
-                    autoScrollSpeed: 50,
-                    autoPageIntervalSeconds: 0,
-                    tapZones: [0, 4, 0, 0, 1, 0, 0, 3, 2],
-                    isNightMode: provider.isNightMode,
-                    onFontSizeChanged: (value) => provider.setFontSize(value),
-                    onLineHeightChanged: (value) =>
-                        provider.setLineHeight(value),
-                    onLetterSpacingChanged: (value) =>
-                        provider.setLetterSpacing(value),
-                    onParagraphSpacingChanged: (value) =>
-                        provider.setParagraphSpacing(value),
-                    onHorizontalPaddingChanged: (value) {},
-                    onVerticalPaddingChanged: (value) {},
-                    onParagraphIndentChanged: (value) {},
-                    onFontWeightChanged: (value) {},
-                    onFontFamilyChanged: (value) =>
-                        provider.setFontFamily(value),
-                    onBackgroundColorChanged: (value) =>
-                        provider.setBackgroundColor(value),
-                    onBackgroundImageChanged: (value) {},
-                    onShowReadingInfoChanged: (value) {},
-                    onShowChapterTitleChanged: (value) {},
-                    onShowClockChanged: (value) {},
-                    onShowProgressChanged: (value) {},
-                    onPageAnimChanged: (value) {
-                      if (value < PageMode.values.length) {
-                        provider.setPageMode(PageMode.values[value]);
-                        _repaginate();
-                      }
-                    },
-                    onPageAnimDurationChanged: (value) {},
-                    onScreenBrightnessChanged: (value) =>
-                        provider.setBrightness(value),
-                    onKeepScreenOnChanged: (value) {},
-                    onEnableVolumeKeyPageChanged: (value) {},
-                    onVolumeKeyPageOnTtsChanged: (value) {},
-                    onEnableLongPressMenuChanged: (value) {},
-                    onAutoScrollSpeedChanged: (value) {},
-                    onAutoPageIntervalChanged: (value) {},
-                    onTapZonesChanged: (value) {},
-                    onNightModeChanged: (value) {
-                      provider.toggleNightMode();
-                    },
-                  );
-                },
-              ),
-          ],
+                    _ttsSpeed = speed;
+                    provider.setTtsRate(speed);
+                  },
+                  speed: _ttsSpeed,
+                ),
+              // 增强版控制面板
+              if (_useEnhancedControls && _showMenu)
+                ReaderControlOverlay(
+                  bookName: _book?.name ?? '',
+                  chapterTitle: _chapterTitle,
+                  chapterUrl: _chapterUrl,
+                  sourceName:
+                      _book?.sourceName ??
+                      (_book?.originType == BookOriginType.local ? '本地书籍' : ''),
+                  hasBookSource: _bookSource != null,
+                  currentChapter: _currentChapterIndex,
+                  totalChapters: _totalChapters,
+                  hasBookmark: _hasBookmark,
+                  hasPrev:
+                      _previousReadableChapterIndex(_currentChapterIndex) !=
+                      null,
+                  hasNext:
+                      _nextReadableChapterIndex(_currentChapterIndex) != null,
+                  isAutoScroll: false,
+                  isNightMode: provider.isNightMode,
+                  sliderValue: _sliderValue,
+                  onBack: () => Navigator.pop(context),
+                  onChangeSource: _showChangeSourceDialog,
+                  onOpenDetail: _openBookDetail,
+                  onOpenChapterUrl: _openChapterUrl,
+                  onEditSource: () => _handleSourceAction('edit'),
+                  onDisableSource: () => _handleSourceAction('disable'),
+                  onRefresh: () {
+                    _loadChapterContent();
+                  },
+                  onDownload: _showCacheOptions,
+                  onToggleBookmark: _toggleBookmark,
+                  onClose: _hideMenu,
+                  onPrevChapter: () {
+                    if (_previousReadableChapterIndex(_currentChapterIndex) !=
+                        null) {
+                      _previousChapter();
+                    }
+                  },
+                  onNextChapter: () {
+                    if (_nextReadableChapterIndex(_currentChapterIndex) !=
+                        null) {
+                      _nextChapter();
+                    }
+                  },
+                  onStartSearch: () {},
+                  onToggleAutoScroll: () {},
+                  onToggleNightMode: () {
+                    provider.toggleNightMode();
+                  },
+                  onOpenReplaceRules: () {},
+                  onShowDirectory: () {
+                    _hideMenu();
+                    _showChapterList();
+                  },
+                  onStartTts: _startTts,
+                  onShowInterface: _showEnhancedSettings,
+                  onShowSettings: () {
+                    _hideMenu();
+                    _showMoreSettingsDialog(provider);
+                  },
+                  onSliderChanged: (value) {
+                    setState(() {
+                      _sliderValue = value;
+                    });
+                  },
+                  onSliderChangeEnd: (value) {
+                    _currentChapterIndex = _readableChapterIndex(value);
+                    _loadChapterContent();
+                  },
+                )
+              // 原版菜单
+              else if (_showMenu)
+                _buildMenu(provider),
+              if (_showHighlightMenu) _buildHighlightMenu(provider),
+            ],
+          ),
         ),
-      ),
       ),
     );
   }
@@ -775,139 +986,67 @@ class _NovelReaderPageState extends State<NovelReaderPage>
 
   Widget _buildScrollContent(ReaderProvider provider) {
     return SafeArea(
-      child: Column(
-        children: [
-          if (_showMenu)
-            Container(
-              height: kToolbarHeight,
-              color: Theme.of(context).colorScheme.surface,
-            ),
-          Expanded(
-            child: SingleChildScrollView(
-              controller: _scrollController,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  if (_prevContent != null) ...[
-                    _buildChapterContent(
-                      provider,
-                      _prevContent!,
-                      _prevChapterTitle ?? '上一章',
-                    ),
-                    _buildChapterDivider(provider),
-                  ],
-                  _buildChapterContent(provider, _content, _chapterTitle),
-                  if (_nextContent != null) ...[
-                    _buildChapterDivider(provider),
-                    _buildChapterContent(
-                      provider,
-                      _nextContent!,
-                      _nextChapterTitle ?? '下一章',
-                    ),
-                  ],
-                ],
+      child: SingleChildScrollView(
+        controller: _scrollController,
+        padding: EdgeInsets.symmetric(
+          horizontal: provider.horizontalPadding,
+          vertical: provider.verticalPadding,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _buildChapterContent(provider, _content, _chapterTitle),
+            if (_nextContent != null &&
+                _nextContentChapterIndex != null &&
+                _nextContentChapterIndex! < _chapters.length &&
+                _nextContentChapterIndex ==
+                    _nextReadableChapterIndex(_currentChapterIndex))
+              _buildAdjacentChapterContent(
+                provider,
+                _nextContent!,
+                _chapters[_nextContentChapterIndex!].title,
               ),
-            ),
-          ),
-          if (_showMenu)
-            Container(
-              height: 120,
-              color: Theme.of(context).colorScheme.surface,
-            ),
-        ],
+          ],
+        ),
       ),
+    );
+  }
+
+  Widget _buildAdjacentChapterContent(
+    ReaderProvider provider,
+    String content,
+    String title,
+  ) {
+    return Padding(
+      padding: EdgeInsets.only(top: provider.paragraphSpacing * 2),
+      child: _buildChapterContent(provider, content, title),
     );
   }
 
   Widget _buildChapterContent(
-      ReaderProvider provider, String content, String title) {
-    final sourceName = _book?.sourceName ?? (_book?.originType == BookOriginType.local ? '本地书籍' : '');
+    ReaderProvider provider,
+    String content,
+    String title,
+  ) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         // 章节标题
-        Text(
-          title,
-          style: TextStyle(
-            fontSize: provider.fontSize + 4,
-            fontWeight: FontWeight.bold,
-            color: provider.textColor,
-            height: provider.lineHeight,
-            fontFamily:
-                provider.fontFamily.isNotEmpty ? provider.fontFamily : null,
-          ),
-        ),
-        // 书源信息（仅在在线书籍时显示）
-        if (_book?.originType == BookOriginType.online && sourceName.isNotEmpty)
-          Padding(
-            padding: EdgeInsets.only(top: provider.paragraphSpacing * 0.5),
-            child: Text(
-              '来源: $sourceName',
-              style: TextStyle(
-                fontSize: provider.fontSize - 2,
-                color: provider.textColor.withValues(alpha: 0.6),
-                height: provider.lineHeight,
-                fontFamily:
-                    provider.fontFamily.isNotEmpty ? provider.fontFamily : null,
-              ),
-            ),
-          ),
+        if (provider.showChapterTitle)
+          Text(title, style: _titleTextStyle(provider)),
         SizedBox(height: provider.paragraphSpacing),
         _buildRichContent(provider, content),
-        // 正文末尾书源信息
-        if (_book?.originType == BookOriginType.online && sourceName.isNotEmpty)
-          Padding(
-            padding: EdgeInsets.only(top: provider.paragraphSpacing * 2),
-            child: Container(
-              padding: EdgeInsets.symmetric(
-                horizontal: 12,
-                vertical: 8,
-              ),
-              decoration: BoxDecoration(
-                color: provider.textColor.withValues(alpha: 0.08),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    Icons.source_outlined,
-                    size: 14,
-                    color: provider.textColor.withValues(alpha: 0.6),
-                  ),
-                  SizedBox(width: 6),
-                  Flexible(
-                    child: Text(
-                      '本书来自「$sourceName」',
-                      style: TextStyle(
-                        fontSize: provider.fontSize - 3,
-                        color: provider.textColor.withValues(alpha: 0.6),
-                        height: provider.lineHeight,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
       ],
-    );
-  }
-
-  Widget _buildChapterDivider(ReaderProvider provider) {
-    return Padding(
-      padding: EdgeInsets.symmetric(vertical: provider.paragraphSpacing * 2),
-      child: Divider(
-        color: provider.textColor.withValues(alpha: 0.2),
-        thickness: 1,
-      ),
     );
   }
 
   // ==================== Rich Content with Highlights ====================
 
-  Widget _buildRichContent(ReaderProvider provider, String content) {
+  Widget _buildRichContent(
+    ReaderProvider provider,
+    String content, {
+    bool applyIndent = true,
+  }) {
     final paragraphs = _splitToParagraphs(content);
     final highlights = _getActiveHighlights();
     final rules = provider.highlightRules.where((r) => r.enabled).toList();
@@ -915,7 +1054,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: paragraphs.map((para) {
-        final indentedPara = _applyIndent(para, provider);
+        final indentedPara = applyIndent ? _applyIndent(para, provider) : para;
         return Padding(
           padding: EdgeInsets.only(bottom: provider.paragraphSpacing),
           child: _buildRichParagraph(provider, indentedPara, highlights, rules),
@@ -925,10 +1064,9 @@ class _NovelReaderPageState extends State<NovelReaderPage>
   }
 
   String _applyIndent(String paragraph, ReaderProvider provider) {
-    final indent = provider.textIndent;
-    if (indent <= 0) return paragraph;
-    final indentStr = '\u3000' * indent.round();
-    return '$indentStr$paragraph';
+    final trimmed = paragraph.trimLeft();
+    if (provider.paragraphIndent.isEmpty) return trimmed;
+    return '${provider.paragraphIndent}$trimmed';
   }
 
   Widget _buildRichParagraph(
@@ -940,14 +1078,19 @@ class _NovelReaderPageState extends State<NovelReaderPage>
     final spans = _buildTextSpans(provider, text, highlights, rules);
     return Text.rich(
       TextSpan(children: spans),
-      style: TextStyle(
-        fontSize: provider.fontSize,
-        color: provider.textColor,
-        height: provider.lineHeight,
-        letterSpacing: provider.letterSpacing,
-        fontFamily: provider.fontFamily.isNotEmpty ? provider.fontFamily : null,
-      ),
+      style: _readerTextStyle(provider),
     );
+  }
+
+  FontWeight _readerFontWeight(ReaderProvider provider) {
+    switch (provider.fontWeightIndex) {
+      case 0:
+        return FontWeight.w300;
+      case 2:
+        return FontWeight.w700;
+      default:
+        return FontWeight.w400;
+    }
   }
 
   List<InlineSpan> _buildTextSpans(
@@ -978,10 +1121,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
           for (var i = match.start; i < match.end && i < text.length; i++) {
             styleMap.putIfAbsent(
               i,
-              () => _HighlightInfo(
-                color: rule.color,
-                style: rule.style,
-              ),
+              () => _HighlightInfo(color: rule.color, style: rule.style),
             );
           }
         }
@@ -1000,11 +1140,13 @@ class _NovelReaderPageState extends State<NovelReaderPage>
       final info = styleMap[i];
       if (info != currentInfo) {
         if (i > currentStart && currentInfo != null) {
-          spans.add(_buildHighlightSpan(
-            text.substring(currentStart, i),
-            currentInfo,
-            provider,
-          ));
+          spans.add(
+            _buildHighlightSpan(
+              text.substring(currentStart, i),
+              currentInfo,
+              provider,
+            ),
+          );
         } else if (i > currentStart) {
           spans.add(TextSpan(text: text.substring(currentStart, i)));
         }
@@ -1069,7 +1211,10 @@ class _NovelReaderPageState extends State<NovelReaderPage>
   List<Highlight> _getActiveHighlights() {
     if (_book == null) return [];
     return StorageService.instance
-        .getChapterHighlights(widget.bookUrl, _currentChapterIndex)
+        .getChapterHighlights(
+          _book?.bookUrl ?? widget.bookUrl,
+          _currentChapterIndex,
+        )
         .map((e) => Highlight.fromJson(e))
         .toList();
   }
@@ -1077,97 +1222,82 @@ class _NovelReaderPageState extends State<NovelReaderPage>
   // ==================== Slide Mode (PageView) ====================
 
   Widget _buildSlideContent(ReaderProvider provider) {
-    return SafeArea(
-      child: Column(
-        children: [
-          if (_showMenu)
-            Container(
-              height: kToolbarHeight,
-              color: Theme.of(context).colorScheme.surface,
-            ),
-          Expanded(
-            child: _pages.isEmpty
-                ? Center(
-                    child: Text('无内容',
-                        style: TextStyle(color: provider.textColor)))
-                : PageView.builder(
-                    controller: _pageController,
-                    onPageChanged: (index) {
-                      setState(() {
-                        _currentPage = index;
-                      });
-                      // Auto load next chapter at end
-                      if (index == _pages.length - 1 &&
-                          _currentChapterIndex < _totalChapters - 1) {
-                        _nextChapter();
-                      }
-                      // Auto load prev chapter at start
-                      if (index == 0 && _currentChapterIndex > 0) {
-                        _previousChapter();
-                      }
-                    },
-                    itemCount: _pages.length,
-                    itemBuilder: (context, index) {
-                      return RepaintBoundary(
-                        child: _buildPageContent(provider, _pages[index]),
-                      );
-                    },
-                  ),
-          ),
-          if (_showMenu)
-            Container(
-              height: 120,
-              color: Theme.of(context).colorScheme.surface,
-            ),
-        ],
-      ),
-    );
+    return SafeArea(child: _buildPagedView(provider));
   }
 
   // ==================== Cover Mode ====================
 
   Widget _buildCoverContent(ReaderProvider provider) {
-    return SafeArea(
-      child: Column(
-        children: [
-          if (_showMenu)
-            Container(
-              height: kToolbarHeight,
-              color: Theme.of(context).colorScheme.surface,
-            ),
-          Expanded(
-            child: _pages.isEmpty
-                ? Center(
-                    child: Text('无内容',
-                        style: TextStyle(color: provider.textColor)))
-                : PageView.builder(
-                    controller: _pageController,
-                    onPageChanged: (index) {
-                      setState(() {
-                        _currentPage = index;
-                      });
-                      if (index == _pages.length - 1 &&
-                          _currentChapterIndex < _totalChapters - 1) {
-                        _nextChapter();
-                      }
-                      if (index == 0 && _currentChapterIndex > 0) {
-                        _previousChapter();
-                      }
-                    },
-                    itemCount: _pages.length,
-                    itemBuilder: (context, index) {
-                      return RepaintBoundary(
-                        child: _buildPageContent(provider, _pages[index]),
-                      );
-                    },
-                  ),
+    return SafeArea(child: _buildPagedView(provider));
+  }
+
+  Widget _buildPagedView(ReaderProvider provider) {
+    if (_pages.isEmpty) {
+      return Center(
+        child: Text('无内容', style: TextStyle(color: provider.textColor)),
+      );
+    }
+    final leadingCount = _pagedLeadingCount;
+    final itemCount = _pages.length + leadingCount + _pagedTrailingCount;
+    return PageView.builder(
+      controller: _pageController,
+      onPageChanged: _onPageChanged,
+      itemCount: itemCount,
+      itemBuilder: (context, index) {
+        if (index < leadingCount) {
+          return _buildChapterBoundaryPage(provider, '上一章');
+        }
+        final pageIndex = index - leadingCount;
+        if (pageIndex >= _pages.length) {
+          return _buildChapterBoundaryPage(provider, '下一章');
+        }
+        return RepaintBoundary(
+          child: _buildPageContent(
+            provider,
+            _pages[pageIndex],
+            pageIndex: pageIndex,
           ),
-          if (_showMenu)
-            Container(
-              height: 120,
-              color: Theme.of(context).colorScheme.surface,
-            ),
-        ],
+        );
+      },
+    );
+  }
+
+  int get _pagedLeadingCount =>
+      _previousReadableChapterIndex(_currentChapterIndex) == null ? 0 : 1;
+
+  int get _pagedTrailingCount =>
+      _nextReadableChapterIndex(_currentChapterIndex) == null ? 0 : 1;
+
+  void _onPageChanged(int index) {
+    if (_isChangingChapterByPageView) return;
+    final leadingCount = _pagedLeadingCount;
+    if (index < leadingCount) {
+      _isChangingChapterByPageView = true;
+      _previousChapter(toLastPage: true);
+      return;
+    }
+    final pageIndex = index - leadingCount;
+    if (pageIndex >= _pages.length) {
+      _isChangingChapterByPageView = true;
+      _nextChapter();
+      return;
+    }
+    setState(() {
+      _currentPage = pageIndex;
+    });
+    unawaited(_saveCurrentProgress(pos: pageIndex));
+  }
+
+  Widget _buildChapterBoundaryPage(ReaderProvider provider, String text) {
+    return Container(
+      color: provider.backgroundColor,
+      alignment: Alignment.center,
+      child: Text(
+        text,
+        style: TextStyle(
+          color: provider.textColor.withValues(alpha: 0.58),
+          fontSize: max(14, provider.fontSize - 2),
+        ),
       ),
     );
   }
@@ -1176,63 +1306,44 @@ class _NovelReaderPageState extends State<NovelReaderPage>
 
   Widget _buildSimulationContent(ReaderProvider provider) {
     return SafeArea(
-      child: Column(
-        children: [
-          if (_showMenu)
-            Container(
-              height: kToolbarHeight,
-              color: Theme.of(context).colorScheme.surface,
-            ),
-          Expanded(
-            child: _pages.isEmpty
-                ? Center(
-                    child: Text('无内容',
-                        style: TextStyle(color: provider.textColor)))
-                : GestureDetector(
-                    onHorizontalDragStart: (details) {
-                      _dragStartX = details.globalPosition.dx;
-                      _isDragging = true;
-                    },
-                    onHorizontalDragUpdate: (details) {
-                      if (!_isDragging) return;
-                      _dragCurrentX = details.globalPosition.dx;
-                      setState(() {});
-                    },
-                    onHorizontalDragEnd: (details) {
-                      if (!_isDragging) return;
-                      _isDragging = false;
-                      final delta = _dragCurrentX - _dragStartX;
-                      if (delta < -50) {
-                        _nextPage();
-                      } else if (delta > 50) {
-                        _previousPage();
-                      }
-                      _dragCurrentX = 0;
-                      _dragStartX = 0;
-                      setState(() {});
-                    },
-                    child: Stack(
-                      children: [
-                        // Current page
-                        _buildPageContent(
-                            provider,
-                            _pages.isNotEmpty
-                                ? _pages[
-                                    _currentPage.clamp(0, _pages.length - 1)]
-                                : ''),
-                        // Curl effect overlay
-                        if (_isDragging) _buildCurlEffect(provider),
-                      ],
-                    ),
+      child: _pages.isEmpty
+          ? Center(
+              child: Text('无内容', style: TextStyle(color: provider.textColor)),
+            )
+          : GestureDetector(
+              onHorizontalDragStart: (details) {
+                _dragStartX = details.globalPosition.dx;
+                _isDragging = true;
+              },
+              onHorizontalDragUpdate: (details) {
+                if (!_isDragging) return;
+                _dragCurrentX = details.globalPosition.dx;
+                setState(() {});
+              },
+              onHorizontalDragEnd: (details) {
+                if (!_isDragging) return;
+                _isDragging = false;
+                final delta = _dragCurrentX - _dragStartX;
+                if (delta < -50) {
+                  _nextPage();
+                } else if (delta > 50) {
+                  _previousPage();
+                }
+                _dragCurrentX = 0;
+                _dragStartX = 0;
+                setState(() {});
+              },
+              child: Stack(
+                children: [
+                  _buildPageContent(
+                    provider,
+                    _pages[_currentPage.clamp(0, _pages.length - 1)],
+                    pageIndex: _currentPage,
                   ),
-          ),
-          if (_showMenu)
-            Container(
-              height: 120,
-              color: Theme.of(context).colorScheme.surface,
+                  if (_isDragging) _buildCurlEffect(provider),
+                ],
+              ),
             ),
-        ],
-      ),
     );
   }
 
@@ -1258,78 +1369,27 @@ class _NovelReaderPageState extends State<NovelReaderPage>
     );
   }
 
-  Widget _buildPageContent(ReaderProvider provider, String pageText) {
-    final sourceName = _book?.sourceName ?? (_book?.originType == BookOriginType.local ? '本地书籍' : '');
-    final isOnline = _book?.originType == BookOriginType.online;
+  Widget _buildPageContent(
+    ReaderProvider provider,
+    String pageText, {
+    required int pageIndex,
+  }) {
+    final showTitle = provider.showChapterTitle && pageIndex == 0;
     return Container(
       color: provider.backgroundColor,
-      padding: EdgeInsets.symmetric(horizontal: 16, vertical: provider.paragraphSpacing),
+      padding: EdgeInsets.symmetric(
+        horizontal: provider.horizontalPadding,
+        vertical: provider.verticalPadding,
+      ),
       child: SingleChildScrollView(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             // 章节标题
-            Text(
-              _chapterTitle,
-              style: TextStyle(
-                fontSize: provider.fontSize + 4,
-                fontWeight: FontWeight.bold,
-                color: provider.textColor,
-                height: provider.lineHeight,
-                fontFamily:
-                    provider.fontFamily.isNotEmpty ? provider.fontFamily : null,
-              ),
-            ),
-            // 书源信息（仅在在线书籍时显示）
-            if (isOnline && sourceName.isNotEmpty)
-              Padding(
-                padding: EdgeInsets.only(top: provider.paragraphSpacing * 0.5),
-                child: Text(
-                  '来源: $sourceName',
-                  style: TextStyle(
-                    fontSize: provider.fontSize - 2,
-                    color: provider.textColor.withValues(alpha: 0.6),
-                    height: provider.lineHeight,
-                    fontFamily:
-                        provider.fontFamily.isNotEmpty ? provider.fontFamily : null,
-                  ),
-                ),
-              ),
-            SizedBox(height: provider.paragraphSpacing),
-            _buildRichContent(provider, pageText),
-            // 正文末尾书源信息（仅在最后一页显示）
-            if (isOnline && sourceName.isNotEmpty && _currentPage == _pages.length - 1)
-              Padding(
-                padding: EdgeInsets.only(top: provider.paragraphSpacing * 2),
-                child: Container(
-                  padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: provider.textColor.withValues(alpha: 0.08),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        Icons.source_outlined,
-                        size: 14,
-                        color: provider.textColor.withValues(alpha: 0.6),
-                      ),
-                      SizedBox(width: 6),
-                      Flexible(
-                        child: Text(
-                          '本书来自「$sourceName」',
-                          style: TextStyle(
-                            fontSize: provider.fontSize - 3,
-                            color: provider.textColor.withValues(alpha: 0.6),
-                            height: provider.lineHeight,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
+            if (showTitle)
+              Text(_chapterTitle, style: _titleTextStyle(provider)),
+            if (showTitle) SizedBox(height: provider.paragraphSpacing),
+            _buildRichContent(provider, pageText, applyIndent: false),
           ],
         ),
       ),
@@ -1352,9 +1412,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
           title: const Text('选择文字'),
           content: TextField(
             autofocus: true,
-            decoration: const InputDecoration(
-              hintText: '输入要高亮的文字',
-            ),
+            decoration: const InputDecoration(hintText: '输入要高亮的文字'),
             onSubmitted: (value) {
               Navigator.pop(context, value);
             },
@@ -1410,7 +1468,10 @@ class _NovelReaderPageState extends State<NovelReaderPage>
   }
 
   Widget _highlightActionButton(
-      String label, IconData icon, VoidCallback onTap) {
+    String label,
+    IconData icon,
+    VoidCallback onTap,
+  ) {
     return InkWell(
       onTap: onTap,
       child: Padding(
@@ -1516,7 +1577,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
 
     final highlight = Highlight(
       id: DateTime.now().millisecondsSinceEpoch.toString(),
-      bookUrl: widget.bookUrl,
+      bookUrl: _book!.bookUrl,
       chapterIndex: _currentChapterIndex,
       startIndex: _selectionStart,
       endIndex: _selectionEnd,
@@ -1572,7 +1633,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
 
     final highlight = Highlight(
       id: DateTime.now().millisecondsSinceEpoch.toString(),
-      bookUrl: widget.bookUrl,
+      bookUrl: _book!.bookUrl,
       chapterIndex: _currentChapterIndex,
       startIndex: _selectionStart,
       endIndex: _selectionEnd,
@@ -1604,11 +1665,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
     return FadeTransition(
       opacity: _menuAnim,
       child: Column(
-        children: [
-          _buildTopBar(),
-          const Spacer(),
-          _buildBottomBar(provider),
-        ],
+        children: [_buildTopBar(), const Spacer(), _buildBottomBar(provider)],
       ),
     );
   }
@@ -1690,10 +1747,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
       padding: const EdgeInsets.symmetric(horizontal: 16),
       child: Row(
         children: [
-          Text(
-            '$displayChapter',
-            style: const TextStyle(fontSize: 12),
-          ),
+          Text('$displayChapter', style: const TextStyle(fontSize: 12)),
           Expanded(
             child: SliderTheme(
               data: SliderThemeData(
@@ -1705,30 +1759,19 @@ class _NovelReaderPageState extends State<NovelReaderPage>
                 value: _totalChapters > 0 ? _sliderValue.clamp(0.0, maxCh) : 0,
                 min: 0,
                 max: maxCh > 0 ? maxCh : 1,
-                onChangeStart: (value) {
-                  setState(() {
-                    _isSliderDragging = true;
-                  });
-                },
                 onChanged: (value) {
                   setState(() {
                     _sliderValue = value;
                   });
                 },
                 onChangeEnd: (value) {
-                  setState(() {
-                    _isSliderDragging = false;
-                  });
                   _currentChapterIndex = value.round();
                   _loadChapterContent();
                 },
               ),
             ),
           ),
-          Text(
-            '$_totalChapters',
-            style: const TextStyle(fontSize: 12),
-          ),
+          Text('$_totalChapters', style: const TextStyle(fontSize: 12)),
         ],
       ),
     );
@@ -1869,12 +1912,12 @@ class _NovelReaderPageState extends State<NovelReaderPage>
   void _showChangeSourceDialog() {
     _hideMenu();
     if (_book == null || _book!.originType != BookOriginType.online) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('本地书籍不支持换源')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('本地书籍不支持换源')));
       return;
     }
-    
+
     ChangeSourceSheet.show(
       context: context,
       bookName: _book!.displayName,
@@ -1883,12 +1926,12 @@ class _NovelReaderPageState extends State<NovelReaderPage>
       currentSourceName: _book!.sourceName,
       onSourceSelected: (sourceUrl, sourceName, bookData) async {
         if (_book == null) return;
-        
+
         try {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('正在切换书源...')),
-          );
-          
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('正在切换书源...')));
+
           // 创建新的书籍对象
           final newBook = _book!.copyWith(
             sourceUrl: sourceUrl,
@@ -1900,20 +1943,20 @@ class _NovelReaderPageState extends State<NovelReaderPage>
             intro: bookData['intro'] ?? _book!.intro,
             lastChapter: bookData['lastChapter'] ?? _book!.lastChapter,
           );
-          
+
           // 获取新书源的目录
           _dataProvider = createBookDataProvider(newBook);
           final chapters = await _dataProvider!.getChapterList(newBook);
-          
+
           // 更新书籍
           final updatedBook = newBook.copyWith(
             totalChapterNum: chapters.length,
           );
-          
+
           // 保存到书架
           StorageService.instance.addToBookshelf(updatedBook.toJson());
           context.read<BookshelfProvider>().loadBooks();
-          
+
           // 更新状态并重新加载内容
           setState(() {
             _book = updatedBook;
@@ -1921,19 +1964,19 @@ class _NovelReaderPageState extends State<NovelReaderPage>
             _totalChapters = chapters.length;
             _currentChapterIndex = 0; // 切换书源后从第一章开始
           });
-          
+
           _loadChapterContent();
-          
+
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('已切换到 $sourceName')),
-            );
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(SnackBar(content: Text('已切换到 $sourceName')));
           }
         } catch (e) {
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('换源失败: $e')),
-            );
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(SnackBar(content: Text('换源失败: $e')));
           }
         }
       },
@@ -1954,9 +1997,9 @@ class _NovelReaderPageState extends State<NovelReaderPage>
     final rawUrl = _chapterUrl ?? '';
     final uri = Uri.tryParse(rawUrl);
     if (uri == null || (uri.scheme != 'http' && uri.scheme != 'https')) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('当前章节没有可打开的网页链接')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('当前章节没有可打开的网页链接')));
       return;
     }
     _hideMenu();
@@ -2004,9 +2047,9 @@ class _NovelReaderPageState extends State<NovelReaderPage>
   Future<void> _disableBookSource() async {
     final source = _bookSource;
     if (source == null || !source.enabled) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('该书源已禁用')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('该书源已禁用')));
       return;
     }
     await StorageService.instance.saveBookSource(
@@ -2014,9 +2057,9 @@ class _NovelReaderPageState extends State<NovelReaderPage>
     );
     if (!mounted) return;
     setState(() => _bookSource = source.copyWith(enabled: false));
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('已禁用书源')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('已禁用书源')));
   }
 
   void _showChapterList() {
@@ -2033,7 +2076,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
         currentChapterIndex: _currentChapterIndex,
         foregroundColor: Theme.of(context).colorScheme.onSurface,
         onChapterSelected: (index) {
-          setState(() => _currentChapterIndex = index);
+          setState(() => _currentChapterIndex = _readableChapterIndex(index));
           _loadChapterContent();
           Navigator.pop(context);
         },
@@ -2133,14 +2176,8 @@ class _NovelReaderPageState extends State<NovelReaderPage>
                                 ? '默认'
                                 : provider.fontFamily,
                             isExpanded: true,
-                            items: [
-                              '默认',
-                              ..._getSystemFonts(),
-                            ].map((f) {
-                              return DropdownMenuItem(
-                                value: f,
-                                child: Text(f),
-                              );
+                            items: ['默认', ..._getSystemFonts()].map((f) {
+                              return DropdownMenuItem(value: f, child: Text(f));
                             }).toList(),
                             onChanged: (value) {
                               provider.setFontFamily(
@@ -2184,11 +2221,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
 
   List<String> _getSystemFonts() {
     // Common system fonts
-    return [
-      'serif',
-      'sans-serif',
-      'monospace',
-    ];
+    return ['serif', 'sans-serif', 'monospace'];
   }
 
   void _showSpacingDialog(ReaderProvider provider) {
@@ -2307,7 +2340,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
                   return GestureDetector(
                     onTap: () {
                       provider.setPageMode(modes[i]);
-                      _repaginate();
+                      _repaginatePreservingPosition();
                       Navigator.pop(context);
                     },
                     child: Column(
@@ -2318,17 +2351,18 @@ class _NovelReaderPageState extends State<NovelReaderPage>
                           height: 56,
                           decoration: BoxDecoration(
                             color: isSelected
-                                ? Theme.of(context)
-                                    .colorScheme
-                                    .primary
-                                    .withValues(alpha: 0.2)
+                                ? Theme.of(
+                                    context,
+                                  ).colorScheme.primary.withValues(alpha: 0.2)
                                 : Colors.grey.withValues(alpha: 0.1),
                             borderRadius: BorderRadius.circular(12),
                             border: isSelected
                                 ? Border.all(
-                                    color:
-                                        Theme.of(context).colorScheme.primary,
-                                    width: 2)
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.primary,
+                                    width: 2,
+                                  )
                                 : null,
                           ),
                           child: Icon(
@@ -2487,6 +2521,136 @@ class _NovelReaderPageState extends State<NovelReaderPage>
     );
   }
 
+  void _showInterfaceSettingsDialog(ReaderProvider provider) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) {
+        return DraggableScrollableSheet(
+          initialChildSize: 0.43,
+          minChildSize: 0.24,
+          maxChildSize: 0.9,
+          expand: false,
+          builder: (context, scrollController) {
+            return ClipRRect(
+              borderRadius: const BorderRadius.vertical(
+                top: Radius.circular(16),
+              ),
+              child: _buildInterfaceSettingsSheet(
+                provider,
+                onClose: () => Navigator.pop(sheetContext),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  ReaderSettingsSheet _buildInterfaceSettingsSheet(
+    ReaderProvider provider, {
+    required VoidCallback onClose,
+  }) {
+    return ReaderSettingsSheet(
+      fontSize: provider.fontSize,
+      lineHeight: provider.lineHeight,
+      letterSpacing: provider.letterSpacing,
+      paragraphSpacing: provider.paragraphSpacing,
+      horizontalPadding: provider.horizontalPadding,
+      verticalPadding: provider.verticalPadding,
+      paragraphIndent: provider.paragraphIndent,
+      fontWeightIndex: provider.fontWeightIndex,
+      fontFamily: provider.fontFamily,
+      backgroundColor: provider.backgroundColor,
+      backgroundImagePath: provider.backgroundImagePath,
+      showReadingInfo: provider.showReadingInfo,
+      showChapterTitle: provider.showChapterTitle,
+      showClock: provider.showClock,
+      showProgress: provider.showProgress,
+      pageAnim: provider.pageMode.index,
+      pageAnimDurationMs: provider.pageAnimDurationMs,
+      screenBrightness: provider.screenBrightness,
+      keepScreenOn: provider.keepScreenOn,
+      enableVolumeKeyPage: provider.enableVolumeKeyPage,
+      volumeKeyPageOnTts: provider.volumeKeyPageOnTts,
+      enableLongPressMenu: provider.enableLongPressMenu,
+      autoScrollSpeed: provider.autoScrollSpeed,
+      autoPageIntervalSeconds: provider.autoPageIntervalSeconds,
+      tapZones: provider.tapZones,
+      isNightMode: provider.isNightMode,
+      onFontSizeChanged: (value) {
+        provider.setFontSize(value);
+        _repaginatePreservingPosition();
+      },
+      onLineHeightChanged: (value) {
+        provider.setLineHeight(value);
+        _repaginatePreservingPosition();
+      },
+      onLetterSpacingChanged: (value) {
+        provider.setLetterSpacing(value);
+        _repaginatePreservingPosition();
+      },
+      onParagraphSpacingChanged: (value) {
+        provider.setParagraphSpacing(value);
+        _repaginatePreservingPosition();
+      },
+      onHorizontalPaddingChanged: (value) {
+        provider.setHorizontalPadding(value);
+        _repaginatePreservingPosition();
+      },
+      onVerticalPaddingChanged: (value) {
+        provider.setVerticalPadding(value);
+        _repaginatePreservingPosition();
+      },
+      onParagraphIndentChanged: (value) {
+        provider.setParagraphIndent(value);
+        _repaginatePreservingPosition();
+      },
+      onFontWeightChanged: (value) {
+        provider.setFontWeightIndex(value);
+        _repaginatePreservingPosition();
+      },
+      onFontFamilyChanged: (value) => provider.setFontFamily(value),
+      onBackgroundColorChanged: (value) => provider.setBackgroundColor(value),
+      onBackgroundImageChanged: (value) =>
+          provider.setBackgroundImagePath(value),
+      onShowReadingInfoChanged: (value) => provider.setShowReadingInfo(value),
+      onShowChapterTitleChanged: (value) {
+        provider.setShowChapterTitle(value);
+        _repaginatePreservingPosition();
+      },
+      onShowClockChanged: (value) => provider.setShowClock(value),
+      onShowProgressChanged: (value) => provider.setShowProgress(value),
+      onPageAnimChanged: (value) {
+        if (value < PageMode.values.length) {
+          provider.setPageMode(PageMode.values[value]);
+          _repaginatePreservingPosition();
+        }
+      },
+      onPageAnimDurationChanged: (value) =>
+          provider.setPageAnimDurationMs(value),
+      onScreenBrightnessChanged: (value) => provider.setScreenBrightness(value),
+      onKeepScreenOnChanged: (value) => provider.setKeepScreenOn(value),
+      onEnableVolumeKeyPageChanged: (value) =>
+          provider.setEnableVolumeKeyPage(value),
+      onVolumeKeyPageOnTtsChanged: (value) =>
+          provider.setVolumeKeyPageOnTts(value),
+      onEnableLongPressMenuChanged: (value) =>
+          provider.setEnableLongPressMenu(value),
+      onAutoScrollSpeedChanged: (value) => provider.setAutoScrollSpeed(value),
+      onAutoPageIntervalChanged: (value) =>
+          provider.setAutoPageIntervalSeconds(value),
+      onTapZonesChanged: (value) => provider.setTapZones(value),
+      onNightModeChanged: (value) {
+        if (provider.isNightMode != value) {
+          provider.toggleNightMode();
+        }
+      },
+      onClose: onClose,
+    );
+  }
+
   void _showMoreSettingsDialog(ReaderProvider provider) {
     showModalBottomSheet(
       context: context,
@@ -2610,10 +2774,9 @@ class _NovelReaderPageState extends State<NovelReaderPage>
                                 border: Border.all(color: Colors.grey),
                                 borderRadius: BorderRadius.circular(4),
                                 color: row == 1 && col == 1
-                                    ? Theme.of(context)
-                                        .colorScheme
-                                        .primary
-                                        .withOpacity(0.1)
+                                    ? Theme.of(
+                                        context,
+                                      ).colorScheme.primary.withOpacity(0.1)
                                     : null,
                               ),
                               child: Text(
@@ -2732,7 +2895,9 @@ class _NovelReaderPageState extends State<NovelReaderPage>
                               subtitle: Text(
                                 rule.pattern,
                                 style: const TextStyle(
-                                    fontSize: 11, fontFamily: 'monospace'),
+                                  fontSize: 11,
+                                  fontFamily: 'monospace',
+                                ),
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                               ),
@@ -2749,8 +2914,9 @@ class _NovelReaderPageState extends State<NovelReaderPage>
                                         isBuiltIn: rule.isBuiltIn,
                                         serialNumber: rule.serialNumber,
                                       );
-                                      StorageService.instance
-                                          .saveHighlightRule(updated.toJson());
+                                      StorageService.instance.saveHighlightRule(
+                                        updated.toJson(),
+                                      );
                                       provider.toggleHighlightRule(rule.id);
                                       setSheetState(() {});
                                     }
@@ -2851,7 +3017,8 @@ class _NovelReaderPageState extends State<NovelReaderPage>
                 TextButton(
                   onPressed: () {
                     if (nameController.text.isEmpty ||
-                        patternController.text.isEmpty) return;
+                        patternController.text.isEmpty)
+                      return;
                     final rule = HighlightRule(
                       id: DateTime.now().millisecondsSinceEpoch.toString(),
                       name: nameController.text,
@@ -3098,11 +3265,7 @@ class _HighlightInfo {
   final HighlightStyle style;
   final String? note;
 
-  _HighlightInfo({
-    required this.color,
-    required this.style,
-    this.note,
-  });
+  _HighlightInfo({required this.color, required this.style, this.note});
 }
 
 class _NovelChapterListPanel extends StatefulWidget {
@@ -3175,8 +3338,11 @@ class _NovelChapterListPanelState extends State<_NovelChapterListPanel> {
   }
 
   Future<void> _loadCacheInfo() async {
-    if (widget.book == null || widget.book!.originType != BookOriginType.online) return;
-    final files = await ChapterCacheService.instance.getChapterCacheFiles(widget.book!);
+    if (widget.book == null || widget.book!.originType != BookOriginType.online)
+      return;
+    final files = await ChapterCacheService.instance.getChapterCacheFiles(
+      widget.book!,
+    );
     if (mounted) setState(() => _cachedFiles = files);
   }
 
@@ -3242,9 +3408,12 @@ class _NovelChapterListPanelState extends State<_NovelChapterListPanel> {
     final query = _searchQuery.toLowerCase();
     return _bookmarks.where((b) {
       bool hit = false;
-      if (_searchChapterName && b.chapterTitle.toLowerCase().contains(query)) hit = true;
-      if (_searchBookText && b.content.toLowerCase().contains(query)) hit = true;
-      if (_searchContent && (b.note?.toLowerCase().contains(query) ?? false)) hit = true;
+      if (_searchChapterName && b.chapterTitle.toLowerCase().contains(query))
+        hit = true;
+      if (_searchBookText && b.content.toLowerCase().contains(query))
+        hit = true;
+      if (_searchContent && (b.note?.toLowerCase().contains(query) ?? false))
+        hit = true;
       return hit;
     }).toList();
   }
@@ -3282,27 +3451,43 @@ class _NovelChapterListPanelState extends State<_NovelChapterListPanel> {
                 onSelected: _handleMenuAction,
                 itemBuilder: _currentTab == 0
                     ? (context) => [
-                          _menuItem('reverse', '反转目录', _isReversed, fg),
-                          _menuItem('use_replace', '使用替换', _useReplace, fg),
-                          _menuItem('word_count', '加载字数', _showWordCount, fg),
-                          _menuItem('fold_volume', '卷名折叠', _foldVolume, fg),
-                        ]
+                        _menuItem('reverse', '反转目录', _isReversed, fg),
+                        _menuItem('use_replace', '使用替换', _useReplace, fg),
+                        _menuItem('word_count', '加载字数', _showWordCount, fg),
+                        _menuItem('fold_volume', '卷名折叠', _foldVolume, fg),
+                      ]
                     : (context) => [
-                          const PopupMenuItem(
-                            value: 'export',
-                            padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                            child: Text('导出'),
+                        const PopupMenuItem(
+                          value: 'export',
+                          padding: EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 12,
                           ),
-                          const PopupMenuItem(
-                            value: 'export_md',
-                            padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                            child: Text('导出(MD)'),
+                          child: Text('导出'),
+                        ),
+                        const PopupMenuItem(
+                          value: 'export_md',
+                          padding: EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 12,
                           ),
-                          const PopupMenuDivider(),
-                          _menuItem('bm_search_chapter', '搜索章节名', _searchChapterName, fg),
-                          _menuItem('bm_search_text', '搜索书文', _searchBookText, fg),
-                          _menuItem('bm_search_note', '搜索备注', _searchContent, fg),
-                        ],
+                          child: Text('导出(MD)'),
+                        ),
+                        const PopupMenuDivider(),
+                        _menuItem(
+                          'bm_search_chapter',
+                          '搜索章节名',
+                          _searchChapterName,
+                          fg,
+                        ),
+                        _menuItem(
+                          'bm_search_text',
+                          '搜索书文',
+                          _searchBookText,
+                          fg,
+                        ),
+                        _menuItem('bm_search_note', '搜索备注', _searchContent, fg),
+                      ],
               ),
             ],
           ),
@@ -3332,7 +3517,12 @@ class _NovelChapterListPanelState extends State<_NovelChapterListPanel> {
     );
   }
 
-  PopupMenuItem<String> _menuItem(String value, String label, bool checked, Color fg) {
+  PopupMenuItem<String> _menuItem(
+    String value,
+    String label,
+    bool checked,
+    Color fg,
+  ) {
     return PopupMenuItem(
       value: value,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -3377,11 +3567,8 @@ class _NovelChapterListPanelState extends State<_NovelChapterListPanel> {
     final accent = Theme.of(context).colorScheme.primary;
     return ListView.separated(
       itemCount: display.length,
-      separatorBuilder: (_, __) => Divider(
-        height: 1,
-        thickness: 0.5,
-        color: fg.withValues(alpha: 0.12),
-      ),
+      separatorBuilder: (_, __) =>
+          Divider(height: 1, thickness: 0.5, color: fg.withValues(alpha: 0.12)),
       itemBuilder: (context, index) {
         final chapter = display[index];
         if (chapter.isVolume) {
@@ -3430,7 +3617,9 @@ class _NovelChapterListPanelState extends State<_NovelChapterListPanel> {
         }
 
         final isSelected = chapter.index == widget.currentChapterIndex;
-        final fileName = ChapterCacheService.instance.getChapterFileName(chapter);
+        final fileName = ChapterCacheService.instance.getChapterFileName(
+          chapter,
+        );
         final isCached = !isOnline || _cachedFiles.contains(fileName);
 
         return InkWell(
@@ -3438,61 +3627,60 @@ class _NovelChapterListPanelState extends State<_NovelChapterListPanel> {
           child: Padding(
             padding: const EdgeInsets.all(12),
             child: Row(
-            children: [
-              if (chapter.isVip && !chapter.isPay)
-                Padding(
-                  padding: const EdgeInsets.only(right: 8),
-                  child: Icon(
-                    Icons.lock_outline,
-                    size: 16,
-                    color: fg.withValues(alpha: 0.62),
-                  ),
-                ),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      chapter.title,
-                      style: TextStyle(
-                        color: isSelected ? accent : fg,
-                        fontSize: 14,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+              children: [
+                if (chapter.isVip && !chapter.isPay)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: Icon(
+                      Icons.lock_outline,
+                      size: 16,
+                      color: fg.withValues(alpha: 0.62),
                     ),
-                    if ((chapter.tag?.isNotEmpty ?? false) ||
-                        (_showWordCount &&
-                            (chapter.wordCount ?? 0) > 0))
-                      Padding(
-                        padding: const EdgeInsets.only(top: 2),
-                        child: Text(
-                          [
-                            if (chapter.tag?.isNotEmpty == true) chapter.tag!,
-                            if (_showWordCount &&
-                                (chapter.wordCount ?? 0) > 0)
-                              '${chapter.wordCount}字',
-                          ].join('  '),
-                          style: TextStyle(
-                            color: fg.withValues(alpha: 0.62),
-                            fontSize: 12,
+                  ),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        chapter.title,
+                        style: TextStyle(
+                          color: isSelected ? accent : fg,
+                          fontSize: 14,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      if ((chapter.tag?.isNotEmpty ?? false) ||
+                          (_showWordCount && (chapter.wordCount ?? 0) > 0))
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Text(
+                            [
+                              if (chapter.tag?.isNotEmpty == true) chapter.tag!,
+                              if (_showWordCount &&
+                                  (chapter.wordCount ?? 0) > 0)
+                                '${chapter.wordCount}字',
+                            ].join('  '),
+                            style: TextStyle(
+                              color: fg.withValues(alpha: 0.62),
+                              fontSize: 12,
+                            ),
                           ),
                         ),
-                      ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              if (isSelected)
-                Icon(Icons.check, size: 18, color: accent)
-              else if (!isCached)
-                Icon(
-                  Icons.cloud_outlined,
-                  size: 18,
-                  color: fg.withValues(alpha: 0.62),
-                ),
-            ],
-          ),
+                const SizedBox(width: 8),
+                if (isSelected)
+                  Icon(Icons.check, size: 18, color: accent)
+                else if (!isCached)
+                  Icon(
+                    Icons.cloud_outlined,
+                    size: 18,
+                    color: fg.withValues(alpha: 0.62),
+                  ),
+              ],
+            ),
           ),
         );
       },
@@ -3501,11 +3689,18 @@ class _NovelChapterListPanelState extends State<_NovelChapterListPanel> {
 
   Widget _buildBookmarkList(Color fg) {
     if (_bookmarks.isEmpty) {
-      return Center(child: Text('暂无书签', style: TextStyle(color: fg.withValues(alpha: 0.5))));
+      return Center(
+        child: Text('暂无书签', style: TextStyle(color: fg.withValues(alpha: 0.5))),
+      );
     }
     final list = _searchQuery.isEmpty ? _bookmarks : _filteredBookmarks;
     if (list.isEmpty) {
-      return Center(child: Text('没有匹配的书签', style: TextStyle(color: fg.withValues(alpha: 0.5))));
+      return Center(
+        child: Text(
+          '没有匹配的书签',
+          style: TextStyle(color: fg.withValues(alpha: 0.5)),
+        ),
+      );
     }
     return ListView.builder(
       itemCount: list.length,
@@ -3514,7 +3709,9 @@ class _NovelChapterListPanelState extends State<_NovelChapterListPanel> {
         return ListTile(
           title: Text(bookmark.chapterTitle, style: TextStyle(color: fg)),
           subtitle: Text(
-            bookmark.note?.isNotEmpty == true ? bookmark.note! : bookmark.content,
+            bookmark.note?.isNotEmpty == true
+                ? bookmark.note!
+                : bookmark.content,
             style: TextStyle(color: fg.withValues(alpha: 0.6)),
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
@@ -3538,10 +3735,7 @@ class _NovelChapterListPanelState extends State<_NovelChapterListPanel> {
       switch (action) {
         case 'reverse':
           _isReversed = !_isReversed;
-          _saveBool(
-            'tocReverse_${widget.book?.bookUrl ?? ""}',
-            _isReversed,
-          );
+          _saveBool('tocReverse_${widget.book?.bookUrl ?? ""}', _isReversed);
           break;
         case 'use_replace':
           _useReplace = !_useReplace;
@@ -3577,9 +3771,9 @@ class _NovelChapterListPanelState extends State<_NovelChapterListPanel> {
   Future<void> _exportBookmarks(bool asMd) async {
     if (_bookmarks.isEmpty) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('暂无书签可导出')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('暂无书签可导出')));
       }
       return;
     }
@@ -3601,9 +3795,9 @@ class _NovelChapterListPanelState extends State<_NovelChapterListPanel> {
 
     await Clipboard.setData(ClipboardData(text: text));
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(asMd ? '书签已导出为MD' : '书签已复制到剪贴板')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(asMd ? '书签已导出为MD' : '书签已复制到剪贴板')));
     }
   }
 
