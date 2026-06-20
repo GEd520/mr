@@ -186,9 +186,11 @@ class _MainPageState extends State<MainPage> {
           // 主内容 - 使用 IndexedStack 避免切换时页面重建闪现
           Positioned.fill(
             bottom: contentBottomInset,
-            child: IndexedStack(
-              index: _currentIndex,
-              children: _pages,
+            child: RepaintBoundary(
+              child: IndexedStack(
+                index: _currentIndex,
+                children: _pages,
+              ),
             ),
           ),
           // 底部导航栏
@@ -377,8 +379,8 @@ class _MainPageState extends State<MainPage> {
               alignment: Alignment.center,
               children: [
                 AnimatedContainer(
-                  duration: const Duration(milliseconds: 320),
-                  curve: Curves.easeOutBack,
+                  duration: const Duration(milliseconds: 200),
+                  curve: Curves.easeOut,
                   width: isSelected ? DesignTokens.bottomIndicatorWidth : 0,
                   height: isSelected ? DesignTokens.bottomIndicatorHeight : 0,
                   decoration: BoxDecoration(
@@ -416,9 +418,11 @@ class _MainPageState extends State<MainPage> {
         : null;
 
     return Scaffold(
-      body: IndexedStack(
-        index: _currentIndex,
-        children: _pages,
+      body: RepaintBoundary(
+        child: IndexedStack(
+          index: _currentIndex,
+          children: _pages,
+        ),
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: () =>
@@ -427,7 +431,8 @@ class _MainPageState extends State<MainPage> {
       ),
       bottomNavigationBar: SafeArea(
         top: false,
-        child: Container(
+        child: RepaintBoundary(
+          child: Container(
           height: DesignTokens.bottomStandardHeight,
           decoration: BoxDecoration(
             color: navBarColor.withValues(alpha:opacity),
@@ -472,6 +477,7 @@ class _MainPageState extends State<MainPage> {
             ],
           ),
         ),
+        ),
       ),
     );
   }
@@ -505,8 +511,8 @@ class _MainPageState extends State<MainPage> {
                 alignment: Alignment.center,
                 children: [
                   AnimatedContainer(
-                    duration: const Duration(milliseconds: 320),
-                    curve: Curves.easeOutBack,
+                    duration: const Duration(milliseconds: 200),
+                    curve: Curves.easeOut,
                     width: isSelected ? DesignTokens.bottomIndicatorWidth : 0,
                     height: isSelected ? DesignTokens.bottomIndicatorHeight : 0,
                     decoration: BoxDecoration(
@@ -556,9 +562,11 @@ class _MainPageState extends State<MainPage> {
       body: Stack(
         children: [
           // 主内容 - 使用 IndexedStack 避免切换时页面重建闪现
-          IndexedStack(
-            index: _currentIndex,
-            children: _pages,
+          RepaintBoundary(
+            child: IndexedStack(
+              index: _currentIndex,
+              children: _pages,
+            ),
           ),
           // 侧边栏开启按钮
           Positioned(

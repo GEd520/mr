@@ -202,6 +202,8 @@ class _DetailPageState extends State<DetailPage> {
               child: CachedNetworkImage(
                 imageUrl: _book!.coverUrl,
                 fit: BoxFit.cover,
+                placeholder: (_, __) =>
+                    Container(color: Theme.of(context).colorScheme.primary),
                 errorWidget: (_, __, ___) =>
                     Container(color: Theme.of(context).colorScheme.primary),
               ),
@@ -349,11 +351,6 @@ class _DetailPageState extends State<DetailPage> {
               const SizedBox(height: 12),
               _buildOriginalInfoRows(),
               const SizedBox(height: 14),
-              Text(
-                '内容简介',
-                style: TextStyle(color: scheme.onSurfaceVariant, fontSize: DesignTokens.fontSubtitle),
-              ),
-              const SizedBox(height: 9),
               _buildIntroContent(scheme.onSurfaceVariant),
             ],
           ),

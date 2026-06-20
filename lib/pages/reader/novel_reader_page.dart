@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_html/flutter_html.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../models/book.dart';
@@ -74,11 +75,11 @@ class _NovelReaderPageState extends State<NovelReaderPage>
   final ScrollController _scrollController = ScrollController();
 
   // Highlight selection state
-  final String _selectedText = '';
-  final int _selectionStart = -1;
-  final int _selectionEnd = -1;
+  String _selectedText = '';
+  int _selectionStart = -1;
+  int _selectionEnd = -1;
   bool _showHighlightMenu = false;
-  final Offset _highlightMenuPosition = Offset.zero;
+  Offset _highlightMenuPosition = Offset.zero;
 
   // Animation
   late AnimationController _menuAnimController;
@@ -1054,6 +1055,9 @@ class _NovelReaderPageState extends State<NovelReaderPage>
         return _buildCoverContent(provider);
       case PageMode.simulation:
         return _buildSimulationContent(provider);
+      case PageMode.none:
+        // TODO: Handle this case.
+        throw UnimplementedError();
     }
   }
 
@@ -1123,11 +1127,45 @@ class _NovelReaderPageState extends State<NovelReaderPage>
 
   // ==================== Rich Content with Highlights ====================
 
+  /// 检测内容是否包含 HTML 标签
+  static final _htmlTagRegex = RegExp(
+    r'<(?:br|p|div|span|a|img|b|i|strong|em|h[1-6]|ul|ol|li|table|tr|td|th|blockquote|pre|code|hr|font)\b[^>]*>',
+    caseSensitive: false,
+  );
+
+  bool _containsHtml(String content) {
+    return _htmlTagRegex.hasMatch(content);
+  }
+
   Widget _buildRichContent(
     ReaderProvider provider,
     String content, {
     bool applyIndent = true,
   }) {
+    // 如果内容包含 HTML 标签，使用 Html 组件渲染
+    if (_containsHtml(content)) {
+      final indentWidth = provider.paragraphIndent.isNotEmpty
+          ? provider.paragraphIndent.length * provider.fontSize * 0.5
+          : 0.0;
+      return Html(
+        data: content,
+        style: {
+          'body': Style(
+            fontSize: FontSize(provider.fontSize),
+            color: provider.textColor,
+            lineHeight: LineHeight(provider.lineHeight),
+            fontFamily: provider.fontFamily,
+            fontWeight: _readerFontWeight(provider),
+            textAlign: TextAlign.justify,
+          ),
+          'p': Style(
+            margin: Margins.only(bottom: provider.paragraphSpacing),
+            padding: HtmlPaddings.only(left: indentWidth),
+          ),
+        },
+      );
+    }
+
     final paragraphs = _splitToParagraphs(content);
     final highlights = _getActiveHighlights();
     final rules = provider.highlightRules.where((r) => r.enabled).toList();
@@ -1478,7 +1516,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
             ),
           if (showTitle) SizedBox(height: provider.paragraphSpacing),
           Expanded(
-            child: _buildRichContent(provider, pageText, applyIndent: false),
+            child: _buildRichContent(provider, pageText),
           ),
         ],
       ),
@@ -1742,7 +1780,15 @@ class _NovelReaderPageState extends State<NovelReaderPage>
   }
 
   void _copySelectedText() {
-    // Copy to clipboard would need additional import
+    if (_selectedText.isNotEmpty) {
+      Clipboard.setData(ClipboardData(text: _selectedText));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('已复制到剪贴板'),
+          duration: Duration(seconds: 1),
+        ),
+      );
+    }
     setState(() {
       _showHighlightMenu = false;
     });
@@ -1980,6 +2026,9 @@ class _NovelReaderPageState extends State<NovelReaderPage>
         return Icons.auto_stories;
       case PageMode.simulation:
         return Icons.menu_book;
+      case PageMode.none:
+        // TODO: Handle this case.
+        throw UnimplementedError();
     }
   }
 
@@ -1993,6 +2042,9 @@ class _NovelReaderPageState extends State<NovelReaderPage>
         return '覆盖';
       case PageMode.simulation:
         return '仿真';
+      case PageMode.none:
+        // TODO: Handle this case.
+        throw UnimplementedError();
     }
   }
 

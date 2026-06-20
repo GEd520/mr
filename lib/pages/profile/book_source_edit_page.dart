@@ -2252,6 +2252,18 @@ class _SourceLoginPageState extends State<_SourceLoginPage> {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('正在检查登录状态...')),
     );
+
+    // 模拟检查完成后重置状态
+    Future.delayed(const Duration(seconds: 2), () {
+      if (mounted) {
+        setState(() {
+          _checking = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('登录状态检查完成')),
+        );
+      }
+    });
   }
 
   @override

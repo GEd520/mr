@@ -504,6 +504,23 @@ function nextContentUrl(result) {
     });
   }
 
+  /// 搜索测试（保存后跳转搜索页）
+  void _searchWithSource() {
+    final source = _buildSource();
+    if (source.bookSourceUrl.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('请先填写书源URL（// @url）再搜索测试')),
+      );
+      return;
+    }
+    StorageService.instance.saveBookSource(source.toJson()).then((_) {
+      if (!mounted) return;
+      Navigator.pushNamed(context, AppRoutes.search, arguments: {
+        'sourceUrl': source.bookSourceUrl,
+      });
+    });
+  }
+
   /// 插入代码片段
   void _insertSnippet(String snippet) {
     final text = _jsController.text;
@@ -515,6 +532,31 @@ function nextContentUrl(result) {
     _jsController.selection = TextSelection.collapsed(
       offset: start + snippet.length,
     );
+  }
+
+  /// 从剪贴板粘贴代码
+  Future<void> _pasteFromClipboard() async {
+    final data = await Clipboard.getData('text/plain');
+    final text = data?.text;
+    if (text == null || text.trim().isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('剪贴板为空')),
+        );
+      }
+      return;
+    }
+    _insertSnippet(text);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('已粘贴剪贴板内容')),
+      );
+    }
+  }
+
+  /// 二维码导入（跳转到导入页面）
+  void _importFromQr() {
+    Navigator.pushNamed(context, AppRoutes.bookSourceImport);
   }
 
   @override
@@ -561,6 +603,9 @@ function nextContentUrl(result) {
                       builder: (context) => const _JsHelpPage(),
                     ));
                     break;
+                  case 'search':
+                    _searchWithSource();
+                    break;
                   case 'info':
                     _showSourceInfoDialog().then((r) {
                       if (r != null) {
@@ -580,6 +625,12 @@ function nextContentUrl(result) {
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(content: Text('已复制到剪贴板')),
                     );
+                    break;
+                  case 'paste':
+                    _pasteFromClipboard();
+                    break;
+                  case 'qr':
+                    _importFromQr();
                     break;
                   case 'clear':
                     _jsController.clear();
@@ -603,6 +654,11 @@ function nextContentUrl(result) {
                   child: Text('帮助文档'),
                 ),
                 const PopupMenuItem(
+                  value: 'search',
+                  padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  child: Text('搜索测试'),
+                ),
+                const PopupMenuItem(
                   value: 'info',
                   padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                   child: Text('书源信息'),
@@ -616,6 +672,16 @@ function nextContentUrl(result) {
                   value: 'copy',
                   padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                   child: Text('复制全部代码'),
+                ),
+                const PopupMenuItem(
+                  value: 'paste',
+                  padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  child: Text('粘贴代码'),
+                ),
+                const PopupMenuItem(
+                  value: 'qr',
+                  padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  child: Text('二维码导入'),
                 ),
                 const PopupMenuItem(
                   value: 'clear',

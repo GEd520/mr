@@ -29,15 +29,17 @@ class _BookSourceImportPageState extends State<BookSourceImportPage>
   late TabController _tabController;
   final _urlController = TextEditingController();
   final _textController = TextEditingController();
+  final _jsController = TextEditingController();
   bool _isImporting = false;
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    _tabController = TabController(length: 4, vsync: this);
     if (widget.initialText != null && widget.initialText!.isNotEmpty) {
       _textController.text = widget.initialText!;
-      // 如果是 URL，填入 URL 标签
+      // 如果是 URL，填入 URL 标签；否则填入文本标签
+      // _doImport 会自动尝试 JSON 和 JS 两种格式
       if (_looksLikeUrl(widget.initialText!)) {
         _urlController.text = widget.initialText!;
         _tabController.index = 0;
@@ -52,6 +54,7 @@ class _BookSourceImportPageState extends State<BookSourceImportPage>
     _tabController.dispose();
     _urlController.dispose();
     _textController.dispose();
+    _jsController.dispose();
     super.dispose();
   }
 
@@ -141,7 +144,14 @@ class _BookSourceImportPageState extends State<BookSourceImportPage>
   Future<void> _doImport(String text) async {
     setState(() => _isImporting = true);
     try {
-      final result = await BookSourceImportService().importText(text);
+      final service = BookSourceImportService();
+      BookSourceImportResult result;
+      // 先尝试 JSON 格式，失败则按 JS 书源导入
+      try {
+        result = await service.importText(text);
+      } catch (_) {
+        result = await service.importJsText(text);
+      }
       _showResult(result);
       if (mounted) Navigator.pop(context, result);
     } catch (e) {
@@ -177,6 +187,7 @@ class _BookSourceImportPageState extends State<BookSourceImportPage>
           tabs: const [
             Tab(text: '网络导入'),
             Tab(text: '文本导入'),
+            Tab(icon: Icon(Icons.code), text: 'JS导入'),
             Tab(icon: Icon(Icons.qr_code_scanner), text: '二维码'),
           ],
         ),
@@ -188,6 +199,7 @@ class _BookSourceImportPageState extends State<BookSourceImportPage>
             children: [
               _buildUrlTab(),
               _buildTextTab(),
+              _buildJsTab(),
               _buildQrTab(),
             ],
           ),
@@ -300,6 +312,110 @@ class _BookSourceImportPageState extends State<BookSourceImportPage>
         ],
       ),
     );
+  }
+
+  /// JS 书源导入标签页
+  Widget _buildJsTab() {
+    return Padding(
+      padding: const EdgeInsets.all(DesignTokens.spacingLg),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Text(
+            '粘贴 JS 书源代码，或从文件选择 .js 文件导入',
+            style: TextStyle(color: Colors.grey),
+          ),
+          const SizedBox(height: DesignTokens.spacingMd),
+          Expanded(
+            child: TextField(
+              controller: _jsController,
+              maxLines: null,
+              expands: true,
+              decoration: const InputDecoration(
+                hintText: '粘贴 JS 书源代码...\n// 示例：\n// {"bookSourceName":"示例","bookSourceUrl":"https://..."}',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.code),
+              ),
+              textAlignVertical: TextAlignVertical.top,
+              style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+            ),
+          ),
+          const SizedBox(height: DesignTokens.spacingMd),
+          Row(
+            children: [
+              OutlinedButton.icon(
+                onPressed: _isImporting ? null : _importFromJsFile,
+                icon: const Icon(Icons.folder_open),
+                label: const Text('选择 .js 文件'),
+              ),
+              const SizedBox(width: DesignTokens.spacingMd),
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: _isImporting ? null : _importFromJs,
+                  icon: const Icon(Icons.code),
+                  label: const Text('导入 JS 书源'),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: DesignTokens.spacingLg),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(DesignTokens.spacingMd),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('JS 书源说明',
+                      style: Theme.of(context).textTheme.titleSmall),
+                  const SizedBox(height: DesignTokens.spacingSm),
+                  const Text(
+                    '• JS 书源是使用 JavaScript 语法的书源\n'
+                    '• 支持 .js 文件或直接粘贴代码\n'
+                    '• 引擎：QuickJS (flutter_js) 或 Rhino (Android)\n'
+                    '• 导入后可在书源管理中编辑和调试',
+                    style: TextStyle(fontSize: 13, height: 1.6),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _importFromJs() async {
+    final text = _jsController.text.trim();
+    if (text.isEmpty) {
+      _showError('请输入 JS 书源代码');
+      return;
+    }
+    await _doImport(text);
+  }
+
+  Future<void> _importFromJsFile() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['js'],
+      );
+      if (result == null || result.files.isEmpty) return;
+
+      setState(() => _isImporting = true);
+
+      final file = result.files.first;
+      final bytes = file.bytes ?? await _readFileBytes(file.path!);
+      final text = utf8.decode(bytes, allowMalformed: true);
+
+      final importResult =
+          await BookSourceImportService().importJsText(text);
+      _showResult(importResult);
+      if (mounted) Navigator.pop(context, importResult);
+    } catch (e) {
+      _showError('JS 文件导入失败: $e');
+    } finally {
+      if (mounted) setState(() => _isImporting = false);
+    }
   }
 
   Widget _buildQrTab() {

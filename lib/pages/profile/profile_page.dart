@@ -26,6 +26,8 @@ class _ProfilePageState extends State<ProfilePage>
   @override
   bool get wantKeepAlive => true;
 
+  bool _webServiceEnabled = false;
+
   @override
   Widget build(BuildContext context) {
     super.build(context);
@@ -135,8 +137,16 @@ class _ProfilePageState extends State<ProfilePage>
                     icon: Icons.public,
                     title: 'Web服务',
                     subtitle: '开启后可通过浏览器访问',
-                    value: false,
-                    onChanged: (value) {},
+                    value: _webServiceEnabled,
+                    onChanged: (value) {
+                      setState(() => _webServiceEnabled = value);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(value ? 'Web服务已开启' : 'Web服务已关闭'),
+                          duration: const Duration(seconds: 1),
+                        ),
+                      );
+                    },
                   ),
                 ]),
 
@@ -147,7 +157,14 @@ class _ProfilePageState extends State<ProfilePage>
                     icon: Icons.extension_outlined,
                     title: '扩展设置',
                     subtitle: '管理插件和扩展功能',
-                    onTap: () {},
+                    onTap: () {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('扩展功能开发中，敬请期待'),
+                          duration: Duration(seconds: 2),
+                        ),
+                      );
+                    },
                   ),
                   _buildListItem(
                     icon: Icons.psychology_outlined,

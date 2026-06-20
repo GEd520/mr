@@ -200,7 +200,14 @@ class _DiscoveryPageState extends State<DiscoveryPage>
               icon: Icon(Icons.folder_outlined,
                   size: 20, color: onSurfaceColor),
               tooltip: '收藏分组',
-              onPressed: () {},
+              onPressed: () {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('收藏分组功能开发中'),
+                    duration: Duration(seconds: 1),
+                  ),
+                );
+              },
             ),
             // 排序按钮
             PopupMenuButton<String>(

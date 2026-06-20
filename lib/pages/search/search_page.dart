@@ -235,6 +235,8 @@ class _SearchPageState extends State<SearchPage> {
                   ],
                 ),
               ),
+              // 书源选择栏
+              _buildSourceSelectorBar(provider),
               // 搜索进度条
               if (provider.isLoading)
                 const LinearProgressIndicator(minHeight: 2),
@@ -301,6 +303,55 @@ class _SearchPageState extends State<SearchPage> {
   Widget _buildFilters(SearchProvider provider) {
     // 过滤器栏已移除，功能整合到更多菜单
     return const SizedBox.shrink();
+  }
+
+  Widget _buildSourceSelectorBar(SearchProvider provider) {
+    final selectedCount = provider.selectedSourceUrls.length;
+    final totalCount = provider.bookSources.length;
+    return InkWell(
+      onTap: () => _showSourceFilter(provider),
+      child: Container(
+        padding: const EdgeInsets.symmetric(
+          horizontal: DesignTokens.spacingLg,
+          vertical: DesignTokens.spacingSm,
+        ),
+        child: Row(
+          children: [
+            Icon(
+              Icons.source_outlined,
+              size: DesignTokens.listItemIconSize * 0.67,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+            const SizedBox(width: DesignTokens.spacingXs),
+            Expanded(
+              child: Text(
+                totalCount == 0
+                    ? '暂无书源，点击导入'
+                    : '书源: $selectedCount / $totalCount',
+                style: TextStyle(
+                  fontSize: DesignTokens.fontSummary,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+            if (selectedCount > 0)
+              TextButton(
+                onPressed: () => provider.deselectAllSources(),
+                child: const Text('清空', style: TextStyle(fontSize: 12)),
+              ),
+            TextButton(
+              onPressed: () => provider.selectAllSources(),
+              child: const Text('全选', style: TextStyle(fontSize: 12)),
+            ),
+            const Icon(
+              Icons.chevron_right,
+              size: DesignTokens.listItemIconSize * 0.67,
+              color: Colors.grey,
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _buildErrorState(SearchProvider provider) {
@@ -752,6 +803,8 @@ class _SearchPageState extends State<SearchPage> {
   void _performSearch() {
     final keyword = _searchController.text.trim();
     if (keyword.isEmpty) return;
+    // 收起键盘
+    FocusScope.of(context).unfocus();
     context.read<SearchProvider>().search(
       keyword,
       precisionSearch: _precisionSearch,

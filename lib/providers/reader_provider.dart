@@ -4,7 +4,7 @@ import '../services/storage_service.dart';
 import '../services/reader_bookmark_service.dart';
 import '../services/reader_tts_manager.dart';
 
-enum PageMode { scroll, slide, cover, simulation }
+enum PageMode { scroll, slide, cover, simulation, none }
 
 enum TapZoneAction {
   none,
