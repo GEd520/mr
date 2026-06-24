@@ -296,7 +296,6 @@ class WebBook {
         rule.startsWith('<js>') ||
         rule.startsWith('@quickjs:') ||
         rule.startsWith('@java:') ||
-        rule.startsWith('@ts:') ||
         rule.contains('<js>') ||
         rule.contains('{{');
   }
@@ -339,7 +338,6 @@ class WebBook {
     final isRealJsRule = url.startsWith('@js:') ||
         url.startsWith('@quickjs:') ||
         url.startsWith('@java:') ||
-        url.startsWith('@ts:') ||
         url.startsWith('<js>');
 
     if (isRealJsRule) {

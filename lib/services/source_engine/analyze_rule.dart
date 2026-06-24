@@ -46,7 +46,7 @@ class AnalyzeRule {
 
   // 规则拆分正则
   static final _jsPatternRegex = RegExp(
-      r'@(?:webjs|js|quickjs|java|ts):([\s\S]*?)(?=@(?:webjs|js|quickjs|java|ts):|$)',
+      r'@(?:webjs|js|quickjs|java):([\s\S]*?)(?=@(?:webjs|js|quickjs|java):|$)',
       caseSensitive: false);
   static final _jsTagPatternRegex = RegExp(r'<js>([\s\S]*?)</js>', caseSensitive: false);
 
@@ -342,7 +342,7 @@ class AnalyzeRule {
       start = 1;
     }
 
-    // 解析 @js: / @quickjs: / @java: / @ts: 和 <js></js> 规则
+    // 解析 @js: / @quickjs: / @java: 和 <js></js> 规则
     // 先处理 <js></js> 标签 → 替换为 @js:
     String processedRule = ruleStr;
     final jsTagMatches = _jsTagPatternRegex.allMatches(processedRule).toList();

@@ -46,6 +46,13 @@ android {
                 "META-INF/NOTICE.txt",
                 "META-INF/notice.txt",
                 "META-INF/*.kotlin_module",
+                "META-INF/INDEX.LIST",
+                "META-INF/io.netty.versions.properties",
+                "META-INF/versions/**",
+                "kotlin/**",
+                "kotlin-tooling-metadata.json",
+                "DebugProbesKt.bin",
+                "META-INF/proguard/**",
             )
         }
         // .so 文件不压缩（Android 6+ 直接 mmap，压缩反而浪费 CPU）

@@ -193,16 +193,12 @@ class JsEngine {
   final Lock _evalLock = Lock();
 
   // 热路径正则常量
-  static final _javaCallRegex = RegExp(r'\bjava\.');
-  static final _es6Regex = RegExp(r'\bconst\b|\blet\b|=>|\basync\b|\bawait\b|\.\.\.|\bclass\b|\bimport\b|`[^`]*\$\{');
   static final _returnRegex = RegExp(r'\breturn\b');
   static final _jsTagRegex = RegExp(r'<js>([\s\S]*?)</js>', caseSensitive: false);
-  static final _jsPrefixRegex = RegExp(r'^@(?:js|rhino|quickjs|java|ts):', caseSensitive: false);
+  static final _jsPrefixRegex = RegExp(r'^@(?:js|rhino|quickjs|java):', caseSensitive: false);
   static final _templateVarRegex = RegExp(r'\{\{([\s\S]*?)\}\}');
-  static final _quickjsTagStartRegex = RegExp(r'^<quickjs>|</quickjs>$');
-  static final _javaTagStartRegex = RegExp(r'^<java>|</java>$');
-  static final _tsTagStartRegex = RegExp(r'^<ts>|</ts>$');
-  static final _jsTagStartRegex = RegExp(r'^<js>|</js>$');
+  // 统一标签剥离正则：<js>/<quickjs>/<java>/<rhino> 标签统一处理
+  static final _engineTagRegex = RegExp(r'^<(?:js|quickjs|java|rhino)>|</(?:js|quickjs|java|rhino)>$', caseSensitive: false);
 
   // _preCacheBridgeCalls 正则常量
   static final _literalPattern = RegExp(
@@ -346,85 +342,27 @@ class JsEngine {
 
   // ===== 分流策略 =====
 
-  /// 解析规则代码，确定使用哪个引擎（公开，供 EngineDispatcher 调用）
+  /// 解析规则代码，剥离引擎前缀声明
   ///
-  /// 优先级：
-  /// 1. 显式前缀声明：@quickjs: / @ts: / @js: / @rhino: / @java:
-  ///    （@rhino: / @java: 剥离前缀后走 QuickJS）
-  /// 2. 关键词自动识别（无显式声明时）
-  /// 3. 默认 QuickJS
+  /// 所有前缀（@js:/@rhino:/@quickjs:/@java: 和对应标签）统一剥离后走 QuickJS
+  /// 不再区分引擎类型，前缀仅作为兼容性标记
   _EngineResolveResult resolveEngine(String ruleCode, {JsEngineType? sourceEngine}) {
-    // 1. 显式前缀声明
-    if (ruleCode.startsWith('@rhino:') || ruleCode.startsWith('<rhino>')) {
-      // @rhino: / <rhino> 前缀：剥离前缀后走 QuickJS
-      final code = ruleCode.startsWith('@rhino:')
-          ? ruleCode.substring(7)
-          : ruleCode.replaceAll(RegExp(r'^<rhino>|</rhino>$'), '');
-      return _EngineResolveResult(JsEngineType.quickjs, code);
-    }
-
-    if (ruleCode.startsWith('@quickjs:') || ruleCode.startsWith('<quickjs>')) {
-      final code = ruleCode.startsWith('@quickjs:')
-          ? ruleCode.substring(9)
-          : ruleCode.replaceAll(_quickjsTagStartRegex, '');
-      return _EngineResolveResult(JsEngineType.quickjs, code);
-    }
-
-    if (ruleCode.startsWith('@java:') || ruleCode.startsWith('<java>')) {
-      // @java: / <java> 前缀：剥离前缀后走 QuickJS
-      final code = ruleCode.startsWith('@java:')
-          ? ruleCode.substring(6)
-          : ruleCode.replaceAll(_javaTagStartRegex, '');
-      return _EngineResolveResult(JsEngineType.quickjs, code);
-    }
-
-    if (ruleCode.startsWith('@ts:') || ruleCode.startsWith('<ts>')) {
-      final code = ruleCode.startsWith('@ts:')
-          ? ruleCode.substring(4)
-          : ruleCode.replaceAll(_tsTagStartRegex, '');
-      // TS 编译后由 QuickJS 执行
-      return _EngineResolveResult(JsEngineType.quickjs, code);
-    }
-
-    // 2. @js: 或 <js> 前缀 → 自动识别
     String code = ruleCode;
-    if (ruleCode.startsWith('@js:')) {
-      code = ruleCode.substring(4);
-    } else if (ruleCode.startsWith('<js>')) {
-      code = ruleCode.replaceAll(_jsTagStartRegex, '');
+
+    // 1. 剥离 @js:/@rhino:/@quickjs:/@java: 前缀
+    if (_jsPrefixRegex.hasMatch(code)) {
+      code = code.replaceFirst(_jsPrefixRegex, '').trim();
     }
 
-    // 自动识别引擎
-    final autoDetected = _autoDetectEngine(code);
+    // 2. 剥离 <js>/<quickjs>/<java>/<rhino> 标签
+    if (code.startsWith('<')) {
+      code = code.replaceAll(_engineTagRegex, '').trim();
+    }
 
-    // 3. 默认 QuickJS
-    return _EngineResolveResult(autoDetected ?? JsEngineType.quickjs, code);
+    return _EngineResolveResult(JsEngineType.quickjs, code);
   }
 
-  /// 关键词自动识别引擎
-  ///
-  /// - 含 ES6 特征（不管有无 java.*）→ QuickJS
-  /// - 含 java. 调用但无 ES6 → QuickJS（桥接需要预缓存）
-  /// - 无法确定 → null（使用默认值）
-  JsEngineType? _autoDetectEngine(String code) {
-    final hasJavaCall = _javaCallRegex.hasMatch(code);
-    final hasES6 = _es6Regex.hasMatch(code);
 
-    if (hasES6) {
-      // ES6 特征 → QuickJS（java.* 通过桥接调用）
-      return JsEngineType.quickjs;
-    }
-
-    if (hasJavaCall && !hasES6) {
-      // 含 java. 调用但无 ES6 → 也走 QuickJS
-      // 原因：java.* 桥接方法（java.ajax/get/post 等）需要预缓存机制，
-      // 只有 QuickJS 路径支持 _preCacheBridgeCalls
-      return JsEngineType.quickjs;
-    }
-
-    // 无法确定，返回 null 让上层决定
-    return null;
-  }
 
   // ===== Node.js API 兼容层 =====
 
@@ -2497,54 +2435,6 @@ class JsEngine {
     evaluate('typeof java !== "undefined" && typeof CryptoJS !== "undefined" && typeof _javaCache !== "undefined" && typeof _AES !== "undefined"');
   }
 
-  // ===== TypeScript 编译支持 =====
-
-  // TypeScript 编译正则常量化（避免每次调用创建 RegExp）
-  static final _tsTypeAnnotationRegex = RegExp(r'(\w+)\s*:\s*[\w\[\]<>\|&\s]+([,\)])');
-  static final _tsReturnTypeRegex = RegExp(r'\)\s*:\s*[\w\[\]<>\|&\s]+\s*([=>{])');
-  static final _tsVarTypeRegex = RegExp(r'(const|let|var)\s+(\w+)\s*:\s*[\w\[\]<>\|&\s]+=\s*');
-  static final _tsInterfaceRegex = RegExp(r'interface\s+\w+\s*\{[^}]*\}', multiLine: true);
-  static final _tsTypeAliasRegex = RegExp(r'type\s+\w+\s*=\s*[^;]+;');
-  static final _tsAsCastRegex = RegExp(r'\s+as\s+[\w\[\]<>\|&]+');
-  static final _tsGenericRegex = RegExp(r'(\w+)<[^>]+>\(');
-  static final _tsEnumRegex = RegExp(r'enum\s+(\w+)\s*\{([^}]+)\}');
-  static final _tsOptionalChainRegex = RegExp(r'(\w+)\?\.(?:(\w+)\()?');
-  static final _tsNullishCoalescingRegex = RegExp(r'(\w+)\s*\?\?\s*');
-  static final _tsAccessModifierRegex = RegExp(r'\b(public|private|protected|readonly)\s+');
-  static final _tsAbstractRegex = RegExp(r'\babstract\s+');
-  static final _tsImplementsRegex = RegExp(r'\s+implements\s+[\w,\s]+');
-
-  Future<String> compileTypeScript(String tsCode) async {
-    String js = tsCode;
-
-    js = js.replaceAllMapped(_tsTypeAnnotationRegex, (m) => '${m[1]}${m[2]}');
-    js = js.replaceAllMapped(_tsReturnTypeRegex, (m) => ') ${m[1]}');
-    js = js.replaceAllMapped(_tsVarTypeRegex, (m) => '${m[1]} ${m[2]} = ');
-    js = js.replaceAll(_tsInterfaceRegex, '');
-    js = js.replaceAll(_tsTypeAliasRegex, '');
-    js = js.replaceAllMapped(_tsAsCastRegex, (m) => '');
-    js = js.replaceAllMapped(_tsGenericRegex, (m) => '${m[1]}(');
-    js = js.replaceAllMapped(_tsEnumRegex, (m) {
-        final name = m[1];
-        final body = m[2];
-        final entries = body!.split(',').asMap().entries.map((e) {
-          final trimmed = e.value.trim();
-          if (trimmed.contains('=')) {
-            return trimmed;
-          }
-          return '$trimmed = ${e.key}';
-        }).join(', ');
-        return 'var $name = { $entries };';
-      });
-    js = js.replaceAllMapped(_tsOptionalChainRegex, (m) => m[2] != null ? '(${m[1]} && ${m[1]}.${m[2]}(' : '(${m[1]} && ${m[1]}.');
-    js = js.replaceAllMapped(_tsNullishCoalescingRegex, (m) => '(${m[1]} != null ? ${m[1]} : ');
-    js = js.replaceAll(_tsAccessModifierRegex, '');
-    js = js.replaceAll(_tsAbstractRegex, '');
-    js = js.replaceAllMapped(_tsImplementsRegex, (m) => '');
-
-    return js;
-  }
-
   // ===== 自定义库管理 =====
 
   Future<bool> installPackage(String name, String code, {String? version}) async {
@@ -2670,11 +2560,6 @@ class JsEngine {
     } catch (e) {
       return null;
     }
-  }
-
-  Future<dynamic> evaluateTypeScript(String tsCode) async {
-    final jsCode = await compileTypeScript(tsCode);
-    return evaluate(jsCode);
   }
 
   /// 同步执行 JS 代码（用于 AnalyzeRule 规则解析）
@@ -2861,7 +2746,7 @@ class JsEngine {
       return jsTagMatch.group(1)?.trim();
     }
 
-    // @js:code、@rhino:code、@quickjs:code、@java:code、@ts:code 格式
+    // @js:code、@rhino:code、@quickjs:code、@java:code 格式
     if (_jsPrefixRegex.hasMatch(rule)) {
       return rule.replaceFirst(_jsPrefixRegex, '').trim();
     }
@@ -3005,7 +2890,6 @@ class JsEngine {
   /// - @quickjs: / <quickjs> → QuickJS 引擎
   /// - @rhino: / <rhino> → 剥离前缀后走 QuickJS
   /// - @java: / <java> → 剥离前缀后走 QuickJS
-  /// - @ts: / <ts> → TS 编译后 QuickJS 执行
   /// - @js: / <js> → 自动识别引擎
   /// - 无前缀 → 自动识别引擎
   Future<String?> evaluateBookRule(String ruleCode, {
@@ -3015,11 +2899,6 @@ class JsEngine {
   }) async {
     final resolved = resolveEngine(ruleCode, sourceEngine: sourceEngine);
     var code = resolved.code;
-
-    // TS 需要先编译
-    if (ruleCode.startsWith('@ts:') || ruleCode.startsWith('<ts>')) {
-      code = await compileTypeScript(code);
-    }
 
     return _evalLock.synchronized(() =>
       _executeQuickJSRule(code, result: result, env: env)
