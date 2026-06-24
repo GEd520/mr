@@ -68,9 +68,9 @@ jobs:
             echo "type=dev" >> $GITHUB_OUTPUT
           fi
 
-  # ===== Android APK 打包 =====
+  # ===== Android APK 打包 + 独立发布 =====
   build-android:
-    name: Build Android APK
+    name: Build & Release Android
     needs: prepare
     runs-on: ubuntu-latest
     steps:
@@ -141,9 +141,43 @@ jobs:
             ${{ env.zip_name }}
           retention-days: 30
 
-  # ===== iOS 打包（需要 macOS runner）=====
+      - name: Create Android Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.release_type }}-android
+          name: MR ${{ needs.prepare.outputs.version }} Android (${{ needs.prepare.outputs.release_type == 'stable' && '正式版' || '测试版' }})
+          body: |
+            ## MR ${{ needs.prepare.outputs.version }} Android
+
+            **打包类型**: ${{ needs.prepare.outputs.release_type == 'stable' && '正式版 (stable)' || '测试版 (dev)' }}
+
+            **构建日期**: ${{ needs.prepare.outputs.build_date }}
+
+            **今日提交数**: ${{ needs.prepare.outputs.commit_count }}
+
+            **版本号规则**: YY.MMDD.今日提交数
+
+            ---
+
+            ### 下载说明
+            - `.apk` 文件直接安装
+            - `.zip` 文件为压缩包，解压后安装
+
+            ### 安装方法
+            1. 下载 APK 文件
+            2. 允许"未知来源"安装
+            3. 点击安装
+          files: |
+            ${{ steps.apk.outputs.apk_name }}
+            ${{ env.zip_name }}
+          prerelease: ${{ needs.prepare.outputs.release_type != 'stable' }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ===== iOS 打包 + 独立发布（需要 macOS runner）=====
   build-ios:
-    name: Build iOS IPA
+    name: Build & Release iOS
     needs: prepare
     runs-on: macos-latest
     steps:
@@ -173,62 +207,32 @@ jobs:
         run: flutter build ios --release --no-codesign --no-tree-shake-icons
 
       - name: Create IPA
+        id: ipa
         run: |
           VERSION="${{ needs.prepare.outputs.version }}"
           TYPE="${{ needs.prepare.outputs.release_type }}"
           BUILD_DATE="${{ needs.prepare.outputs.build_date }}"
           IPA_NAME="mr_v${VERSION}_${TYPE}_${BUILD_DATE}_ios.ipa"
-          # 创建 Payload 目录结构
           mkdir -p Payload
           cp -r build/ios/iphoneos/Runner.app Payload/
           zip -r "${IPA_NAME}" Payload
-          echo "ipa_name=${IPA_NAME}" >> $GITHUB_ENV
+          echo "ipa_name=${IPA_NAME}" >> $GITHUB_OUTPUT
           ls -lh "${IPA_NAME}"
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: mr-ios-${{ needs.prepare.outputs.version }}
-          path: ${{ env.ipa_name }}
+          path: ${{ steps.ipa.outputs.ipa_name }}
           retention-days: 30
 
-  # ===== 创建 GitHub Release（汇总 Android + iOS）=====
-  release:
-    name: Create Release
-    needs: [prepare, build-android, build-ios]
-    runs-on: ubuntu-latest
-    if: always()
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download Android Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: mr-android-${{ needs.prepare.outputs.version }}
-          path: artifacts/android
-        continue-on-error: true
-
-      - name: Download iOS Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: mr-ios-${{ needs.prepare.outputs.version }}
-          path: artifacts/ios
-        continue-on-error: true
-
-      - name: List Artifacts
-        run: |
-          echo "=== Android ==="
-          ls -lh artifacts/android/ 2>/dev/null || echo "无 Android 产物"
-          echo "=== iOS ==="
-          ls -lh artifacts/ios/ 2>/dev/null || echo "无 iOS 产物"
-
-      - name: Create Release
+      - name: Create iOS Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.release_type }}
-          name: MR ${{ needs.prepare.outputs.version }} (${{ needs.prepare.outputs.release_type == 'stable' && '正式版' || '测试版' }})
+          tag_name: v${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.release_type }}-ios
+          name: MR ${{ needs.prepare.outputs.version }} iOS (${{ needs.prepare.outputs.release_type == 'stable' && '正式版' || '测试版' }})
           body: |
-            ## MR ${{ needs.prepare.outputs.version }}
+            ## MR ${{ needs.prepare.outputs.version }} iOS
 
             **打包类型**: ${{ needs.prepare.outputs.release_type == 'stable' && '正式版 (stable)' || '测试版 (dev)' }}
 
@@ -241,21 +245,14 @@ jobs:
             ---
 
             ### 下载说明
-
-            #### Android
-            - `.apk` 文件直接安装
-            - `.zip` 文件为压缩包，解压后安装
-
-            #### iOS
             - `.ipa` 文件需通过侧载工具安装（AltStore/Sideloadly/TrollStore）
             - 未签名版本，需自签或使用侧载工具
 
             ### 安装方法
-            **Android**: 下载 APK → 允许未知来源 → 安装
-            **iOS**: 下载 IPA → 使用侧载工具安装
+            1. 下载 IPA 文件
+            2. 使用侧载工具安装
           files: |
-            artifacts/android/*
-            artifacts/ios/*
+            ${{ steps.ipa.outputs.ipa_name }}
           prerelease: ${{ needs.prepare.outputs.release_type != 'stable' }}
           generate_release_notes: true
         env:
