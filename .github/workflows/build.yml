@@ -68,9 +68,9 @@ jobs:
             echo "type=dev" >> $GITHUB_OUTPUT
           fi
 
-  # ===== Android APK 打包 + 独立发布 =====
+  # ===== Android APK 打包 =====
   build-android:
-    name: Build & Release Android
+    name: Build Android
     needs: prepare
     runs-on: ubuntu-latest
     steps:
@@ -141,45 +141,12 @@ jobs:
             ${{ env.zip_name }}
           retention-days: 30
 
-      - name: Create Android Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.release_type }}-android
-          name: MR ${{ needs.prepare.outputs.version }} Android (${{ needs.prepare.outputs.release_type == 'stable' && '正式版' || '测试版' }})
-          body: |
-            ## MR ${{ needs.prepare.outputs.version }} Android
-
-            **打包类型**: ${{ needs.prepare.outputs.release_type == 'stable' && '正式版 (stable)' || '测试版 (dev)' }}
-
-            **构建日期**: ${{ needs.prepare.outputs.build_date }}
-
-            **今日提交数**: ${{ needs.prepare.outputs.commit_count }}
-
-            **版本号规则**: YY.MMDD.今日提交数
-
-            ---
-
-            ### 下载说明
-            - `.apk` 文件直接安装
-            - `.zip` 文件为压缩包，解压后安装
-
-            ### 安装方法
-            1. 下载 APK 文件
-            2. 允许"未知来源"安装
-            3. 点击安装
-          files: |
-            ${{ steps.apk.outputs.apk_name }}
-            ${{ env.zip_name }}
-          prerelease: ${{ needs.prepare.outputs.release_type != 'stable' }}
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  # ===== iOS 打包 + 独立发布（需要 macOS runner）=====
+  # ===== iOS 打包（允许失败）=====
   build-ios:
-    name: Build & Release iOS
+    name: Build iOS
     needs: prepare
     runs-on: macos-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -226,33 +193,98 @@ jobs:
           path: ${{ steps.ipa.outputs.ipa_name }}
           retention-days: 30
 
-      - name: Create iOS Release
+  # ===== 合并发布（等待所有平台，无论成功失败）=====
+  release:
+    name: Create Release
+    needs: [prepare, build-android, build-ios]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check Build Results
+        id: results
+        run: |
+          echo "android_result=${{ needs.build-android.result }}" >> $GITHUB_OUTPUT
+          echo "ios_result=${{ needs.build-ios.result }}" >> $GITHUB_OUTPUT
+          echo "=== 构建结果 ==="
+          echo "Android: ${{ needs.build-android.result }}"
+          echo "iOS: ${{ needs.build-ios.result }}"
+
+      - name: Download Android Artifact
+        if: needs.build-android.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: mr-android-${{ needs.prepare.outputs.version }}
+          path: artifacts/android
+
+      - name: Download iOS Artifact
+        if: needs.build-ios.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: mr-ios-${{ needs.prepare.outputs.version }}
+          path: artifacts/ios
+
+      - name: List Artifacts
+        run: |
+          echo "=== Android ==="
+          ls -lh artifacts/android/ 2>/dev/null || echo "无 Android 产物"
+          echo "=== iOS ==="
+          ls -lh artifacts/ios/ 2>/dev/null || echo "无 iOS 产物"
+
+      - name: Build Release Body
+        id: body
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          TYPE="${{ needs.prepare.outputs.release_type }}"
+          BUILD_DATE="${{ needs.prepare.outputs.build_date }}"
+          COMMIT_COUNT="${{ needs.prepare.outputs.commit_count }}"
+
+          TYPE_LABEL="测试版 (dev)"
+          if [ "$TYPE" = "stable" ]; then
+            TYPE_LABEL="正式版 (stable)"
+          fi
+
+          BODY="## MR ${VERSION}\n\n"
+          BODY="${BODY}**打包类型**: ${TYPE_LABEL}\n\n"
+          BODY="${BODY}**构建日期**: ${BUILD_DATE}\n\n"
+          BODY="${BODY}**今日提交数**: ${COMMIT_COUNT}\n\n"
+          BODY="${BODY}**版本号规则**: YY.MMDD.今日提交数\n\n"
+          BODY="${BODY}---\n\n"
+
+          # Android 下载说明
+          if [ "${{ needs.build-android.result }}" = "success" ]; then
+            BODY="${BODY}### Android\n"
+            BODY="${BODY}- \`.apk\` 文件直接安装\n"
+            BODY="${BODY}- \`.zip\` 文件为压缩包，解压后安装\n"
+            BODY="${BODY}- 安装方法：下载 APK → 允许未知来源 → 安装\n\n"
+          else
+            BODY="${BODY}### Android\n❌ 打包失败，请查看 Actions 日志\n\n"
+          fi
+
+          # iOS 下载说明
+          if [ "${{ needs.build-ios.result }}" = "success" ]; then
+            BODY="${BODY}### iOS\n"
+            BODY="${BODY}- \`.ipa\` 文件需通过侧载工具安装（AltStore/Sideloadly/TrollStore）\n"
+            BODY="${BODY}- 未签名版本，需自签或使用侧载工具\n"
+            BODY="${BODY}- 安装方法：下载 IPA → 使用侧载工具安装\n\n"
+          else
+            BODY="${BODY}### iOS\n⚠️ 打包失败或暂不支持，请查看 Actions 日志\n\n"
+          fi
+
+          # 写入文件避免转义问题
+          echo -e "$BODY" > release_body.md
+          cat release_body.md
+
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.release_type }}-ios
-          name: MR ${{ needs.prepare.outputs.version }} iOS (${{ needs.prepare.outputs.release_type == 'stable' && '正式版' || '测试版' }})
-          body: |
-            ## MR ${{ needs.prepare.outputs.version }} iOS
-
-            **打包类型**: ${{ needs.prepare.outputs.release_type == 'stable' && '正式版 (stable)' || '测试版 (dev)' }}
-
-            **构建日期**: ${{ needs.prepare.outputs.build_date }}
-
-            **今日提交数**: ${{ needs.prepare.outputs.commit_count }}
-
-            **版本号规则**: YY.MMDD.今日提交数
-
-            ---
-
-            ### 下载说明
-            - `.ipa` 文件需通过侧载工具安装（AltStore/Sideloadly/TrollStore）
-            - 未签名版本，需自签或使用侧载工具
-
-            ### 安装方法
-            1. 下载 IPA 文件
-            2. 使用侧载工具安装
+          tag_name: v${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.release_type }}
+          name: MR ${{ needs.prepare.outputs.version }} (${{ needs.prepare.outputs.release_type == 'stable' && '正式版' || '测试版' }})
+          body_path: release_body.md
           files: |
-            ${{ steps.ipa.outputs.ipa_name }}
+            artifacts/android/*
+            artifacts/ios/*
           prerelease: ${{ needs.prepare.outputs.release_type != 'stable' }}
           generate_release_notes: true
         env:
