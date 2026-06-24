@@ -294,8 +294,6 @@ class WebBook {
     if (rule == null || rule.isEmpty) return false;
     return rule.startsWith('@js:') ||
         rule.startsWith('<js>') ||
-        rule.startsWith('@quickjs:') ||
-        rule.startsWith('@java:') ||
         rule.contains('<js>') ||
         rule.contains('{{');
   }
@@ -333,11 +331,9 @@ class WebBook {
   /// 支持 @js: 前缀的动态 URL 生成和 {{key}}/{{page}} 模板替换
   Future<String> _resolveUrl(String url, {String? keyword, int? page}) async {
     // 借鉴 legado：区分真正的 JS 规则和 URL 模板
-    // 只有以 @js:/<js>/@quickjs: 等前缀开头的才是 JS 规则
+    // 只有以 @js:/<js> 前缀开头的才是 JS 规则
     // 包含 {{}} 的 URL 模板只做变量替换，不走 JS 执行
     final isRealJsRule = url.startsWith('@js:') ||
-        url.startsWith('@quickjs:') ||
-        url.startsWith('@java:') ||
         url.startsWith('<js>');
 
     if (isRealJsRule) {

@@ -195,10 +195,10 @@ class JsEngine {
   // 热路径正则常量
   static final _returnRegex = RegExp(r'\breturn\b');
   static final _jsTagRegex = RegExp(r'<js>([\s\S]*?)</js>', caseSensitive: false);
-  static final _jsPrefixRegex = RegExp(r'^@(?:js|rhino|quickjs|java):', caseSensitive: false);
+  static final _jsPrefixRegex = RegExp(r'^@js:', caseSensitive: false);
   static final _templateVarRegex = RegExp(r'\{\{([\s\S]*?)\}\}');
-  // 统一标签剥离正则：<js>/<quickjs>/<java>/<rhino> 标签统一处理
-  static final _engineTagRegex = RegExp(r'^<(?:js|quickjs|java|rhino)>|</(?:js|quickjs|java|rhino)>$', caseSensitive: false);
+  // <js></js> 标签剥离正则
+  static final _engineTagRegex = RegExp(r'^<js>|</js>$', caseSensitive: false);
 
   // _preCacheBridgeCalls 正则常量
   static final _literalPattern = RegExp(
@@ -342,20 +342,19 @@ class JsEngine {
 
   // ===== 分流策略 =====
 
-  /// 解析规则代码，剥离引擎前缀声明
+  /// 解析规则代码，剥离 @js: 前缀和 <js></js> 标签
   ///
-  /// 所有前缀（@js:/@rhino:/@quickjs:/@java: 和对应标签）统一剥离后走 QuickJS
-  /// 不再区分引擎类型，前缀仅作为兼容性标记
+  /// 只保留 @js: 作为唯一前缀声明，其他引擎类型声明已移除
   _EngineResolveResult resolveEngine(String ruleCode, {JsEngineType? sourceEngine}) {
     String code = ruleCode;
 
-    // 1. 剥离 @js:/@rhino:/@quickjs:/@java: 前缀
+    // 1. 剥离 @js: 前缀
     if (_jsPrefixRegex.hasMatch(code)) {
       code = code.replaceFirst(_jsPrefixRegex, '').trim();
     }
 
-    // 2. 剥离 <js>/<quickjs>/<java>/<rhino> 标签
-    if (code.startsWith('<')) {
+    // 2. 剥离 <js></js> 标签
+    if (code.startsWith('<js>')) {
       code = code.replaceAll(_engineTagRegex, '').trim();
     }
 
@@ -2738,7 +2737,7 @@ class JsEngine {
   }
 
   /// 从规则字符串中提取 JS 代码
-  /// 支持：<js>code</js>、@js:code、@quickjs:code
+  /// 支持：<js>code</js>、@js:code
   String? _extractJsCode(String rule) {
     // <js>code</js> 格式
     final jsTagMatch = _jsTagRegex.firstMatch(rule);
@@ -2746,7 +2745,7 @@ class JsEngine {
       return jsTagMatch.group(1)?.trim();
     }
 
-    // @js:code、@rhino:code、@quickjs:code、@java:code 格式
+    // @js:code 格式
     if (_jsPrefixRegex.hasMatch(rule)) {
       return rule.replaceFirst(_jsPrefixRegex, '').trim();
     }
@@ -2886,12 +2885,9 @@ class JsEngine {
 
   /// 执行书源规则（统一入口）
   ///
-  /// 规则前缀路由：
-  /// - @quickjs: / <quickjs> → QuickJS 引擎
-  /// - @rhino: / <rhino> → 剥离前缀后走 QuickJS
-  /// - @java: / <java> → 剥离前缀后走 QuickJS
-  /// - @js: / <js> → 自动识别引擎
-  /// - 无前缀 → 自动识别引擎
+  /// 规则前缀：
+  /// - @js: / <js> → 剥离前缀后走 QuickJS
+  /// - 无前缀 → 直接走 QuickJS
   Future<String?> evaluateBookRule(String ruleCode, {
     dynamic result,
     Map<String, dynamic>? env,
