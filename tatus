@@ -1,0 +1,10 @@
+[33ma9066b57[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmaster[m[33m, [m[1;31morigin/master[m[33m, [m[1;31morigin/HEAD[m[33m)[m fix: iOS最低版本提升至17.0，清理旧Pods缓存
+[33md85b7282[m[33m ([m[1;33mtag: [m[1;33mv26.0624.6-dev-android[m[33m)[m fix: 工作流改为合并发布，iOS允许失败跳过
+[33m6ce4f7e3[m[33m ([m[1;33mtag: [m[1;33mv26.0624.5-dev-android[m[33m)[m fix: iOS最低版本提升至16.0
+[33m932a099a[m[33m ([m[1;33mtag: [m[1;33mv26.0624.4-dev-android[m[33m)[m fix: iOS最低版本提升至15.0(mobile_scanner要求)
+[33maf1254ee[m fix: 修复iOS pbxproj一致性错误，平台独立发布Release
+[33m8ae2f2e7[m[33m ([m[1;33mtag: [m[1;33mv26.0624.3-dev[m[33m, [m[1;33mtag: [m[1;33mv26.0624.2-dev[m[33m)[m refactor: 移除引擎类型前缀声明，只保留@js:唯一前缀
+[33m25faed57[m refactor: 移除TS编译/简化前缀声明/添加iOS客户端/优化APK体积
+[33m6646864a[m[33m ([m[1;33mtag: [m[1;33mv26.0624.1-dev[m[33m)[m refactor: 移除Rhino JS引擎，统一使用QuickJS
+[33m44ef0f3f[m[33m ([m[1;33mtag: [m[1;33mv26.0621.3-dev[m[33m)[m Update test.yml神秘的工作流。
+[33m36ae446c[m Update Gradle JVM arguments to lower max heap size

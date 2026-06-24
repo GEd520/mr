@@ -77,6 +77,10 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  # 禁用 Swift Package Manager（项目使用 CocoaPods 管理 iOS 依赖）
+  # 避免 Flutter 3.44+ SPM 集成解析 xcscheme 失败的问题
+  config:
+    enable-swift-package-manager: false
   assets:
     - assets/templates/
     - assets/book_sources/
