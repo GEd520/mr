@@ -1,17 +1,14 @@
 import 'dart:convert';
-import 'package:flutter/foundation.dart';
 import 'js_engine.dart';
-import 'platform_channel.dart';
 
-// ===== 双引擎统一调度器 =====
+// ===== QuickJS 统一调度器 =====
 //
 // 引擎架构：
-//   1. QuickJS  (flutter_js)  → ES6+ 原生支持，主引擎
-//   2. Rhino    (Android)     → Java 互操作，Legado 规则
+//   QuickJS (flutter_js) → 唯一 JS 引擎，ES6+ 原生支持
+//   原生桥接（NativeChannel）→ HTTP/Jsoup/加密等，供预缓存调用
 //
 // 调度策略：
-//   JS 代码 → QuickJS → 失败 → null
-//   @java: 代码 → Rhino
+//   所有 JS 代码 → QuickJS → 失败 → null
 
 /// 引擎状态
 enum EngineStatus {
@@ -38,7 +35,7 @@ class EngineInfo {
   });
 }
 
-/// 双引擎统一调度器
+/// JS 引擎统一调度器
 class EngineDispatcher {
   static final EngineDispatcher _instance = EngineDispatcher._();
   static EngineDispatcher get instance => _instance;
@@ -46,9 +43,8 @@ class EngineDispatcher {
 
   // ===== 引擎执行计数 =====
   int _quickjsCount = 0;
-  int _rhinoCount = 0;
 
-  /// 获取所有引擎状态
+  /// 获取引擎状态
   List<EngineInfo> get engineStatuses => [
     EngineInfo(
       name: 'QuickJS',
@@ -56,21 +52,13 @@ class EngineDispatcher {
       version: 'flutter_js',
       executionCount: _quickjsCount,
     ),
-    EngineInfo(
-      name: 'Rhino',
-      status: !kIsWeb ? EngineStatus.idle : EngineStatus.unavailable,
-      version: '1.9.1',
-      executionCount: _rhinoCount,
-    ),
   ];
 
   // ===== 统一调度 API =====
 
-  /// 执行 JS 代码（双引擎自动降级）
+  /// 执行 JS 代码
   ///
-  /// 路由策略：
-  ///   1. 含 @java:/@css:/@text:/@attr:/java: 前缀 → Rhino
-  ///   2. 其他 → QuickJS → 失败 → null
+  /// 路由策略：所有代码 → QuickJS
   Future<String?> execute(String code, {
     dynamic result,
     String? baseUrl,
@@ -79,17 +67,8 @@ class EngineDispatcher {
   }) async {
     final resolved = JsEngine.instance.resolveEngine(code, sourceEngine: sourceEngine);
 
-    // Rhino 路径
-    if (resolved.engine == JsEngineType.rhino) {
-      _rhinoCount++;
-      return JsEngine.instance.evaluateBookRule(
-        code, result: result, env: env, sourceEngine: sourceEngine,
-      );
-    }
-
-    // QuickJS 路径
+    // QuickJS 路径（唯一引擎）
     _quickjsCount++;
-    // 序列化 result 用于 processJsRule 的 content 参数
     String contentStr;
     if (result is List || result is Map) {
       contentStr = jsonEncode(result);
@@ -98,34 +77,15 @@ class EngineDispatcher {
     } else {
       contentStr = result?.toString() ?? '';
     }
-    final quickjsResult = await JsEngine.instance.processJsRule(
+    return JsEngine.instance.processJsRule(
       contentStr, resolved.code, baseUrl: baseUrl, sourceEngine: sourceEngine,
       dynamicContent: result,
     );
-
-    return quickjsResult;
   }
 
-  /// 健康检查：检测所有引擎是否可用
+  /// 健康检查：检测引擎是否可用
   Future<Map<String, bool>> healthCheck() async {
-    final results = <String, bool>{};
-
-    // QuickJS
-    results['quickjs'] = JsEngine.instance.isAvailable;
-
-    // Rhino
-    if (!kIsWeb) {
-      try {
-        final test = await NativeChannel.instance.evaluateJavaRule('@css:body@text', result: '<body>ok</body>');
-        results['rhino'] = test != null;
-      } catch (_) {
-        results['rhino'] = false;
-      }
-    } else {
-      results['rhino'] = false;
-    }
-
-    return results;
+    return {'quickjs': JsEngine.instance.isAvailable};
   }
 
   /// 获取引擎状态摘要

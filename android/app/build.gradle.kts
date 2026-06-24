@@ -80,8 +80,6 @@ dependencies {
     implementation("com.jayway.jsonpath:json-path:2.9.0")
     // Commons Text（HTML 反转义）
     implementation("org.apache.commons:commons-text:1.12.0")
-    // Rhino（JS 引擎）
-    implementation("org.mozilla:rhino:1.9.1")
     // Java 8+ API 脱糖
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 }

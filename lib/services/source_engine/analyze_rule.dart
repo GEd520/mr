@@ -46,7 +46,7 @@ class AnalyzeRule {
 
   // 规则拆分正则
   static final _jsPatternRegex = RegExp(
-      r'@(?:webjs|js|rhino|quickjs|java|ts):([\s\S]*?)(?=@(?:webjs|js|rhino|quickjs|java|ts):|$)',
+      r'@(?:webjs|js|quickjs|java|ts):([\s\S]*?)(?=@(?:webjs|js|quickjs|java|ts):|$)',
       caseSensitive: false);
   static final _jsTagPatternRegex = RegExp(r'<js>([\s\S]*?)</js>', caseSensitive: false);
 
@@ -262,29 +262,7 @@ class AnalyzeRule {
       {dynamic content, bool isUrl = false, bool unescape = true}) async {
     if (ruleStr == null || ruleStr.trim().isEmpty) return null;
 
-    // 对齐 legado：@js: 规则走 QuickJS（ES6+），不走 Native Rhino
-    // 混合规则（如 class.item@js:xxx）也走 Dart 端，因为 JS 部分需要 QuickJS
-    final hasJs = _containsJsRule(ruleStr);
-
-    // 关键修复：Map/List 类型的 content 不能走原生通道
-    // _anyToString(Map) 产出 {name: xxx, ...} 不是合法 JSON，原生引擎解析失败返回空串
-    // 必须走 Dart 端的 JSONPath 逻辑才能正确提取字段
-    final actualContent = content ?? _content;
-    final isNativeIncompatible = actualContent is Map || actualContent is List;
-
-    if (!hasJs && !isNativeIncompatible && defaultTargetPlatform == TargetPlatform.android) {
-      final contentStr = _anyToString(actualContent);
-      final result = await NativeChannel.instance.analyzeRuleGetString(
-        contentStr, ruleStr,
-        baseUrl: _baseUrl, redirectUrl: _redirectUrl, isUrl: isUrl, unescape: unescape,
-        sourceInfo: _sourceInfo, bookInfo: _bookInfo, chapterInfo: _chapterInfo,
-        nextChapterUrl: _nextChapterUrl,
-      );
-      if (result != null) return result;
-      // fallback 到 Dart
-    }
-
-    // 含 JS 的规则走异步路径（含预缓存桥接数据）
+    // 所有规则走 Dart 端异步路径（含预缓存桥接数据）
     final ruleList = _splitSourceRuleCacheString(ruleStr);
     return _getStringAsync(ruleList, mContent: content, isUrl: isUrl, unescape: unescape);
   }
@@ -293,23 +271,6 @@ class AnalyzeRule {
   Future<List<String>> getStringListAsync(String? ruleStr, {bool isUrl = false}) async {
     if (ruleStr == null || ruleStr.trim().isEmpty) return [];
 
-    final hasJs = _containsJsRule(ruleStr);
-
-    // Map/List 类型的 content 不能走原生通道（同 getStringAsync 修复）
-    final isNativeIncompatible = _content is Map || _content is List;
-
-    if (!hasJs && !isNativeIncompatible && defaultTargetPlatform == TargetPlatform.android) {
-      final contentStr = _anyToString(_content);
-      final result = await NativeChannel.instance.analyzeRuleGetStringList(
-        contentStr, ruleStr,
-        baseUrl: _baseUrl, redirectUrl: _redirectUrl, isUrl: isUrl,
-        sourceInfo: _sourceInfo, bookInfo: _bookInfo, chapterInfo: _chapterInfo,
-        nextChapterUrl: _nextChapterUrl,
-      );
-      if (result != null) return result;
-    }
-
-    // 含 JS 的规则走异步路径
     final ruleList = _splitSourceRuleCacheString(ruleStr);
     return _getStringListAsync(ruleList, isUrl: isUrl);
   }
@@ -318,23 +279,6 @@ class AnalyzeRule {
   Future<List<dynamic>> getElementsAsync(String? ruleStr) async {
     if (ruleStr == null || ruleStr.trim().isEmpty) return [];
 
-    final hasJs = _containsJsRule(ruleStr);
-
-    // Map/List 类型的 content 不能走原生通道（同 getStringAsync 修复）
-    final isNativeIncompatible = _content is Map || _content is List;
-
-    if (!hasJs && !isNativeIncompatible && defaultTargetPlatform == TargetPlatform.android) {
-      final contentStr = _anyToString(_content);
-      final result = await NativeChannel.instance.analyzeRuleGetElements(
-        contentStr, ruleStr,
-        baseUrl: _baseUrl, redirectUrl: _redirectUrl,
-        sourceInfo: _sourceInfo, bookInfo: _bookInfo, chapterInfo: _chapterInfo,
-        nextChapterUrl: _nextChapterUrl,
-      );
-      if (result != null) return result;
-    }
-
-    // 含 JS 的规则走异步路径
     final ruleList = _splitSourceRuleCacheString(ruleStr);
     return _getElementsAsync(ruleList);
   }
@@ -398,7 +342,7 @@ class AnalyzeRule {
       start = 1;
     }
 
-    // 解析 @js: / @rhino: / @quickjs: / @java: / @ts: 和 <js></js> 规则
+    // 解析 @js: / @quickjs: / @java: / @ts: 和 <js></js> 规则
     // 先处理 <js></js> 标签 → 替换为 @js:
     String processedRule = ruleStr;
     final jsTagMatches = _jsTagPatternRegex.allMatches(processedRule).toList();

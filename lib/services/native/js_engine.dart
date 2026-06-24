@@ -15,9 +15,6 @@ import 'shared_js_scope.dart';
 enum JsEngineType {
   /// QuickJS 引擎（flutter_js），原生支持 ES6+
   quickjs,
-
-  /// Rhino 引擎（Android 原生），支持 Java 互操作
-  rhino,
 }
 
 /// 引擎分流解析结果
@@ -31,7 +28,7 @@ class _EngineResolveResult {
 /// JS 执行追踪节点（构建完整执行树）
 class JsTraceNode {
   final String id;
-  final String engine;        // QuickJS / Rhino→QuickJS
+  final String engine;        // QuickJS
   final String caller;        // 调用来源（AnalyzeRule / processJsRule / executeSync 等）
   final String? ruleStep;     // 规则步骤描述（如 "步骤1/2: @href"）
   final String codePreview;   // JS 代码预览
@@ -180,13 +177,12 @@ class JsTracer {
   }
 }
 
-/// JS/TS 运行时引擎 - 分流双引擎架构
+/// JS/TS 运行时引擎
 ///
 /// 架构设计：
 /// - QuickJS 引擎：处理 ES6+ 语法，作为默认引擎
-/// - Rhino 引擎：处理 Java 互操作（通过 NativeChannel）
 /// - 分流策略：显式声明 > 关键词自动识别 > 默认 QuickJS
-/// - 桥接层：两个引擎共享缓存和变量
+/// - 桥接层：通过 Dart 侧 NativeChannel 桥接 Java 互操作
 class JsEngine {
   static JsEngine? _instance;
   static JsEngine get instance => _instance ??= JsEngine._();
@@ -203,7 +199,6 @@ class JsEngine {
   static final _jsTagRegex = RegExp(r'<js>([\s\S]*?)</js>', caseSensitive: false);
   static final _jsPrefixRegex = RegExp(r'^@(?:js|rhino|quickjs|java|ts):', caseSensitive: false);
   static final _templateVarRegex = RegExp(r'\{\{([\s\S]*?)\}\}');
-  static final _rhinoTagStartRegex = RegExp(r'^<rhino>|</rhino>$');
   static final _quickjsTagStartRegex = RegExp(r'^<quickjs>|</quickjs>$');
   static final _javaTagStartRegex = RegExp(r'^<java>|</java>$');
   static final _tsTagStartRegex = RegExp(r'^<ts>|</ts>$');
@@ -286,7 +281,7 @@ class JsEngine {
 
   // ===== 引擎桥接层：跨引擎共享缓存 =====
 
-  /// 跨引擎共享缓存（QuickJS 和 Rhino 均可读写）
+  /// 跨引擎共享缓存
   final Map<String, String> _bridgeCache = {};
 
   /// 获取桥接缓存
@@ -354,17 +349,18 @@ class JsEngine {
   /// 解析规则代码，确定使用哪个引擎（公开，供 EngineDispatcher 调用）
   ///
   /// 优先级：
-  /// 1. 显式前缀声明：@rhino: / @quickjs: / @java: / @ts: / @js:
+  /// 1. 显式前缀声明：@quickjs: / @ts: / @js: / @rhino: / @java:
+  ///    （@rhino: / @java: 剥离前缀后走 QuickJS）
   /// 2. 关键词自动识别（无显式声明时）
-  /// 3. 书源级全局声明（sourceEngine 参数）
-  /// 4. 默认 QuickJS
+  /// 3. 默认 QuickJS
   _EngineResolveResult resolveEngine(String ruleCode, {JsEngineType? sourceEngine}) {
     // 1. 显式前缀声明
     if (ruleCode.startsWith('@rhino:') || ruleCode.startsWith('<rhino>')) {
+      // @rhino: / <rhino> 前缀：剥离前缀后走 QuickJS
       final code = ruleCode.startsWith('@rhino:')
           ? ruleCode.substring(7)
-          : ruleCode.replaceAll(_rhinoTagStartRegex, '');
-      return _EngineResolveResult(JsEngineType.rhino, code);
+          : ruleCode.replaceAll(RegExp(r'^<rhino>|</rhino>$'), '');
+      return _EngineResolveResult(JsEngineType.quickjs, code);
     }
 
     if (ruleCode.startsWith('@quickjs:') || ruleCode.startsWith('<quickjs>')) {
@@ -375,10 +371,11 @@ class JsEngine {
     }
 
     if (ruleCode.startsWith('@java:') || ruleCode.startsWith('<java>')) {
+      // @java: / <java> 前缀：剥离前缀后走 QuickJS
       final code = ruleCode.startsWith('@java:')
           ? ruleCode.substring(6)
           : ruleCode.replaceAll(_javaTagStartRegex, '');
-      return _EngineResolveResult(JsEngineType.rhino, code);
+      return _EngineResolveResult(JsEngineType.quickjs, code);
     }
 
     if (ruleCode.startsWith('@ts:') || ruleCode.startsWith('<ts>')) {
@@ -400,12 +397,7 @@ class JsEngine {
     // 自动识别引擎
     final autoDetected = _autoDetectEngine(code);
 
-    // 3. 如果自动识别不出明确倾向，使用书源级声明
-    if (autoDetected == null && sourceEngine != null) {
-      return _EngineResolveResult(sourceEngine, code);
-    }
-
-    // 4. 默认 QuickJS
+    // 3. 默认 QuickJS
     return _EngineResolveResult(autoDetected ?? JsEngineType.quickjs, code);
   }
 
@@ -413,7 +405,7 @@ class JsEngine {
   ///
   /// - 含 ES6 特征（不管有无 java.*）→ QuickJS
   /// - 含 java. 调用但无 ES6 → QuickJS（桥接需要预缓存）
-  /// - 无法确定 → null（使用书源级声明或默认值）
+  /// - 无法确定 → null（使用默认值）
   JsEngineType? _autoDetectEngine(String code) {
     final hasJavaCall = _javaCallRegex.hasMatch(code);
     final hasES6 = _es6Regex.hasMatch(code);
@@ -427,7 +419,6 @@ class JsEngine {
       // 含 java. 调用但无 ES6 → 也走 QuickJS
       // 原因：java.* 桥接方法（java.ajax/get/post 等）需要预缓存机制，
       // 只有 QuickJS 路径支持 _preCacheBridgeCalls
-      // Rhino 路径无法预缓存，桥接调用会失败
       return JsEngineType.quickjs;
     }
 
@@ -2687,13 +2678,13 @@ class JsEngine {
   }
 
   /// 同步执行 JS 代码（用于 AnalyzeRule 规则解析）
-  /// 默认走 QuickJS，如果代码含 java. 且无 ES6 特征，自动走 Rhino
+  /// 默认走 QuickJS
   dynamic executeSync(String jsCode, dynamic content, {String? baseUrl, JsEngineType? sourceEngine, Map<String, dynamic>? variables, String? ruleStep}) {
     // 先提取 JS 代码（去掉 <js></js> 标签或 @js: 前缀）
     final extracted = _extractJsCode(jsCode) ?? jsCode;
     final resolved = resolveEngine(extracted, sourceEngine: sourceEngine);
 
-    final engineTag = resolved.engine == JsEngineType.rhino ? 'Rhino→QuickJS' : 'QuickJS';
+    final engineTag = 'QuickJS';
     final codePreview = resolved.code;
 
     if (kDebugMode) {
@@ -2723,10 +2714,6 @@ class JsEngine {
           inputPreview: inputPreview, ruleStep: ruleStep);
       }
       tracer.push(traceNode);
-    }
-
-    if (resolved.engine == JsEngineType.rhino) {
-      // Rhino 不支持同步调用（MethodChannel 是异步的），降级到 QuickJS
     }
 
     final result = _executeQuickJSSync(resolved.code, content, baseUrl: baseUrl, variables: variables);
@@ -2866,7 +2853,7 @@ class JsEngine {
   }
 
   /// 从规则字符串中提取 JS 代码
-  /// 支持：<js>code</js>、@js:code、@rhino:code、@quickjs:code
+  /// 支持：<js>code</js>、@js:code、@quickjs:code
   String? _extractJsCode(String rule) {
     // <js>code</js> 格式
     final jsTagMatch = _jsTagRegex.firstMatch(rule);
@@ -2903,7 +2890,7 @@ class JsEngine {
 
     if (kDebugMode) {
       AppLogger.instance.logJsExecute(
-        resolved.engine == JsEngineType.rhino ? 'Rhino' : 'QuickJS',
+        'QuickJS',
         resolved.code,
       );
     }
@@ -2920,12 +2907,6 @@ class JsEngine {
     // 优先使用 dynamicContent（保留原始类型：List/Map 等）
     // 否则用 content（String 类型，会被 jsonEncode 加引号）
     final actualResult = dynamicContent ?? content;
-
-    if (resolved.engine == JsEngineType.rhino) {
-      // Rhino 路径：result 参数是 String?，需要正确序列化
-      final rhinoResult = actualResult is String ? actualResult : serializeContent(actualResult);
-      return _executeRhinoRule(resolved.code, result: rhinoResult.isEmpty ? content : rhinoResult, env: mergedEnv);
-    }
 
     // 借鉴 legado 的 preCache 机制：在执行 JS 前，预缓存 java.ajax/get/post 的结果
     try {
@@ -2962,18 +2943,6 @@ class JsEngine {
     // 先提取 JS 代码
     final extracted = _extractJsCode(jsCode) ?? jsCode;
     final resolved = resolveEngine(extracted, sourceEngine: sourceEngine);
-
-    final env = <String, dynamic>{
-      'book': book ?? {},
-      'chapter': chapter ?? {},
-      'source': source ?? {},
-      'cookie': <String, String>{},
-      'baseUrl': book?['bookUrl'] ?? '',
-    };
-
-    if (resolved.engine == JsEngineType.rhino) {
-      return _executeRhinoRule(resolved.code, result: content, env: env);
-    }
 
     return _evalLock.synchronized(() async {
       try {
@@ -3030,12 +2999,12 @@ class JsEngine {
     });
   }
 
-  /// 执行书源规则（统一入口，支持分流）
+  /// 执行书源规则（统一入口）
   ///
   /// 规则前缀路由：
-  /// - @rhino: / <rhino> → Rhino 引擎
   /// - @quickjs: / <quickjs> → QuickJS 引擎
-  /// - @java: / <java> → Rhino 引擎（Java 互操作）
+  /// - @rhino: / <rhino> → 剥离前缀后走 QuickJS
+  /// - @java: / <java> → 剥离前缀后走 QuickJS
   /// - @ts: / <ts> → TS 编译后 QuickJS 执行
   /// - @js: / <js> → 自动识别引擎
   /// - 无前缀 → 自动识别引擎
@@ -3050,12 +3019,6 @@ class JsEngine {
     // TS 需要先编译
     if (ruleCode.startsWith('@ts:') || ruleCode.startsWith('<ts>')) {
       code = await compileTypeScript(code);
-    }
-
-    if (resolved.engine == JsEngineType.rhino) {
-      // Rhino 路径：result 需要序列化为 String
-      final rhinoResult = result is String ? result : serializeContent(result);
-      return _executeRhinoRule(code, result: rhinoResult.isEmpty ? null : rhinoResult, env: env);
     }
 
     return _evalLock.synchronized(() =>
@@ -3335,48 +3298,6 @@ class JsEngine {
         }
       }
     } catch (_) {}
-  }
-
-  // ===== Rhino 规则执行（通过 NativeChannel）=====
-
-  Future<String?> _executeRhinoRule(String code, {
-    String? result,
-    Map<String, dynamic>? env,
-  }) async {
-    if (kIsWeb) return null;
-    try {
-      // 同步桥接缓存到 Rhino 环境
-      final bindings = <String, dynamic>{
-        'result': result ?? '',
-        'baseUrl': env?['baseUrl'] ?? '',
-        ...?env,
-        '_bridgeCache': Map<String, String>.from(_bridgeCache),
-      };
-
-      // 判断走 evaluateJavaRule 还是 executeScript
-      // 含 Legado 规则前缀 → evaluateJavaRule（支持 @css:/@text:/@attr: 等）
-      // 纯 JS 代码 → executeScript（通用 Rhino 执行）
-      final isLegadoRule = code.startsWith('@css:') ||
-          code.startsWith('@text:') ||
-          code.startsWith('@attr:') ||
-          code.startsWith('java:');
-
-      if (isLegadoRule) {
-        return await NativeChannel.instance.evaluateJavaRule(
-          code,
-          result: result,
-          env: bindings,
-        );
-      }
-
-      return await NativeChannel.instance.executeScript(
-        code,
-        bindings: bindings,
-      );
-    } catch (e) {
-      AppLogger.instance.logJsError('Rhino', e.toString());
-      return null;
-    }
   }
 
   // ===== 序列化工具方法 =====
