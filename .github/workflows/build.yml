@@ -112,7 +112,7 @@ jobs:
         run: flutter pub get
 
       - name: Build APK
-        run: flutter build apk --release --no-tree-shake-icons
+        run: flutter build apk --release
 
       - name: Rename APK
         id: apk
@@ -178,7 +178,16 @@ jobs:
           sed -i '' 's/DEVELOPMENT_TEAM = "";/DEVELOPMENT_TEAM = "XXXXXX";/g' Runner.xcodeproj/project.pbxproj
 
       - name: Build iOS (No Codesign)
-        run: flutter build ios --release --no-codesign --no-tree-shake-icons
+        run: flutter build ios --release --no-codesign
+
+      - name: Verify QuickJS Symbols
+        run: |
+          echo "=== 检查 QuickJS 符号是否链接到主二进制 ==="
+          nm -gU build/ios/iphoneos/Runner.app/Runner | grep quickjs_bridge || {
+            echo "❌ QuickJS 符号未找到！DEAD_CODE_STRIPPING 可能仍移除了符号"
+            exit 1
+          }
+          echo "✅ QuickJS 符号验证通过"
 
       - name: Create IPA
         id: ipa

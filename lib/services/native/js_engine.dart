@@ -334,7 +334,10 @@ class JsEngine {
 
       _initialized = true;
       return true;
-    } catch (e) {
+    } catch (e, st) {
+      // FFI lookup 失败（QuickJS 符号未链接到二进制）会在此抛出 ArgumentError
+      // 之前被静默吞掉，现在打印日志便于诊断
+      debugPrint('JsEngine init failed: $e\n$st');
       return false;
     }
   }

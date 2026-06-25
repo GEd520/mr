@@ -28,7 +28,7 @@ target_compile_options(quickjs_c_bridge PRIVATE
     -Wno-sign-compare
     -Wno-unused-function
     -Wno-unused-variable
-    -O2
+    -Os
 )
 
 # 预处理宏定义
