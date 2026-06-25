@@ -148,86 +148,87 @@ jobs:
             ${{ env.zip_name }}
           retention-days: 30
 
-  # ===== iOS 打包（允许失败）=====
-  build-ios:
-    name: Build iOS
-    needs: prepare
-    runs-on: macos-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: ${{ env.FLUTTER_CHANNEL }}
-          cache: true
-
-      - name: Update Version
-        run: |
-          VERSION="${{ needs.prepare.outputs.version }}"
-          sed -i '' "s/^version:.*/version: ${VERSION}+${{ needs.prepare.outputs.commit_count }}/" pubspec.yaml
-          grep "^version:" pubspec.yaml
-
-      - name: Install Dependencies
-        run: flutter pub get
-
-      - name: Install Pods
-        run: |
-          cd ios
-          rm -rf Pods Podfile.lock
-          pod install --repo-update
-
-      - name: Disable Code Signing
-        run: |
-          cd ios
-          # 填入假 Development Team 骗过 Flutter 检查，--no-codesign 会跳过实际签名
-          sed -i '' 's/DEVELOPMENT_TEAM = "";/DEVELOPMENT_TEAM = "XXXXXX";/g' Runner.xcodeproj/project.pbxproj
-
-      - name: Build iOS (No Codesign)
-        run: flutter build ios --release --no-codesign
-
-      - name: Verify QuickJS Symbols
-        run: |
-          echo "=== Runner 二进制大小 ==="
-          ls -lh build/ios/iphoneos/Runner.app/Runner
-          echo "=== Runner.app 目录大小 ==="
-          du -sh build/ios/iphoneos/Runner.app
-          echo "=== 检查 QuickJS 符号是否链接到主二进制 ==="
-          nm build/ios/iphoneos/Runner.app/Runner | grep quickjs_bridge || {
-            echo "❌ QuickJS 符号未找到！-all_load 可能未生效"
-            echo "=== 诊断：Runner 二进制中的所有符号（前50个）==="
-            nm build/ios/iphoneos/Runner.app/Runner | head -50
-            exit 1
-          }
-          echo "✅ QuickJS 符号验证通过"
-          echo "=== 找到的 QuickJS 符号 ==="
-          nm build/ios/iphoneos/Runner.app/Runner | grep quickjs_bridge
-
-      - name: Create IPA
-        id: ipa
-        run: |
-          VERSION="${{ needs.prepare.outputs.version }}"
-          TYPE="${{ needs.prepare.outputs.release_type }}"
-          BUILD_DATE="${{ needs.prepare.outputs.build_date }}"
-          IPA_NAME="mr_v${VERSION}_${TYPE}_${BUILD_DATE}_ios.ipa"
-          mkdir -p Payload
-          cp -r build/ios/iphoneos/Runner.app Payload/
-          zip -r "${IPA_NAME}" Payload
-          echo "ipa_name=${IPA_NAME}" >> $GITHUB_OUTPUT
-          ls -lh "${IPA_NAME}"
-
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: mr-ios-${{ needs.prepare.outputs.version }}
-          path: ${{ steps.ipa.outputs.ipa_name }}
-          retention-days: 30
+  # ===== iOS 打包（已暂停：QuickJS 符号链接问题未解决）=====
+  # 恢复方法：取消下方注释，并取消 release job 中 iOS 相关步骤的注释
+  # build-ios:
+  #   name: Build iOS
+  #   needs: prepare
+  #   runs-on: macos-latest
+  #   continue-on-error: true
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #
+  #     - name: Setup Flutter
+  #       uses: subosito/flutter-action@v2
+  #       with:
+  #         channel: ${{ env.FLUTTER_CHANNEL }}
+  #         cache: true
+  #
+  #     - name: Update Version
+  #       run: |
+  #         VERSION="${{ needs.prepare.outputs.version }}"
+  #         sed -i '' "s/^version:.*/version: ${VERSION}+${{ needs.prepare.outputs.commit_count }}/" pubspec.yaml
+  #         grep "^version:" pubspec.yaml
+  #
+  #     - name: Install Dependencies
+  #       run: flutter pub get
+  #
+  #     - name: Install Pods
+  #       run: |
+  #         cd ios
+  #         rm -rf Pods Podfile.lock
+  #         pod install --repo-update
+  #
+  #     - name: Disable Code Signing
+  #       run: |
+  #         cd ios
+  #         # 填入假 Development Team 骗过 Flutter 检查，--no-codesign 会跳过实际签名
+  #         sed -i '' 's/DEVELOPMENT_TEAM = "";/DEVELOPMENT_TEAM = "XXXXXX";/g' Runner.xcodeproj/project.pbxproj
+  #
+  #     - name: Build iOS (No Codesign)
+  #       run: flutter build ios --release --no-codesign
+  #
+  #     - name: Verify QuickJS Symbols
+  #       run: |
+  #         echo "=== Runner 二进制大小 ==="
+  #         ls -lh build/ios/iphoneos/Runner.app/Runner
+  #         echo "=== Runner.app 目录大小 ==="
+  #         du -sh build/ios/iphoneos/Runner.app
+  #         echo "=== 检查 QuickJS 符号是否链接到主二进制 ==="
+  #         nm build/ios/iphoneos/Runner.app/Runner | grep quickjs_bridge || {
+  #           echo "❌ QuickJS 符号未找到！-all_load 可能未生效"
+  #           echo "=== 诊断：Runner 二进制中的所有符号（前50个）==="
+  #           nm build/ios/iphoneos/Runner.app/Runner | head -50
+  #           exit 1
+  #         }
+  #         echo "✅ QuickJS 符号验证通过"
+  #         echo "=== 找到的 QuickJS 符号 ==="
+  #         nm build/ios/iphoneos/Runner.app/Runner | grep quickjs_bridge
+  #
+  #     - name: Create IPA
+  #       id: ipa
+  #       run: |
+  #         VERSION="${{ needs.prepare.outputs.version }}"
+  #         TYPE="${{ needs.prepare.outputs.release_type }}"
+  #         BUILD_DATE="${{ needs.prepare.outputs.build_date }}"
+  #         IPA_NAME="mr_v${VERSION}_${TYPE}_${BUILD_DATE}_ios.ipa"
+  #         mkdir -p Payload
+  #         cp -r build/ios/iphoneos/Runner.app Payload/
+  #         zip -r "${IPA_NAME}" Payload
+  #         echo "ipa_name=${IPA_NAME}" >> $GITHUB_OUTPUT
+  #         ls -lh "${IPA_NAME}"
+  #
+  #     - name: Upload Artifacts
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: mr-ios-${{ needs.prepare.outputs.version }}
+  #         path: ${{ steps.ipa.outputs.ipa_name }}
+  #         retention-days: 30
 
   # ===== 合并发布（等待所有平台，无论成功失败）=====
   release:
     name: Create Release
-    needs: [prepare, build-android, build-ios]
+    needs: [prepare, build-android]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -237,10 +238,10 @@ jobs:
         id: results
         run: |
           echo "android_result=${{ needs.build-android.result }}" >> $GITHUB_OUTPUT
-          echo "ios_result=${{ needs.build-ios.result }}" >> $GITHUB_OUTPUT
           echo "=== 构建结果 ==="
           echo "Android: ${{ needs.build-android.result }}"
-          echo "iOS: ${{ needs.build-ios.result }}"
+          # iOS 打包已暂停，恢复时取消下行注释
+          # echo "iOS: ${{ needs.build-ios.result }}"
 
       - name: Download Android Artifact
         if: needs.build-android.result == 'success'
@@ -249,19 +250,20 @@ jobs:
           name: mr-android-${{ needs.prepare.outputs.version }}
           path: artifacts/android
 
-      - name: Download iOS Artifact
-        if: needs.build-ios.result == 'success'
-        uses: actions/download-artifact@v4
-        with:
-          name: mr-ios-${{ needs.prepare.outputs.version }}
-          path: artifacts/ios
+      # iOS 打包已暂停，恢复时取消下方注释
+      # - name: Download iOS Artifact
+      #   if: needs.build-ios.result == 'success'
+      #   uses: actions/download-artifact@v4
+      #   with:
+      #     name: mr-ios-${{ needs.prepare.outputs.version }}
+      #     path: artifacts/ios
 
       - name: List Artifacts
         run: |
           echo "=== Android ==="
           ls -lh artifacts/android/ 2>/dev/null || echo "无 Android 产物"
-          echo "=== iOS ==="
-          ls -lh artifacts/ios/ 2>/dev/null || echo "无 iOS 产物"
+          # echo "=== iOS ==="
+          # ls -lh artifacts/ios/ 2>/dev/null || echo "无 iOS 产物"
 
       - name: Build Release Body
         id: body
@@ -293,15 +295,17 @@ jobs:
             BODY="${BODY}### Android\n❌ 打包失败，请查看 Actions 日志\n\n"
           fi
 
-          # iOS 下载说明
-          if [ "${{ needs.build-ios.result }}" = "success" ]; then
-            BODY="${BODY}### iOS\n"
-            BODY="${BODY}- \`.ipa\` 文件需通过侧载工具安装（AltStore/Sideloadly/TrollStore）\n"
-            BODY="${BODY}- 未签名版本，需自签或使用侧载工具\n"
-            BODY="${BODY}- 安装方法：下载 IPA → 使用侧载工具安装\n\n"
-          else
-            BODY="${BODY}### iOS\n⚠️ 打包失败或暂不支持，请查看 Actions 日志\n\n"
-          fi
+          # iOS 打包已暂停，暂不发布 iOS 产物
+          # 恢复时取消下方 if 块的注释
+          # if [ "${{ needs.build-ios.result }}" = "success" ]; then
+          #   BODY="${BODY}### iOS\n"
+          #   BODY="${BODY}- \`.ipa\` 文件需通过侧载工具安装（AltStore/Sideloadly/TrollStore）\n"
+          #   BODY="${BODY}- 未签名版本，需自签或使用侧载工具\n"
+          #   BODY="${BODY}- 安装方法：下载 IPA → 使用侧载工具安装\n\n"
+          # else
+          #   BODY="${BODY}### iOS\n⚠️ 打包失败或暂不支持，请查看 Actions 日志\n\n"
+          # fi
+          BODY="${BODY}### iOS\n⏸️ iOS 打包已暂停，等 QuickJS 静态库链接问题解决后恢复\n\n"
 
           # 写入文件避免转义问题
           echo -e "$BODY" > release_body.md
@@ -315,7 +319,8 @@ jobs:
           body_path: release_body.md
           files: |
             artifacts/android/*
-            artifacts/ios/*
+            # iOS 打包已暂停，恢复时取消下行注释
+            # artifacts/ios/*
           prerelease: ${{ needs.prepare.outputs.release_type != 'stable' }}
           generate_release_notes: true
         env:
