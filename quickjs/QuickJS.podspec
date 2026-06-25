@@ -8,6 +8,7 @@ Pod::Spec.new do |s|
   s.author           = 'Fabrice Bellard'
   s.source           = { :path => '.' }
   s.ios.deployment_target = '17.0'
+  s.osx.deployment_target = '10.14'
   s.static_framework = true
   s.source_files     = '*.{c,h}'
   s.public_header_files = 'quickjs.h', 'quickjs-libc.h', 'cutils.h', 'dtoa.h', 'libregexp.h', 'libunicode.h', 'list.h', 'quickjs_bridge.h'
