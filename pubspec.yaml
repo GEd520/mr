@@ -77,10 +77,11 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
-  # 禁用 Swift Package Manager（项目使用 CocoaPods 管理 iOS 依赖）
-  # 避免 Flutter 3.44+ SPM 集成解析 xcscheme 失败的问题
+  # 启用 Swift Package Manager（Flutter 3.45+ stable 默认启用）
+  # SPM 启用时生成 Swift 版 GeneratedPluginRegistrant（API: register(with:)）
+  # AppDelegate.swift 使用 register(with: self) 匹配 Swift 版 API
   config:
-    enable-swift-package-manager: false
+    enable-swift-package-manager: true
   assets:
     - assets/templates/
     - assets/book_sources/
