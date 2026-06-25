@@ -20,5 +20,13 @@ Pod::Spec.new do |s|
     'GCC_PREPROCESSOR_DEFINITIONS' => 'CONFIG_VERSION=\"2026.06.04\"',
     'OTHER_CFLAGS' => '-D_GNU_SOURCE -Wno-implicit-function-declaration'
   }
+  # s.xcconfig 会应用到消费者（主工程）的 build settings
+  # -force_load 强制链接整个 QuickJS 静态库的所有 .o 文件
+  # Dart FFI 运行时按字符串查找符号（DynamicLibrary.process().lookup），
+  # 链接器静态分析看不到引用，默认不链接未引用的 .o 文件
+  # 没有 -force_load，quickjs_bridge_create 等符号会被链接器丢弃
+  s.xcconfig = {
+    'OTHER_LDFLAGS' => '$(inherited) -force_load $(BUILT_PRODUCTS_DIR)/QuickJS.framework/QuickJS'
+  }
   s.swift_version    = '5.0'
 end

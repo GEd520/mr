@@ -190,9 +190,9 @@ jobs:
       - name: Verify QuickJS Symbols
         run: |
           echo "=== 检查 QuickJS 符号是否链接到主二进制 ==="
-          # macOS nm -g 显示全局符号（-U 会过滤掉已定义符号，不能用）
-          nm -g build/ios/iphoneos/Runner.app/Runner | grep quickjs_bridge || {
-            echo "❌ QuickJS 符号未找到！DEAD_CODE_STRIPPING 可能仍移除了符号"
+          # nm 不带 -g 搜索所有符号（包括 local）
+          nm build/ios/iphoneos/Runner.app/Runner | grep quickjs_bridge || {
+            echo "❌ QuickJS 符号未找到！-force_load 可能未生效"
             exit 1
           }
           echo "✅ QuickJS 符号验证通过"
