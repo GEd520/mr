@@ -1,7 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
-import 'package:flutter_js/flutter_js.dart';
+import 'quickjs_runtime_stub.dart'
+    if (dart.library.io) 'quickjs_runtime.dart';
 import 'package:html/parser.dart' as html_parser;
 import 'package:path_provider/path_provider.dart';
 import 'package:synchronized/synchronized.dart';

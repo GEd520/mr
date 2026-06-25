@@ -32,6 +32,13 @@ android {
         ndk {
             abiFilters += listOf("arm64-v8a")
         }
+        // QuickJS NDK 编译配置
+        externalNativeBuild {
+            cmake {
+                arguments += listOf("-DANDROID_STL=c++_static")
+                cFlags += "-D_GNU_SOURCE"
+            }
+        }
     }
 
     // 排除重复/冗余文件，减小 APK 体积
@@ -58,6 +65,13 @@ android {
         // .so 文件不压缩（Android 6+ 直接 mmap，压缩反而浪费 CPU）
         jniLibs {
             useLegacyPackaging = false
+        }
+    }
+
+    // QuickJS CMake 构建配置（编译 C 源码为 libquickjs_c_bridge.so）
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
         }
     }
 

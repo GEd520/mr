@@ -32,6 +32,9 @@ target 'Runner' do
   use_modular_headers!
 
   flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
+
+  # QuickJS 引擎 - 从 C 源码编译，替代 flutter_js
+  pod 'QuickJS', :path => 'QuickJS'
 end
 
 post_install do |installer|
