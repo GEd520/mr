@@ -35,7 +35,11 @@ android {
         // QuickJS NDK 编译配置
         externalNativeBuild {
             cmake {
-                arguments += listOf("-DANDROID_STL=c++_static")
+                arguments += listOf(
+                    "-DANDROID_STL=c++_static",
+                    // 传递项目根目录，CMakeLists.txt 用它定位 quickjs/ 源码
+                    "-DPROJECT_ROOT_DIR=${rootProject.projectDir.parentFile?.absolutePath}"
+                )
                 cFlags += "-D_GNU_SOURCE"
             }
         }

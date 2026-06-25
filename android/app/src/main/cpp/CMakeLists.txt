@@ -2,8 +2,9 @@ cmake_minimum_required(VERSION 3.18)
 project(quickjs_c_bridge C)
 
 # QuickJS C 源码目录（项目根目录 quickjs/，iOS 和 Android 共享）
-# 路径: android/app/src/main/cpp/ → mr/quickjs/（5 个 ..）
-set(QUICKJS_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../../../quickjs)
+# PROJECT_ROOT_DIR 由 build.gradle.kts 传入，指向项目根目录
+# 与 iOS Podfile 的 :path => '../quickjs' 引用同一份源码
+set(QUICKJS_SRC_DIR ${PROJECT_ROOT_DIR}/quickjs)
 
 # QuickJS 源码文件
 # 不编译 quickjs-libc.c（Android 上不需要标准库辅助函数，且部分 POSIX 调用不兼容）
