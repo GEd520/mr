@@ -112,7 +112,14 @@ jobs:
         run: flutter pub get
 
       - name: Build APK
-        run: flutter build apk --release
+        run: flutter build apk --release --target-platform=android-arm64
+
+      - name: Analyze APK Size
+        run: |
+          echo "=== APK 内容分析（按大小排序，Top 30）==="
+          unzip -l build/app/outputs/flutter-apk/app-release.apk | sort -rn -k1 | head -30
+          echo "=== APK 总大小 ==="
+          ls -lh build/app/outputs/flutter-apk/app-release.apk
 
       - name: Rename APK
         id: apk
