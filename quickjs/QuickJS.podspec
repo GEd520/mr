@@ -7,7 +7,7 @@ Pod::Spec.new do |s|
   s.license          = 'MIT'
   s.author           = 'Fabrice Bellard'
   s.source           = { :path => '.' }
-  s.ios.deployment_target = '17.0'
+  s.ios.deployment_target = '16.0'
   s.osx.deployment_target = '10.14'
   s.static_framework = true
   s.source_files     = '*.{c,h}'
