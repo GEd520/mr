@@ -2351,6 +2351,44 @@ class JsEngine {
           decrypt: function(data, key, cfg) {
             var iv = cfg && cfg.iv ? cfg.iv : null;
             var mode = (cfg && cfg.mode === CryptoJS.mode.ECB) ? 'ECB' : 'CBC';
+
+            // 优先走原生 AES（性能好、无 surrogate 编码问题）
+            // 仅 CBC 模式且 __nativeCrypto 可用时启用
+            if (typeof __nativeCrypto !== 'undefined' && __nativeCrypto &&
+                __nativeCrypto.aesDecrypt && mode === 'CBC') {
+              try {
+                // 提取 base64 密文
+                var dataB64;
+                if (typeof data === 'string') {
+                  dataB64 = data;
+                } else if (data && data.ciphertext && typeof data.ciphertext.toString === 'function') {
+                  dataB64 = data.ciphertext.toString(CryptoJS.enc.Base64);
+                } else {
+                  dataB64 = String(data);
+                }
+
+                // WordArray → UTF-8 字符串（用 enc.Utf8.stringify 的同款逻辑）
+                var keyStr = CryptoJS.enc.Utf8.stringify(key);
+                var ivStr = iv ? CryptoJS.enc.Utf8.stringify(iv) : '';
+
+                var nativeResult = __nativeCrypto.aesDecrypt(dataB64, keyStr, ivStr);
+                if (nativeResult !== null && nativeResult !== undefined) {
+                  // 包装成 CryptoJS 格式，保持 toString(Utf8) 兼容
+                  return {
+                    toString: function(enc) {
+                      if (enc === CryptoJS.enc.Base64) {
+                        return java.base64Encode(nativeResult) || '';
+                      }
+                      return nativeResult;
+                    }
+                  };
+                }
+              } catch (e) {
+                // native 失败，回退到纯 JS _AES 引擎
+              }
+            }
+
+            // 回退：纯 JS _AES 引擎
             var result = _AES.decrypt(data, key, iv, mode);
             return { toString: function(enc) { return result; } };
           },

@@ -28,7 +28,8 @@ android {
         versionCode = flutter.versionCode
         versionName = flutter.versionName
 
-        // 只保留 arm64-v8a（minSdk=29 设备均为 arm64，移除 armeabi-v7a 减半体积）
+        // 保险 #1：ndk.abiFilters 只编译 arm64-v8a 的 .so
+        // minSdk=29 起 Android 设备基本都是 arm64，x86_64 只用于模拟器
         ndk {
             abiFilters += listOf("arm64-v8a")
         }
@@ -41,7 +42,19 @@ android {
                     "-DPROJECT_ROOT_DIR=${rootProject.projectDir.parentFile?.absolutePath}"
                 )
                 cFlags += "-D_GNU_SOURCE"
+                // 显式只编译 arm64-v8a（覆盖任何继承的 ABI 配置）
+                abiFilters += listOf("arm64-v8a")
             }
+        }
+    }
+
+    // 保险 #2：splits.abi 显式只保留 arm64-v8a，构建时只生成一个 APK
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a")
+            isUniversalApk = false
         }
     }
 
@@ -69,6 +82,15 @@ android {
         // .so 文件不压缩（Android 6+ 直接 mmap，压缩反而浪费 CPU）
         jniLibs {
             useLegacyPackaging = false
+            // 保险 #3：packaging 显式排除 x86_64 和 armeabi-v7a 的 .so
+            // 即使上游依赖带了这些 ABI 的 .so 也会被剔除
+            excludes += listOf(
+                "lib/x86_64/**",
+                "lib/armeabi-v7a/**",
+                "lib/x86/**",
+                "lib/mips/**",
+                "lib/mips64/**"
+            )
         }
     }
 
