@@ -5,6 +5,8 @@ import 'quickjs_runtime_stub.dart'
     if (dart.library.io) 'quickjs_runtime.dart';
 import 'package:html/parser.dart' as html_parser;
 import 'package:path_provider/path_provider.dart';
+import 'package:archive/archive.dart' as archive;
+import 'package:url_launcher/url_launcher.dart' as url_launcher;
 import 'package:synchronized/synchronized.dart';
 import '../app_logger.dart';
 import 'platform_channel.dart';
@@ -1933,7 +1935,7 @@ class JsEngine {
         // java.openVideoPlayer(url, title, isFloat) — 打开视频播放器
         // 假声明：QuickJS 无播放器，空操作
         openVideoPlayer: function(url, title, isFloat) {
-          console.log('[openVideoPlayer] ' + url + ' / ' + title);
+          // 走 url_launcher 预缓存触发（在 _preCacheBridgeCalls 6.9 中处理）
         },
 
         // ===== 缓存管理 =====
@@ -1968,10 +1970,15 @@ class JsEngine {
           return '';
         },
         // java.getCookie(tag) / java.getCookie(tag, key) — Cookie 管理
+        // Dart 侧预缓存写入 'cookie:tag'（完整 cookie 字符串），JS 端按需解析 key
         getCookie: function(tag, key) {
-          var cacheKey = 'cookie:' + tag + (key ? ':' + key : '');
-          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
-          return '';
+          var cacheKey = 'cookie:' + tag;
+          if (_javaCache[cacheKey] === undefined) return '';
+          var cookieStr = _javaCache[cacheKey];
+          if (!key) return cookieStr;
+          // 带 key：从 cookie 字符串解析特定 key 的值
+          var match = cookieStr.match(new RegExp('(?:^|;\\s*)' + key + '=([^;]+)'));
+          return match ? match[1] : '';
         },
         // java.startBrowser(url, title, html) — 打开浏览器（移动端专用，QuickJS 空操作）
         // 假声明：兼容 Legado 3 参签名，html 参数暂忽略
@@ -2172,51 +2179,152 @@ class JsEngine {
         getFile: function(path) {
           return { path: path, exists: function() { return false; }, readText: function() { return ''; } };
         },
-        // java.importScript(path) — 导入脚本
+        // java.importScript(path) — 导入脚本（走 dart:io 预缓存）
         importScript: function(path) {
-          var cacheKey = 'import_script:' + path;
+          var cacheKey = 'file_importScript:' + path;
           if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
           return '';
         },
-        // java.readFile(path) / java.readTxtFile(path) — 读取文件
-        readFile: function(path) { return ''; },
-        readTxtFile: function(path, charset) { return ''; },
+        // java.readFile(path) / java.readTxtFile(path, charset) — 读取文件
+        // 走 dart:io 预缓存桥接，结果在 _javaCache['file_readFile:path']
+        readFile: function(path) {
+          var cacheKey = 'file_readFile:' + path;
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          return '';
+        },
+        readTxtFile: function(path, charset) {
+          var cacheKey = 'file_readTxtFile:' + path;
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          return '';
+        },
         // java.deleteFile(path) — 删除文件
-        deleteFile: function(path) { return false; },
-        // java.unzipFile(path) / java.un7zFile / java.unrarFile / java.unArchiveFile — 解压
-        unzipFile: function(path) { return ''; },
-        un7zFile: function(path) { return ''; },
-        unrarFile: function(path) { return ''; },
-        unArchiveFile: function(path) { return ''; },
+        // 走 dart:io 预缓存桥接，结果在 _javaCache['file_deleteFile:path']
+        deleteFile: function(path) {
+          var cacheKey = 'file_deleteFile:' + path;
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey] === 'true';
+          return false;
+        },
+        // java.writeFile(path, content) — 写文件（预缓存标记可写）
+        writeFile: function(path, content) {
+          var cacheKey = 'file_writeFile:' + path;
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey] === 'true';
+          return false;
+        },
+        // java.unzipFile(path, password) / un7zFile / unrarFile / unArchiveFile — 解压
+        // 走 archive 包预缓存桥接，支持密码参数
+        unzipFile: function(path, password) {
+          var cacheKey = 'archive_unzipFile:' + path + '::' + (password || '');
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          return '';
+        },
+        un7zFile: function(path, password) {
+          var cacheKey = 'archive_un7zFile:' + path + '::' + (password || '');
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          return '';
+        },
+        unrarFile: function(path, password) {
+          var cacheKey = 'archive_unrarFile:' + path + '::' + (password || '');
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          return '';
+        },
+        unArchiveFile: function(path, password) {
+          var cacheKey = 'archive_unArchiveFile:' + path + '::' + (password || '');
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          return '';
+        },
         // java.getTxtInFolder(path) — 读取文件夹下所有 txt
-        getTxtInFolder: function(path) { return ''; },
+        // 走 dart:io 预缓存桥接，结果在 _javaCache['file_getTxtInFolder:path']
+        getTxtInFolder: function(path) {
+          var cacheKey = 'file_getTxtInFolder:' + path;
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          return '';
+        },
         // java.getZipStringContent / getRarStringContent / get7zStringContent — 压缩包内文件读取
-        // 假声明：QuickJS 无原生解压，返回空
-        getZipStringContent: function(url, path, charset) { return ''; },
-        getRarStringContent: function(url, path, charset) { return ''; },
-        get7zStringContent: function(url, path, charset) { return ''; },
-        getZipByteArrayContent: function(url, path) { return []; },
-        getRarByteArrayContent: function(url, path) { return []; },
-        get7zByteArrayContent: function(url, path) { return []; },
-        // java.openUrl(url) — 打开 URL
+        // 走 archive 包预缓存桥接，支持密码参数（第 4 位）
+        getZipStringContent: function(url, path, charset, password) {
+          var cacheKey = 'archive_getZipStringContent:' + url + ':' + (path || '') + ':' + (password || '');
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          return '';
+        },
+        getRarStringContent: function(url, path, charset, password) {
+          var cacheKey = 'archive_getRarStringContent:' + url + ':' + (path || '') + ':' + (password || '');
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          return '';
+        },
+        get7zStringContent: function(url, path, charset, password) {
+          var cacheKey = 'archive_get7zStringContent:' + url + ':' + (path || '') + ':' + (password || '');
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          return '';
+        },
+        getZipByteArrayContent: function(url, path, password) {
+          // ByteArray 在 JS 中近似为字符串
+          var cacheKey = 'archive_getZipStringContent:' + url + ':' + (path || '') + ':' + (password || '');
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          return '';
+        },
+        getRarByteArrayContent: function(url, path, password) {
+          var cacheKey = 'archive_getRarStringContent:' + url + ':' + (path || '') + ':' + (password || '');
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          return '';
+        },
+        get7zByteArrayContent: function(url, path, password) {
+          var cacheKey = 'archive_get7zStringContent:' + url + ':' + (path || '') + ':' + (password || '');
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          return '';
+        },
+        // java.openUrl(url, mimeType) — 打开 URL（走 url_launcher 预缓存）
         openUrl: function(url, mimeType) {},
-        // java.getReadBookConfig() — 获取阅读配置
-        getReadBookConfig: function() { return '{}'; },
+        // java.getReadBookConfig() — 获取阅读配置（JSON 字符串）
+        // 走 Dart Provider 预缓存桥接，结果在 _javaCache['read_book_config']
+        getReadBookConfig: function() {
+          var cacheKey = 'read_book_config';
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          return '{}';
+        },
         // java.getReadBookConfigMap() — 获取阅读配置（Map 版）
-        // 假声明：返回空对象
-        getReadBookConfigMap: function() { return {}; },
+        getReadBookConfigMap: function() {
+          var cacheKey = 'read_book_config';
+          if (_javaCache[cacheKey] !== undefined) {
+            try { return JSON.parse(_javaCache[cacheKey]); } catch(_) {}
+          }
+          return {};
+        },
         // java.getThemeMode() — 获取主题模式
-        getThemeMode: function() { return 'light'; },
-        // java.getThemeConfig() — 获取主题配置
-        getThemeConfig: function() { return '{}'; },
+        // 走 Dart Provider 预缓存桥接，结果在 _javaCache['theme_mode']
+        getThemeMode: function() {
+          var cacheKey = 'theme_mode';
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          return 'light';
+        },
+        // java.getThemeConfig() — 获取主题配置（JSON 字符串）
+        getThemeConfig: function() {
+          var cacheKey = 'theme_config';
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          return '{}';
+        },
         // java.getThemeConfigMap() — 获取主题配置（Map 版）
-        // 假声明：返回空对象
-        getThemeConfigMap: function() { return {}; },
+        getThemeConfigMap: function() {
+          var cacheKey = 'theme_config';
+          if (_javaCache[cacheKey] !== undefined) {
+            try { return JSON.parse(_javaCache[cacheKey]); } catch(_) {}
+          }
+          return {};
+        },
         // java.getSource() — 获取当前书源对象
-        // 假声明：返回空对象
-        getSource: function() { return {}; },
+        // 走 Dart Provider 预缓存桥接，结果在 _javaCache['source']
+        getSource: function() {
+          var cacheKey = 'source';
+          if (_javaCache[cacheKey] !== undefined) {
+            try { return JSON.parse(_javaCache[cacheKey]); } catch(_) {}
+          }
+          return {};
+        },
         // java.getTag() — 获取书源标签
-        getTag: function() { return ''; },
+        getTag: function() {
+          var cacheKey = 'tag';
+          if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
+          return '';
+        },
         // java.logType(any) — 打印类型信息（调试用）
         logType: function(any) {
           console.log('[logType] ' + typeof any + ': ' + (any === null ? 'null' : String(any).substring(0, 100)));
@@ -3654,7 +3762,7 @@ class JsEngine {
   /// 借鉴 legado 的 preCacheHttpResults 机制，但自动扫描而非手动传入
   /// 优化：快速预检，无桥接调用时直接跳过
   static final _bridgeCallPattern = RegExp(
-    r'\bjava\.(ajax|get|post|head|connect|aesEncode|aesDecode|md5Encode|sha1Encode|sha256Encode|hmacSHA256|base64Encode|base64Decode|webView|webViewGetSource|webViewGetOverrideUrl|startBrowserAwait|getVerificationCode|downloadFile|cacheFile)\b|\bCryptoJS\b|\bfetch\s*\(',
+    r'\bjava\.(ajax|get|post|head|connect|aesEncode|aesDecode|md5Encode|sha1Encode|sha256Encode|hmacSHA256|base64Encode|base64Decode|webView|webViewGetSource|webViewGetOverrideUrl|startBrowserAwait|getVerificationCode|downloadFile|cacheFile|readFile|readTxtFile|writeFile|deleteFile|getTxtInFolder|importScript|unzipFile|un7zFile|unrarFile|unArchiveFile|getZipStringContent|getRarStringContent|get7zStringContent|startBrowser|openUrl|openVideoPlayer|getWebViewUA|androidId|randomUUID)\b|\bCryptoJS\b|\bfetch\s*\(',
   );
 
   /// 扫描 java.webView/getSource/getOverrideUrl 调用，提取字面量参数
@@ -3671,6 +3779,26 @@ class JsEngine {
     multiLine: true,
   );
 
+  /// 扫描文件操作调用：readFile/readTxtFile/writeFile/deleteFile/getTxtInFolder/importScript
+  /// 参数为字面量路径
+  static final _fileCallPattern = RegExp(
+    r"""java\.(readFile|readTxtFile|writeFile|deleteFile|getTxtInFolder|importScript)\s*\(\s*["']([^"']+)["']""",
+    multiLine: true,
+  );
+
+  /// 扫描压缩包操作：unzipFile/un7zFile/unrarFile/unArchiveFile(path, [password])
+  /// getZipStringContent/getRarStringContent/get7zStringContent(url, path, [charset], [password])
+  static final _archiveCallPattern = RegExp(
+    r"""java\.(unzipFile|un7zFile|unrarFile|unArchiveFile|getZipStringContent|getRarStringContent|get7zStringContent)\s*\(\s*([^)]*)\)""",
+    multiLine: true,
+  );
+
+  /// 扫描 URL 启动调用：startBrowser/openUrl/openVideoPlayer/getWebViewUA
+  static final _urlLaunchPattern = RegExp(
+    r"""java\.(startBrowser|openUrl|openVideoPlayer)\s*\(\s*["']([^"']+)["']""",
+    multiLine: true,
+  );
+
   Future<void> _preCacheBridgeCalls(String jsCode, {Map<String, dynamic>? env}) async {
     if (_jsRuntime == null) return;
     // 快速预检：无桥接调用时直接跳过，避免不必要的正则扫描
@@ -3678,6 +3806,21 @@ class JsEngine {
 
     final baseUrl = env?['baseUrl'] as String? ?? '';
     final httpUrls = <String>{};
+
+    // 0. 预缓存设备信息 & WebView UA & 配置（同步可计算，直接写入 _javaCache）
+    try {
+      final deviceInfo = await NativeChannel.instance.getDeviceInfo();
+      if (deviceInfo != null) {
+        await preCacheHttpResults({
+          'webview_ua': _defaultWebViewUA(deviceInfo),
+          'device_info': jsonEncode(deviceInfo),
+        });
+      } else {
+        await preCacheHttpResults({
+          'webview_ua': 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+        });
+      }
+    } catch (_) {}
 
     // 1. 扫描字面量 URL: java.ajax("url"), java.get("url"), java.post("url"), fetch("url")
     for (final match in _literalPattern.allMatches(jsCode)) {
@@ -4105,6 +4248,251 @@ class JsEngine {
       }
     }
 
+    // 6.7-6.9 并行预缓存：文件操作 / 压缩包 / URL 启动（彼此独立，并行执行）
+    final parallelFutures = <Future<void>>[];
+
+    // 6.7 预缓存文件操作（接入 dart:io + path_provider）
+    // 扫描 java.readFile/readTxtFile/writeFile/deleteFile/getTxtInFolder/importScript
+    if (_fileCallPattern.hasMatch(jsCode)) {
+      parallelFutures.add(() async {
+        final fileCacheEntries = <String, String>{};
+        // 获取应用文档目录作为相对路径根
+        Directory? docDir;
+        try {
+          docDir = await getApplicationDocumentsDirectory();
+        } catch (_) {}
+        final docPath = docDir?.path ?? '/tmp';
+
+        // 每个 match 独立 I/O，并发执行
+        final matchFutures = <Future<MapEntry<String, String>?>>[];
+        for (final match in _fileCallPattern.allMatches(jsCode)) {
+          final method = match.group(1)!;
+          final path = match.group(2)!;
+          // 解析路径：绝对路径直接用，相对路径相对于 docPath
+          final absPath = (path.startsWith('/') ||
+                  RegExp(r'^[A-Za-z]:[\\/]').hasMatch(path))
+              ? path
+              : '$docPath/$path';
+          final cacheKey = 'file_$method:$path';
+
+          matchFutures.add(() async {
+            try {
+              switch (method) {
+                case 'readFile':
+                case 'readTxtFile':
+                  final file = File(absPath);
+                  if (await file.exists()) {
+                    return MapEntry(cacheKey, await file.readAsString());
+                  }
+                  break;
+                case 'writeFile':
+                  // writeFile(path, content) - content 在 JS 端是动态的，这里只标记文件可写
+                  final file = File(absPath);
+                  await file.create(recursive: true);
+                  return MapEntry(cacheKey, 'true');
+                case 'deleteFile':
+                  final file = File(absPath);
+                  if (await file.exists()) {
+                    await file.delete();
+                    return MapEntry(cacheKey, 'true');
+                  }
+                  return MapEntry(cacheKey, 'false');
+                case 'getTxtInFolder':
+                  final dir = Directory(absPath);
+                  if (await dir.exists()) {
+                    final buffer = StringBuffer();
+                    await for (final entity in dir.list()) {
+                      if (entity is File &&
+                          entity.path.toLowerCase().endsWith('.txt')) {
+                        try {
+                          buffer.writeln(await entity.readAsString());
+                        } catch (_) {}
+                      }
+                    }
+                    return MapEntry(cacheKey, buffer.toString());
+                  }
+                  break;
+                case 'importScript':
+                  final file = File(absPath);
+                  if (await file.exists()) {
+                    return MapEntry(cacheKey, await file.readAsString());
+                  }
+                  break;
+              }
+            } catch (_) {}
+            return null;
+          }());
+        }
+        final results = await Future.wait(matchFutures);
+        for (final entry in results) {
+          if (entry != null) fileCacheEntries[entry.key] = entry.value;
+        }
+        if (fileCacheEntries.isNotEmpty) {
+          await preCacheHttpResults(fileCacheEntries);
+        }
+      }());
+    }
+
+    // 6.8 预缓存压缩包操作（接入 archive 包，支持密码）
+    // 扫描 java.unzipFile/un7zFile/unrarFile/unArchiveFile/getZipStringContent 等
+    if (_archiveCallPattern.hasMatch(jsCode)) {
+      parallelFutures.add(() async {
+        final archiveCacheEntries = <String, String>{};
+        Directory? tempDir;
+        try {
+          tempDir = await getTemporaryDirectory();
+        } catch (_) {}
+        final tempPath = tempDir?.path ?? '/tmp';
+
+        // 每个 archive 操作独立，并发执行
+        final matchFutures = <Future<MapEntry<String, String>?>>[];
+        for (final match in _archiveCallPattern.allMatches(jsCode)) {
+          final method = match.group(1)!;
+          final argsStr = match.group(2) ?? '';
+          final args = _splitArgs(argsStr);
+          if (args.isEmpty) continue;
+
+          matchFutures.add(() async {
+            // 第一个参数可能是文件路径或 URL
+            final firstArg = _stripQuotes(args[0]) ?? args[0];
+            // 密码参数（unzipFile/unArchiveFile 的第 2 参数，getZipStringContent 的第 4 参数）
+            String? password;
+            if (method == 'unzipFile' || method == 'un7zFile' ||
+                method == 'unrarFile' || method == 'unArchiveFile') {
+              if (args.length >= 2) password = _stripQuotes(args[1]);
+            } else if (method.contains('StringContent')) {
+              // getZipStringContent(url, path, [charset], [password])
+              if (args.length >= 4) {
+                password = _stripQuotes(args[3]);
+              } else if (args.length >= 3 && _looksLikePassword(args[2])) {
+                password = _stripQuotes(args[2]);
+              }
+            }
+
+            // 解析路径：本地文件或 URL（URL 时先下载到本地）
+            String localPath;
+            if (firstArg.startsWith('http://') || firstArg.startsWith('https://')) {
+              // URL：先下载（如果尚未下载）
+              final saveName = (await NativeChannel.instance.md5(firstArg)) ??
+                  'archive_${DateTime.now().millisecondsSinceEpoch}';
+              localPath = '$tempPath/$saveName';
+              try {
+                await NativeChannel.instance.httpDownload(firstArg, localPath);
+              } catch (_) {
+                return null;
+              }
+            } else if (firstArg.startsWith('/') ||
+                RegExp(r'^[A-Za-z]:[\\/]').hasMatch(firstArg)) {
+              localPath = firstArg;
+            } else {
+              localPath = '$tempPath/$firstArg';
+            }
+
+            // 内部路径（getZipStringContent 的第 2 参数）
+            String? innerPath;
+            if (method.contains('StringContent') && args.length >= 2) {
+              innerPath = _stripQuotes(args[1]);
+            }
+
+            final cacheKey =
+                'archive_$method:$firstArg:${innerPath ?? ''}:${password ?? ''}';
+
+            try {
+              final file = File(localPath);
+              if (!await file.exists()) return null;
+              final bytes = await file.readAsBytes();
+
+              // 尝试 ZIP 解压（archive 3.x 仅支持 ZIP，RAR/7z 暂不支持，密码仅 ZIP 有效）
+              archive.Archive? archiveObj;
+              try {
+                final zipDecoder = archive.ZipDecoder();
+                if (password != null && password.isNotEmpty) {
+                  archiveObj = zipDecoder.decodeBytes(bytes, password: password);
+                } else {
+                  archiveObj = zipDecoder.decodeBytes(bytes);
+                }
+              } catch (_) {
+                return null;
+              }
+              if (archiveObj == null) return null;
+
+              switch (method) {
+                case 'unzipFile':
+                case 'un7zFile':
+                case 'unrarFile':
+                case 'unArchiveFile':
+                  // 解压到临时目录
+                  final extractDir =
+                      '$tempPath/extracted_${DateTime.now().millisecondsSinceEpoch}';
+                  final outDir = Directory(extractDir);
+                  await outDir.create(recursive: true);
+                  for (final archFile in archiveObj) {
+                    if (!archFile.isFile) continue;
+                    final outPath = '$extractDir/${archFile.name}';
+                    final outFile = File(outPath);
+                    await outFile.parent.create(recursive: true);
+                    await outFile.writeAsBytes(archFile.content as List<int>);
+                  }
+                  return MapEntry(cacheKey, extractDir);
+                case 'getZipStringContent':
+                case 'getRarStringContent':
+                case 'get7zStringContent':
+                  if (innerPath == null || innerPath.isEmpty) return null;
+                  for (final archFile in archiveObj) {
+                    if (archFile.name == innerPath ||
+                        archFile.name.endsWith('/$innerPath')) {
+                      if (archFile.isFile) {
+                        return MapEntry(
+                          cacheKey,
+                          utf8.decode(archFile.content as List<int>,
+                              allowMalformed: true),
+                        );
+                      }
+                      break;
+                    }
+                  }
+                  break;
+              }
+            } catch (_) {}
+            return null;
+          }());
+        }
+        final results = await Future.wait(matchFutures);
+        for (final entry in results) {
+          if (entry != null) archiveCacheEntries[entry.key] = entry.value;
+        }
+        if (archiveCacheEntries.isNotEmpty) {
+          await preCacheHttpResults(archiveCacheEntries);
+        }
+      }());
+    }
+
+    // 6.9 预缓存 URL 启动操作（接入 url_launcher）
+    // 扫描 java.startBrowser/openUrl/openVideoPlayer，并行启动
+    if (_urlLaunchPattern.hasMatch(jsCode)) {
+      parallelFutures.add(() async {
+        final launchFutures = <Future<void>>[];
+        for (final match in _urlLaunchPattern.allMatches(jsCode)) {
+          final url = match.group(2)!;
+          launchFutures.add(() async {
+            try {
+              await url_launcher.launchUrl(
+                Uri.parse(url),
+                mode: url_launcher.LaunchMode.platformDefault,
+              );
+            } catch (_) {}
+          }());
+        }
+        // 并发执行所有 launchUrl 调用
+        await Future.wait(launchFutures);
+      }());
+    }
+
+    // 并行执行 6.7/6.8/6.9
+    if (parallelFutures.isNotEmpty) {
+      await Future.wait(parallelFutures);
+    }
+
     // 7. 预缓存 HTML 解析结果（使用 Dart 原生 html 包）
 
     // 收集已缓存的 HTTP 内容
@@ -4394,6 +4782,28 @@ class JsEngine {
       }
     }
     return s.isEmpty ? null : s;
+  }
+
+  /// 判断参数字符串是否像是密码（而非 charset）
+  /// charset 通常是 utf-8/gbk/gb2312/ascii/iso-8859-1 等，不以此开头的视为密码
+  bool _looksLikePassword(String? s) {
+    if (s == null) return false;
+    final lower = s.toLowerCase();
+    final charsets = ['utf', 'gb', 'iso', 'ascii', 'latin', 'unicode', 'utf-8', 'gbk', 'gb2312', 'big5'];
+    for (final cs in charsets) {
+      if (lower.startsWith(cs)) return false;
+    }
+    return true;
+  }
+
+  /// 根据 deviceInfo 生成默认 WebView UA
+  String _defaultWebViewUA(Map<String, dynamic> deviceInfo) {
+    final model = deviceInfo['model']?.toString() ?? 'unknown';
+    final release = deviceInfo['version'] is Map
+        ? (deviceInfo['version']['release']?.toString() ?? '14')
+        : '14';
+    // Mozilla/5.0 (Linux; Android 14; <model>) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36
+    return 'Mozilla/5.0 (Linux; Android $release; $model) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
   }
 
   // ===== 脚本编译缓存（借鉴 legado 的 scriptCache）=====
