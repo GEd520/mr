@@ -2573,12 +2573,59 @@ class _ElementSelector {
 
   // ===== 热路径 RegExp 常量 =====
   static final _elementIndexRegex = RegExp(r'^(.*)\[(!?)([-\d,:\s]+)\]$');
-  static final _indexPattern = RegExp(r'^!?\d+$');
-  static final _rangePattern = RegExp(r'^-?\d+:-?\d+$');
-  static final _negativeIndexPattern = RegExp(r'^-\d+$');
+  // 单个索引（含负数），对齐 legado：索引、区间两端及间隔都支持负数
+  static final _singleNumberPattern = RegExp(r'^-?\d+$');
+  // 范围：start:end 或 start:end:step（对齐 legado ElementsSingle）
+  // legado 注释：区间格式为 start:end 或 start:end:step，start 为 0 可省略，end 为 -1 可省略
+  static final _rangePattern = RegExp(r'^-?\d*:-?\d*(?::-?\d+)?$');
 
   /// legado 内部规则关键字，这些关键字的 . 分隔是语义分隔
   static const _legadoKeywords = {'class', 'tag', 'id', 'text', 'children'};
+
+  /// 尝试解析索引段（支持 ! 前缀、单索引含负数、范围含 step）
+  /// 对齐 legado ElementsSingle.findIndexSet 的识别逻辑
+  /// legado 注释：
+  ///   1. ':'分隔索引，!或.表示筛选方式，索引可为负数
+  ///      例如 tag.div.-1:10:2 或 tag.div!0:3
+  ///   2. []索引写法 [it,it,...] 或 [!it,it,...]，其中[!开头表示筛选方式为排除
+  /// 返回 (exclude, indexes, rangeExpression)，如果不是索引段返回 null
+  static (bool, List<int>, String?)? _tryParseIndexSegment(String segment) {
+    var s = segment.trim();
+    if (s.isEmpty) return null;
+    var exclude = false;
+    if (s.startsWith('!')) {
+      exclude = true;
+      s = s.substring(1);
+    }
+
+    // 单索引（含负数）
+    if (_singleNumberPattern.hasMatch(s)) {
+      final idx = int.tryParse(s);
+      if (idx != null) {
+        return (exclude, <int>[idx], null);
+      }
+    }
+
+    // 范围（支持 start:end 和 start:end:step，端点可省略）
+    if (_rangePattern.hasMatch(s)) {
+      return (exclude, <int>[], s);
+    }
+
+    return null;
+  }
+
+  /// 找到最后一个索引分隔符（. 或 !）的位置
+  /// 对齐 legado ElementsSingle.findIndexSet：!或.表示筛选方式
+  /// [fromIdx] 起始位置（包含），返回 >= fromIdx 的最后一个分隔符位置，找不到返回 -1
+  static int _findLastIndexSeparator(String rule, int fromIdx) {
+    for (var i = rule.length - 1; i >= fromIdx; i--) {
+      final c = rule[i];
+      if (c == '.' || c == '!') {
+        return i;
+      }
+    }
+    return -1;
+  }
 
   /// 常见 HTML 标签名，用于识别隐式 tag 前缀
   static const _htmlTags = {
@@ -2611,9 +2658,12 @@ class _ElementSelector {
   factory _ElementSelector.parse(String rawRule) {
     var rule = rawRule.trim();
     var exclude = false;
-    final indexes = <int>[];
+    var indexes = <int>[];
+    String? rangeExpression;
 
-    // 支持 [!0,1,2] 或 [0,1,2] 格式
+    // 1. 支持 [] 索引写法（对齐 legado ElementsSingle.findIndexSet 的 head 分支）
+    //    [0,1,2] / [!0,1,2] / [-1, 3:-2:-10, 2] / [!-1:0]
+    //    legado 注释：格式形如 [it,it,...] 或 [!it,it,...]，其中[!开头表示筛选方式为排除
     final bracketMatch = _elementIndexRegex.firstMatch(rule);
     if (bracketMatch != null) {
       rule = bracketMatch.group(1)!.trim();
@@ -2626,124 +2676,88 @@ class _ElementSelector {
       );
     }
 
-    // 借鉴 legado 的索引解析方式：按 . 分割，检查最后一段是否是纯数字
-    // legado 格式：关键字.值.索引，如 class.book-item.0、tag.div.!0
-    // class.coll-g-2 → 最后一段 coll-g-2 不是纯数字 → 无索引
-    // class.book-item.0 → 最后一段 0 是纯数字 → 索引 0
-    // tag.div.!0 → 最后一段 !0 以 ! 开头 → 排除索引 0
+    // 2. legado 阅读原有写法：按 . 分割，检查最后一段是否是索引
+    //    legado 格式：关键字.值.索引，如 class.book-item.0、tag.div.!0、tag.div.-1:10:2
+    //    split == '.' 表示选择模式，split == '!' 表示排除模式
     final firstDotIdx = rule.indexOf('.');
     if (firstDotIdx >= 0) {
       final prefix = rule.substring(0, firstDotIdx);
+
+      // 2a. legado 关键字格式（class/tag/id/text/children）
+      //     对齐 legado：!或.表示筛选方式，例如 tag.div!0:3 或 class.book-item.0
       if (_legadoKeywords.contains(prefix)) {
-        // legado 关键字格式，检查最后一段是否是索引
-        final lastDotIdx = rule.lastIndexOf('.');
-        if (lastDotIdx > firstDotIdx) {
-          // 有多个 .，最后一段可能是索引
-          final lastSegment = rule.substring(lastDotIdx + 1);
-          final excludeIdx = lastSegment.startsWith('!');
-          final numStr = excludeIdx ? lastSegment.substring(1) : lastSegment;
-          final idx = int.tryParse(numStr);
-          if (idx != null) {
-            // 最后一段是纯数字，是索引
-            rule = rule.substring(0, lastDotIdx);
-            exclude = excludeIdx;
-            indexes.add(idx);
-            return _ElementSelector(rule, indexes, exclude);
+        // 找最后一个 . 或 ! 分隔符（必须在 firstDotIdx 之后，即至少要有关键字值）
+        final lastSepIdx = _findLastIndexSeparator(rule, firstDotIdx + 1);
+        if (lastSepIdx > firstDotIdx) {
+          var lastSegment = rule.substring(lastSepIdx + 1);
+          // 如果分隔符是 !，加上 ! 前缀让 _tryParseIndexSegment 统一处理
+          // 这样 tag.div!0:3 和 tag.div.!0:3 结果一致
+          if (rule[lastSepIdx] == '!') {
+            lastSegment = '!$lastSegment';
+          }
+          final info = _tryParseIndexSegment(lastSegment);
+          if (info != null) {
+            (exclude, indexes, rangeExpression) = info;
+            rule = rule.substring(0, lastSepIdx);
+            return _ElementSelector(rule, indexes, exclude,
+                rangeExpression: rangeExpression);
           }
         }
-        // 只有一个 . 或最后一段不是纯数字，无索引
+        // 只有一个 . 或最后一段不是索引，无索引
         return _ElementSelector(rule, indexes, exclude);
       }
 
-      // 借鉴 legado：隐式 tag 前缀识别
-      // dd.0 → 等价于 tag.dd.0（第0个dd元素）
-      // span.0:-1 → 等价于 tag.span[0:-1]
-      // 但 .xxx.yyy（以.开头）是 CSS class 选择器，不处理
+      // 2b. 隐式 tag 前缀识别（dd.0 / span.0:-1 / div.-1:10:2 / dd!0:3）
+      //     dd.0 → 等价于 tag.dd.0
+      //     dd!0:3 → 等价于 tag.dd, 排除索引 0:3
+      //     但 .xxx.yyy（以.开头）是 CSS class 选择器，走 2c 分支
       if (_htmlTags.contains(prefix.toLowerCase())) {
-        final lastDotIdx = rule.lastIndexOf('.');
-        if (lastDotIdx > firstDotIdx) {
-          final lastSegment = rule.substring(lastDotIdx + 1);
-          // 检查最后一段是否是索引或范围（纯数字、!数字、数字:数字）
-          final isIndex = _indexPattern.hasMatch(lastSegment);
-          final isRange = _rangePattern.hasMatch(lastSegment);
-          if (isIndex || isRange) {
-            // dd.0 → tag.dd, 索引 0
-            // dd.!0 → tag.dd, 排除索引 0
-            // span.0:-1 → tag.span, 范围 0:-1
-            final tagName = rule.substring(firstDotIdx + 1, lastDotIdx);
-            if (isIndex) {
-              final excludeIdx = lastSegment.startsWith('!');
-              final numStr = excludeIdx ? lastSegment.substring(1) : lastSegment;
-              final idx = int.tryParse(numStr);
-              if (idx != null) {
-                rule = 'tag.$tagName';
-                exclude = excludeIdx;
-                indexes.add(idx);
-                return _ElementSelector(rule, indexes, exclude);
-              }
-            } else {
-              // 范围格式
-              rule = 'tag.$tagName';
-              return _ElementSelector(rule, indexes, exclude, rangeExpression: lastSegment);
-            }
+        final lastSepIdx = _findLastIndexSeparator(rule, firstDotIdx);
+        if (lastSepIdx >= firstDotIdx) {
+          var lastSegment = rule.substring(lastSepIdx + 1);
+          if (rule[lastSepIdx] == '!') {
+            lastSegment = '!$lastSegment';
           }
-        }
-        // dd.0 只有一个 . → 检查 . 后面是否是纯数字
-        if (lastDotIdx == firstDotIdx) {
-          final afterDot = rule.substring(firstDotIdx + 1);
-          final isIndex = _indexPattern.hasMatch(afterDot);
-          final isRange = _rangePattern.hasMatch(afterDot);
-          if (isIndex) {
-            final excludeIdx = afterDot.startsWith('!');
-            final numStr = excludeIdx ? afterDot.substring(1) : afterDot;
-            final idx = int.tryParse(numStr);
-            if (idx != null) {
+          final info = _tryParseIndexSegment(lastSegment);
+          if (info != null) {
+            (exclude, indexes, rangeExpression) = info;
+            // 提取 tagName：从 firstDotIdx+1 到 lastSepIdx
+            // 注意：lastSepIdx == firstDotIdx 时（如 dd.0），tagName 为空
+            final tagName = lastSepIdx > firstDotIdx
+                ? rule.substring(firstDotIdx + 1, lastSepIdx)
+                : '';
+            if (tagName.isEmpty) {
+              // dd.0 / dd.!0 → tagName 是 prefix（dd）
               rule = 'tag.$prefix';
-              exclude = excludeIdx;
-              indexes.add(idx);
-              return _ElementSelector(rule, indexes, exclude);
+            } else {
+              // div.content.0 → tagName 是 content
+              rule = 'tag.$tagName';
             }
-          } else if (isRange) {
-            rule = 'tag.$prefix';
-            return _ElementSelector(rule, indexes, exclude, rangeExpression: afterDot);
+            return _ElementSelector(rule, indexes, exclude,
+                rangeExpression: rangeExpression);
           }
         }
       }
     }
 
-    // 非 legado 关键字格式（CSS 选择器等），不解析索引
-    // 但借鉴 legado：CSS 类选择器（以.开头）末尾的负数索引需要解析
-    // .page-item.-2 → CSS选择器 .page-item，索引 -2
+    // 2c. CSS 类选择器（以.开头）末尾的索引需要解析
+    //     .page-item.-2 → CSS选择器 .page-item，索引 -2
+    //     .page-item.0:-1 → CSS选择器 .page-item，范围 0:-1
+    //     .page-item.!0 → CSS选择器 .page-item，排除索引 0
+    //     .page-item!0 → CSS选择器 .page-item，排除索引 0（! 分隔符）
     if (rule.startsWith('.') && rule.length > 1) {
-      final lastDotIdx = rule.lastIndexOf('.');
-      if (lastDotIdx > 0) {
-        final lastSegment = rule.substring(lastDotIdx + 1);
-        // 检查最后一段是否是索引（纯数字或负数）
-        final isNegativeIndex = _negativeIndexPattern.hasMatch(lastSegment);
-        final isPositiveIndex = _indexPattern.hasMatch(lastSegment);
-        final isRange = _rangePattern.hasMatch(lastSegment);
-        if (isNegativeIndex) {
-          // .page-item.-2 → beforeRule=.page-item, index=-2
-          final idx = int.tryParse(lastSegment);
-          if (idx != null) {
-            rule = rule.substring(0, lastDotIdx);
-            indexes.add(idx);
-            return _ElementSelector(rule, indexes, exclude);
-          }
-        } else if (isPositiveIndex) {
-          // .page-item.0 → beforeRule=.page-item, index=0
-          final excludeIdx = lastSegment.startsWith('!');
-          final numStr = excludeIdx ? lastSegment.substring(1) : lastSegment;
-          final idx = int.tryParse(numStr);
-          if (idx != null) {
-            rule = rule.substring(0, lastDotIdx);
-            exclude = excludeIdx;
-            indexes.add(idx);
-            return _ElementSelector(rule, indexes, exclude);
-          }
-        } else if (isRange) {
-          rule = rule.substring(0, lastDotIdx);
-          return _ElementSelector(rule, indexes, exclude, rangeExpression: lastSegment);
+      final lastSepIdx = _findLastIndexSeparator(rule, 1);
+      if (lastSepIdx > 0) {
+        var lastSegment = rule.substring(lastSepIdx + 1);
+        if (rule[lastSepIdx] == '!') {
+          lastSegment = '!$lastSegment';
+        }
+        final info = _tryParseIndexSegment(lastSegment);
+        if (info != null) {
+          (exclude, indexes, rangeExpression) = info;
+          rule = rule.substring(0, lastSepIdx);
+          return _ElementSelector(rule, indexes, exclude,
+              rangeExpression: rangeExpression);
         }
       }
     }
@@ -2751,61 +2765,138 @@ class _ElementSelector {
     return _ElementSelector(rule, indexes, exclude);
   }
 
+  /// 对齐 legado ElementsSingle.getElementsSingle 的索引筛选逻辑
+  /// legado 注释：
+  ///   1. ':'分隔索引，!或.表示筛选方式，索引可为负数
+  ///   2. 区间格式为 start:end 或 start:end:step，start 为 0 可省略，end 为 -1 可省略
+  ///   3. 索引、区间两端及间隔都支持负数
+  ///   4. 特殊用法 tag.div[-1:0] 可在任意地方让列表反向
   List<dynamic> apply(List<dom.Element> elements) {
     if (elements.isEmpty) return [];
     if (indexes.isEmpty && rangeExpression == null) return elements.toList();
 
-    final selected = <int>{};
+    final len = elements.length;
+    final indexSet = <int>{};
+
+    // 处理单索引列表（对齐 legado indexDefault 分支）
     for (final index in indexes) {
-      final fixed = index < 0 ? elements.length + index : index;
-      if (fixed >= 0 && fixed < elements.length) {
-        selected.add(fixed);
-      }
-    }
-    if (rangeExpression != null) {
-      for (final item in rangeExpression!.split(',')) {
-        final parts = item.trim().split(':');
-        if (parts.length == 1) {
-          final raw = int.tryParse(parts.first);
-          if (raw == null) continue;
-          final fixed = raw < 0 ? elements.length + raw : raw;
-          if (fixed >= 0 && fixed < elements.length) {
-            selected.add(fixed);
-          }
-          continue;
-        }
-        var start = parts.first.isEmpty ? 0 : int.tryParse(parts.first) ?? 0;
-        var end = parts[1].isEmpty
-            ? elements.length - 1
-            : int.tryParse(parts[1]) ?? elements.length - 1;
-        var step = parts.length > 2 ? int.tryParse(parts[2]) ?? 1 : 1;
-        if (start < 0) start += elements.length;
-        if (end < 0) end += elements.length;
-        start = start.clamp(0, elements.length - 1);
-        end = end.clamp(0, elements.length - 1);
-        if (step == 0) step = 1;
-        if (end < start && step > 0) {
-          for (var index = start; index >= end; index -= step) {
-            selected.add(index);
-          }
-        } else {
-          for (var index = start;
-              step > 0 ? index <= end : index >= end;
-              index += step) {
-            selected.add(index);
-          }
-        }
+      final fixed = _normalizeIndex(index, len);
+      if (fixed != null) {
+        indexSet.add(fixed);
       }
     }
 
+    // 处理范围表达式（对齐 legado indexes Triple 分支）
+    if (rangeExpression != null) {
+      _expandRangeExpression(rangeExpression!, len, indexSet);
+    }
+
+    // 根据筛选方式返回结果（对齐 legado split == '!' 排除 / split == '.' 选择）
     if (exclude) {
       return [
-        for (var i = 0; i < elements.length; i++)
-          if (!selected.contains(i)) elements[i],
+        for (var i = 0; i < len; i++)
+          if (!indexSet.contains(i)) elements[i],
       ];
     }
 
-    final sorted = selected.toList()..sort();
+    final sorted = indexSet.toList()..sort();
     return [for (final i in sorted) elements[i]];
+  }
+
+  /// 规范化索引（负索引转正，越界返回 null）
+  /// 对齐 legado：if (it in 0 until len) ... else if (it < 0 && len >= -it) it + len
+  int? _normalizeIndex(int index, int len) {
+    if (index >= 0 && index < len) return index;
+    if (index < 0 && len >= -index) return index + len;
+    return null;
+  }
+
+  /// 展开范围表达式到 indexSet
+  /// 对齐 legado ElementsSingle 的区间展开逻辑（line 339-381）
+  void _expandRangeExpression(String expr, int len, Set<int> indexSet) {
+    for (final item in expr.split(',')) {
+      final trimmed = item.trim();
+      if (trimmed.isEmpty) continue;
+
+      final parts = trimmed.split(':');
+
+      // 单索引（逗号分隔列表中的单项）
+      if (parts.length == 1) {
+        final raw = int.tryParse(parts.first);
+        if (raw == null) continue;
+        final fixed = _normalizeIndex(raw, len);
+        if (fixed != null) {
+          indexSet.add(fixed);
+        }
+        continue;
+      }
+
+      // 区间 start:end 或 start:end:step
+      // legado: start 省略表示 0，end 省略表示 len - 1
+      var startX = parts.first.isEmpty ? 0 : (int.tryParse(parts.first) ?? 0);
+      var endX = parts[1].isEmpty
+          ? len - 1
+          : (int.tryParse(parts[1]) ?? len - 1);
+      final stepX = parts.length > 2 ? (int.tryParse(parts[2]) ?? 1) : 1;
+
+      // 负索引转正（对齐 legado line 343-346）
+      if (startX < 0) startX += len;
+      if (endX < 0) endX += len;
+
+      // 同侧越界检查（对齐 legado line 348-351）
+      // start 和 end 同侧左右端越界，无效索引
+      if ((startX < 0 && endX < 0) || (startX >= len && endX >= len)) {
+        continue;
+      }
+
+      // 单端越界 clamp（对齐 legado line 353-357）
+      // 右端越界设为最大索引，左端越界设为最小索引
+      if (startX >= len) {
+        startX = len - 1;
+      } else if (startX < 0) {
+        startX = 0;
+      }
+      if (endX >= len) {
+        endX = len - 1;
+      } else if (endX < 0) {
+        endX = 0;
+      }
+
+      // 两端相同或 step 过大，区间只有一个数（对齐 legado line 359-363）
+      if (startX == endX || stepX >= len) {
+        indexSet.add(startX);
+        continue;
+      }
+
+      // 负 step 转正（对齐 legado line 366-367）
+      // legado: if (stepX > 0) stepX else if (-stepX < len) stepX + len else 1
+      // 最小正数间隔为 1
+      final int step;
+      if (stepX > 0) {
+        step = stepX;
+      } else if (-stepX < len) {
+        step = stepX + len;
+      } else {
+        step = 1;
+      }
+
+      if (step == 0) {
+        indexSet.add(startX);
+        continue;
+      }
+
+      // 展开区间（对齐 legado line 370）
+      // legado: if (end > start) start..end step step else start downTo end step step
+      // 允许列表反向（特殊用法 [-1:0]）
+      if (endX > startX) {
+        for (var i = startX; i <= endX; i += step) {
+          indexSet.add(i);
+        }
+      } else {
+        for (var i = startX; i >= endX; i -= step) {
+          indexSet.add(i);
+        }
+      }
+    }
   }
 }
