@@ -147,7 +147,11 @@ class AnalyzeUrl {
           : urlPart.substring(0, optionMatch.start).trim();
 
       if (optionMatch != null) {
-        final optionText = ruleUrl.substring(optionMatch.end).trim();
+        // 注意：必须用 urlPart（JS 执行后的结果），不能用 ruleUrl
+        // 因为 optionMatch 是在 urlPart 上匹配的，位置对应 urlPart 而非 ruleUrl
+        // 之前用 ruleUrl.substring(optionMatch.end) 会导致位置错位，
+        // 把 JS 代码尾部的字符（如 ';）混入选项文本，引发 FormatException
+        final optionText = urlPart.substring(optionMatch.end).trim();
         try {
           final decoded = jsonDecode(optionText);
           if (decoded is! Map) {
