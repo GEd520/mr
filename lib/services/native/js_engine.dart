@@ -2637,6 +2637,33 @@ class JsEngine {
         globalThis.getWebViewUA = function() { return java.getWebViewUA(); };
         globalThis.ajax = function(url, opt) { return java.ajax(url, opt); };
         globalThis.timeFormatUTC = function(ts, fmt, offset) { return java.timeFormatUTC(ts, fmt, offset); };
+
+        // ===== 自动挂载所有 java 方法到 globalThis（对齐 Legado 行为）=====
+        // Legado 中 JsExtensions 是接口实现，Rhino 直接把这些方法挂到全局
+        // 书源可以直接写 getCookie() / readFile() 而不用 java.getCookie() / java.readFile()
+        // 这里遍历 java 对象所有 function 类型的属性，自动挂载到 globalThis
+        // 跳过子对象（jsoup/regex/webview/cache）和已显式挂载的方法
+        (function() {
+          var _alreadyMounted = {
+            getString: true, put: true, getStr: true,
+            base64Encode: true, base64Decode: true,
+            md5Encode: true, sha256Encode: true,
+            aesEncode: true, aesDecode: true,
+            getWebViewUA: true, ajax: true, timeFormatUTC: true
+          };
+          Object.keys(java).forEach(function(k) {
+            // 跳过子对象、已挂载的、私有方法（_开头）
+            if (_alreadyMounted[k] || k.charAt(0) === '_') return;
+            try {
+              if (typeof java[k] === 'function' && typeof globalThis[k] === 'undefined') {
+                globalThis[k] = function() {
+                  // 用 apply 保证 this 指向 java 对象（访问内部 _javaCache 等）
+                  return java[k].apply(java, arguments);
+                };
+              }
+            } catch (e) {}
+          });
+        })();
       ''');
     } catch (_) {}
 
