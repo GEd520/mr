@@ -1,6 +1,7 @@
 import 'dart:ffi';
 import 'dart:io';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:ffi/ffi.dart';
 import 'package:encrypt/encrypt.dart';
 import 'package:crypto/crypto.dart' as crypto;
@@ -28,7 +29,7 @@ typedef _BridgeEvalDart = Pointer<Utf8> Function(
 typedef _BridgeFreeStringDart = void Function(Pointer<Utf8>);
 typedef _BridgeDisposeDart = void Function(Pointer<Void>);
 
-// ---------- 原生加密通用回调签名 ----------
+// ---------- 原生加密通用回调签名（字符串路径）----------
 // C 侧: const char* (*)(int op, const char* a, const char* b, const char* c, int* is_error)
 typedef _CryptoCallbackC = Pointer<Utf8> Function(
     Int32, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Int32>);
@@ -38,6 +39,24 @@ typedef _SetCryptoCallbackC
     = Void Function(Pointer<NativeFunction<_CryptoCallbackC>>);
 typedef _SetCryptoCallbackDart
     = void Function(Pointer<NativeFunction<_CryptoCallbackC>>);
+
+// ---------- 原生加密通用回调签名（ArrayBuffer 零拷贝路径）----------
+// C 侧: const uint8_t* (*)(int op,
+//        const uint8_t* data0, size_t len0,
+//        const uint8_t* data1, size_t len1,
+//        const uint8_t* data2, size_t len2,
+//        size_t* out_len, int* is_error)
+typedef _CryptoCallbackBinaryC = Pointer<Uint8> Function(
+    Int32,
+    Pointer<Uint8>, IntPtr,
+    Pointer<Uint8>, IntPtr,
+    Pointer<Uint8>, IntPtr,
+    Pointer<IntPtr>, Pointer<Int32>);
+
+typedef _SetCryptoCallbackBinaryC
+    = Void Function(Pointer<NativeFunction<_CryptoCallbackBinaryC>>);
+typedef _SetCryptoCallbackBinaryDart
+    = void Function(Pointer<NativeFunction<_CryptoCallbackBinaryC>>);
 
 // 加密操作类型常量（对齐 C 层 quickjs_bridge.h）
 const int _CRYPTO_OP_AES_DECRYPT = 0;
@@ -92,11 +111,17 @@ final _BridgeDisposeDart _bridgeDispose = _qjsLib
     .lookup<NativeFunction<_BridgeDisposeC>>('quickjs_bridge_dispose')
     .asFunction<_BridgeDisposeDart>();
 
-// 注册加密通用回调
+// 注册加密通用回调（字符串路径）
 final _SetCryptoCallbackDart _setCryptoCallback = _qjsLib
     .lookup<NativeFunction<_SetCryptoCallbackC>>(
         'quickjs_bridge_set_crypto_callback')
     .asFunction<_SetCryptoCallbackDart>();
+
+// 注册加密通用回调（ArrayBuffer 零拷贝路径）
+final _SetCryptoCallbackBinaryDart _setCryptoCallbackBinary = _qjsLib
+    .lookup<NativeFunction<_SetCryptoCallbackBinaryC>>(
+        'quickjs_bridge_set_crypto_callback_binary')
+    .asFunction<_SetCryptoCallbackBinaryDart>();
 
 // ---------- 原生加密回调实现 ----------
 // 环形缓冲区：管理 Dart 分配的回调结果内存
@@ -115,6 +140,9 @@ void _ensureCryptoCallbackRegistered() {
   // 回调内部必须用 try-catch 捕获所有异常，避免进程被 terminate
   _setCryptoCallback(
     Pointer.fromFunction<_CryptoCallbackC>(_nativeCryptoCallback),
+  );
+  _setCryptoCallbackBinary(
+    Pointer.fromFunction<_CryptoCallbackBinaryC>(_nativeCryptoCallbackBinary),
   );
 }
 
@@ -230,6 +258,97 @@ String _performAesEncrypt(String data, String key, String iv) {
   final encrypted = encrypter.encrypt(data, iv: IV(ivBytes));
 
   return encrypted.base64;
+}
+
+// ---------- 二进制回调实现（ArrayBuffer 零拷贝路径）----------
+// 二进制环形缓冲区：管理 Dart 分配的字节结果内存
+final List<Pointer<Uint8>> _cryptoBinaryResultBuffer = [];
+const int _maxCryptoBinaryBufferSize = 16;
+
+Pointer<Uint8> _returnCryptoBinaryResult(Uint8List bytes) {
+  final ptr = malloc<Uint8>(bytes.length);
+  for (var i = 0; i < bytes.length; i++) {
+    ptr[i] = bytes[i];
+  }
+  _cryptoBinaryResultBuffer.add(ptr);
+  if (_cryptoBinaryResultBuffer.length > _maxCryptoBinaryBufferSize) {
+    final old = _cryptoBinaryResultBuffer.removeAt(0);
+    malloc.free(old);
+  }
+  return ptr;
+}
+
+Uint8List _pointerToBytes(Pointer<Uint8> ptr, int length) {
+  if (ptr.address == 0 || length == 0) return Uint8List(0);
+  return ptr.asTypedList(length);
+}
+
+/// 加密二进制回调（top-level，被 C 层通过函数指针同步调用）
+///
+/// 接收 ArrayBuffer 字节数据，返回字节数据
+/// 用于大数据（>= 1KB）：零拷贝路径
+Pointer<Uint8> _nativeCryptoCallbackBinary(
+  int op,
+  Pointer<Uint8> data0Ptr, int len0,
+  Pointer<Uint8> data1Ptr, int len1,
+  Pointer<Uint8> data2Ptr, int len2,
+  Pointer<IntPtr> outLenPtr,
+  Pointer<Int32> isErrorPtr,
+) {
+  try {
+    final data0 = _pointerToBytes(data0Ptr, len0);
+    final data1 = _pointerToBytes(data1Ptr, len1);
+    final data2 = _pointerToBytes(data2Ptr, len2);
+
+    Uint8List result;
+    switch (op) {
+      case _CRYPTO_OP_AES_DECRYPT:
+        // data0=base64 密文字节, data1=key 字节, data2=iv 字节
+        final dataB64 = utf8.decode(data0, allowMalformed: true);
+        final key = utf8.decode(data1, allowMalformed: true);
+        final iv = utf8.decode(data2, allowMalformed: true);
+        final plain = _performAesDecrypt(dataB64, key, iv);
+        result = Uint8List.fromList(utf8.encode(plain));
+        break;
+      case _CRYPTO_OP_AES_ENCRYPT:
+        // data0=明文字节, data1=key 字节, data2=iv 字节
+        final data = utf8.decode(data0, allowMalformed: true);
+        final key = utf8.decode(data1, allowMalformed: true);
+        final iv = utf8.decode(data2, allowMalformed: true);
+        final cipherB64 = _performAesEncrypt(data, key, iv);
+        result = Uint8List.fromList(utf8.encode(cipherB64));
+        break;
+      case _CRYPTO_OP_MD5:
+        result = Uint8List.fromList(
+            utf8.encode(crypto.md5.convert(data0).toString()));
+        break;
+      case _CRYPTO_OP_SHA256:
+        result = Uint8List.fromList(
+            utf8.encode(crypto.sha256.convert(data0).toString()));
+        break;
+      case _CRYPTO_OP_HMAC_SHA256:
+        // data0=数据字节, data1=key 字节
+        result = Uint8List.fromList(utf8.encode(
+            crypto.Hmac(crypto.sha256, data1).convert(data0).toString()));
+        break;
+      case _CRYPTO_OP_SHA1:
+        result = Uint8List.fromList(
+            utf8.encode(crypto.sha1.convert(data0).toString()));
+        break;
+      default:
+        isErrorPtr.value = 1;
+        outLenPtr.value = 0;
+        return nullptr;
+    }
+
+    isErrorPtr.value = 0;
+    outLenPtr.value = result.length;
+    return _returnCryptoBinaryResult(result);
+  } catch (e) {
+    isErrorPtr.value = 1;
+    outLenPtr.value = 0;
+    return nullptr;
+  }
 }
 
 /// QuickJS 运行时

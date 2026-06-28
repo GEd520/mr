@@ -2668,7 +2668,45 @@ class JsEngine {
     } catch (_) {}
 
     // 4. 注入 CryptoJS（优先走原生 __nativeCrypto，失败回退纯 JS _AES 引擎）
+    // 自动路径选择：数据 < 1KB 走字符串路径，>= 1KB 走 ArrayBuffer 零拷贝路径
     final cryptoCode = '''
+      // 辅助：字符串转 Uint8Array（UTF-8 编码）
+      function _strToU8(s) {
+        var u8 = new Uint8Array(s.length * 4);
+        var n = 0;
+        for (var i = 0; i < s.length; i++) {
+          var c = s.charCodeAt(i);
+          if (c < 0x80) { u8[n++] = c; }
+          else if (c < 0x800) { u8[n++] = 0xC0 | (c >> 6); u8[n++] = 0x80 | (c & 0x3F); }
+          else { u8[n++] = 0xE0 | (c >> 12); u8[n++] = 0x80 | ((c >> 6) & 0x3F); u8[n++] = 0x80 | (c & 0x3F); }
+        }
+        return u8.subarray(0, n);
+      }
+      // 辅助：Uint8Array 转字符串（UTF-8 解码，允许 malformed）
+      function _u8ToStr(u8) {
+        try { return new TextDecoder('utf-8', { fatal: false }).decode(u8); }
+        catch (e) {
+          var s = '';
+          for (var i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
+          return s;
+        }
+      }
+      // 辅助：base64 转 Uint8Array
+      function _b64ToU8(b64) {
+        var bin = atob(b64);
+        var u8 = new Uint8Array(bin.length);
+        for (var i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+        return u8;
+      }
+      // 辅助：Uint8Array 转 base64
+      function _u8ToB64(u8) {
+        var bin = '';
+        for (var i = 0; i < u8.length; i++) bin += String.fromCharCode(u8[i]);
+        return btoa(bin);
+      }
+      // 辅助：自动选择路径阈值（1KB）
+      var _CRYPTO_BINARY_THRESHOLD = 1024;
+
       var CryptoJS = {
         AES: {
           encrypt: function(data, key, cfg) {
@@ -2689,6 +2727,21 @@ class JsEngine {
                 }
                 var keyStr = CryptoJS.enc.Utf8.stringify(key);
                 var ivStr = iv ? CryptoJS.enc.Utf8.stringify(iv) : '';
+
+                // 自动选择路径：大数据走 ArrayBuffer 零拷贝
+                if (dataStr.length >= _CRYPTO_BINARY_THRESHOLD && __nativeCrypto.aesEncryptBin) {
+                  var dataU8 = _strToU8(dataStr);
+                  var keyU8 = _strToU8(keyStr);
+                  var ivU8 = _strToU8(ivStr);
+                  var resultU8 = __nativeCrypto.aesEncryptBin(dataU8, keyU8, ivU8);
+                  var resultB64 = _u8ToStr(resultU8);
+                  return {
+                    toString: function() { return resultB64; },
+                    ciphertext: { toString: function(enc) { return resultB64; } }
+                  };
+                }
+
+                // 小数据走字符串路径
                 var nativeResult = __nativeCrypto.aesEncrypt(dataStr, keyStr, ivStr);
                 if (nativeResult !== null && nativeResult !== undefined) {
                   return {
@@ -2726,10 +2779,29 @@ class JsEngine {
                   dataB64 = String(data);
                 }
 
-                // WordArray → UTF-8 字符串
                 var keyStr = CryptoJS.enc.Utf8.stringify(key);
                 var ivStr = iv ? CryptoJS.enc.Utf8.stringify(iv) : '';
 
+                // 自动选择路径：大数据走 ArrayBuffer 零拷贝
+                if (dataB64.length >= _CRYPTO_BINARY_THRESHOLD && __nativeCrypto.aesDecryptBin) {
+                  var dataU8 = _strToU8(dataB64);
+                  var keyU8 = _strToU8(keyStr);
+                  var ivU8 = _strToU8(ivStr);
+                  var resultU8 = __nativeCrypto.aesDecryptBin(dataU8, keyU8, ivU8);
+                  var nativeResult = _u8ToStr(resultU8);
+                  if (nativeResult !== null && nativeResult !== undefined) {
+                    return {
+                      toString: function(enc) {
+                        if (enc === CryptoJS.enc.Base64) {
+                          return java.base64Encode(nativeResult) || '';
+                        }
+                        return nativeResult;
+                      }
+                    };
+                  }
+                }
+
+                // 小数据走字符串路径
                 var nativeResult = __nativeCrypto.aesDecrypt(dataB64, keyStr, ivStr);
                 if (nativeResult !== null && nativeResult !== undefined) {
                   // 包装成 CryptoJS 格式，保持 toString(Utf8) 兼容
@@ -2756,8 +2828,16 @@ class JsEngine {
           // 优先走原生
           if (typeof __nativeCrypto !== 'undefined' && __nativeCrypto && __nativeCrypto.md5) {
             try {
-              var r = __nativeCrypto.md5(str);
-              if (r) return { toString: function() { return r; } };
+              // 大数据走 ArrayBuffer 零拷贝
+              if (str.length >= _CRYPTO_BINARY_THRESHOLD && __nativeCrypto.md5Bin) {
+                var u8 = _strToU8(str);
+                var r8 = __nativeCrypto.md5Bin(u8);
+                var r = _u8ToStr(r8);
+                if (r) return { toString: function() { return r; } };
+              } else {
+                var r = __nativeCrypto.md5(str);
+                if (r) return { toString: function() { return r; } };
+              }
             } catch (e) {}
           }
           return { toString: function() { return java.md5Encode(str); } };
@@ -2765,8 +2845,15 @@ class JsEngine {
         SHA1: function(str) {
           if (typeof __nativeCrypto !== 'undefined' && __nativeCrypto && __nativeCrypto.sha1) {
             try {
-              var r = __nativeCrypto.sha1(str);
-              if (r) return { toString: function() { return r; } };
+              if (str.length >= _CRYPTO_BINARY_THRESHOLD && __nativeCrypto.sha1Bin) {
+                var u8 = _strToU8(str);
+                var r8 = __nativeCrypto.sha1Bin(u8);
+                var r = _u8ToStr(r8);
+                if (r) return { toString: function() { return r; } };
+              } else {
+                var r = __nativeCrypto.sha1(str);
+                if (r) return { toString: function() { return r; } };
+              }
             } catch (e) {}
           }
           return { toString: function() { return java.sha1Encode ? java.sha1Encode(str) : ''; } };
@@ -2774,8 +2861,15 @@ class JsEngine {
         SHA256: function(str) {
           if (typeof __nativeCrypto !== 'undefined' && __nativeCrypto && __nativeCrypto.sha256) {
             try {
-              var r = __nativeCrypto.sha256(str);
-              if (r) return { toString: function() { return r; } };
+              if (str.length >= _CRYPTO_BINARY_THRESHOLD && __nativeCrypto.sha256Bin) {
+                var u8 = _strToU8(str);
+                var r8 = __nativeCrypto.sha256Bin(u8);
+                var r = _u8ToStr(r8);
+                if (r) return { toString: function() { return r; } };
+              } else {
+                var r = __nativeCrypto.sha256(str);
+                if (r) return { toString: function() { return r; } };
+              }
             } catch (e) {}
           }
           return { toString: function() { return java.sha256Encode ? java.sha256Encode(str) : ''; } };
@@ -2784,8 +2878,17 @@ class JsEngine {
           if (typeof __nativeCrypto !== 'undefined' && __nativeCrypto && __nativeCrypto.hmacSHA256) {
             try {
               var keyStr = (typeof key === 'string') ? key : CryptoJS.enc.Utf8.stringify(key);
-              var r = __nativeCrypto.hmacSHA256(data, keyStr);
-              if (r) return { toString: function() { return r; } };
+              // 大数据走 ArrayBuffer 零拷贝
+              if (data.length >= _CRYPTO_BINARY_THRESHOLD && __nativeCrypto.hmacSHA256Bin) {
+                var dataU8 = _strToU8(data);
+                var keyU8 = _strToU8(keyStr);
+                var r8 = __nativeCrypto.hmacSHA256Bin(dataU8, keyU8);
+                var r = _u8ToStr(r8);
+                if (r) return { toString: function() { return r; } };
+              } else {
+                var r = __nativeCrypto.hmacSHA256(data, keyStr);
+                if (r) return { toString: function() { return r; } };
+              }
             } catch (e) {}
           }
           return { toString: function() { return java.hmacSHA256 ? java.hmacSHA256(data, key) : ''; } };

@@ -9,11 +9,17 @@ struct QuickJSBridge {
 
 // ---------- 原生加密回调（全局，所有 runtime 共享）----------
 static crypto_callback g_crypto_cb = NULL;
+static crypto_callback_binary g_crypto_cb_binary = NULL;
 
 void quickjs_bridge_set_crypto_callback(crypto_callback cb) {
     g_crypto_cb = cb;
 }
 
+void quickjs_bridge_set_crypto_callback_binary(crypto_callback_binary cb) {
+    g_crypto_cb_binary = cb;
+}
+
+// ---------- 字符串路径 ----------
 // 通用加密调度：调用 Dart 回调，返回 JSValue
 // 失败抛 JS 异常，成功返回字符串
 static JSValue js_call_crypto(JSContext *ctx, int op, int argc, JSValueConst *argv,
@@ -22,7 +28,7 @@ static JSValue js_call_crypto(JSContext *ctx, int op, int argc, JSValueConst *ar
         return JS_ThrowTypeError(ctx, "%s: native crypto not registered", fn_name);
     }
     if (argc < min_args) {
-        return JS_ThrowTypeError(ctx, "%s requires %d arguments", fn_name, min_args);
+        return JS_ThrowTypeError(ctx, "%s requires %d arguments, got %d", fn_name, min_args, argc);
     }
 
     const char *a = argc > 0 ? JS_ToCString(ctx, argv[0]) : NULL;
@@ -33,7 +39,19 @@ static JSValue js_call_crypto(JSContext *ctx, int op, int argc, JSValueConst *ar
         if (a) JS_FreeCString(ctx, a);
         if (b) JS_FreeCString(ctx, b);
         if (c) JS_FreeCString(ctx, c);
-        return JS_ThrowTypeError(ctx, "%s: arguments must be strings", fn_name);
+        return JS_ThrowTypeError(ctx, "%s: argument 1 must be a string", fn_name);
+    }
+    if (min_args > 1 && (!b)) {
+        if (a) JS_FreeCString(ctx, a);
+        if (b) JS_FreeCString(ctx, b);
+        if (c) JS_FreeCString(ctx, c);
+        return JS_ThrowTypeError(ctx, "%s: argument 2 must be a string", fn_name);
+    }
+    if (min_args > 2 && (!c)) {
+        if (a) JS_FreeCString(ctx, a);
+        if (b) JS_FreeCString(ctx, b);
+        if (c) JS_FreeCString(ctx, c);
+        return JS_ThrowTypeError(ctx, "%s: argument 3 must be a string", fn_name);
     }
 
     int is_error = 0;
@@ -52,40 +70,108 @@ static JSValue js_call_crypto(JSContext *ctx, int op, int argc, JSValueConst *ar
     return ret;
 }
 
-// JS 函数: __nativeCrypto.aesDecrypt(data_b64, key_utf8, iv_utf8)
+// ---------- ArrayBuffer 零拷贝路径 ----------
+// 用于大数据：JS 传 Uint8Array/ArrayBuffer，C 侧直接取指针
+// 返回 Uint8Array（JS_NewArrayBufferCopy 会复制，但只复制一次）
+static JSValue js_call_crypto_binary(JSContext *ctx, int op, int argc, JSValueConst *argv,
+                                     int min_args, const char *fn_name) {
+    if (!g_crypto_cb_binary) {
+        return JS_ThrowTypeError(ctx, "%s: native crypto binary not registered", fn_name);
+    }
+    if (argc < min_args) {
+        return JS_ThrowTypeError(ctx, "%s requires %d arguments, got %d", fn_name, min_args, argc);
+    }
+
+    size_t len0 = 0, len1 = 0, len2 = 0;
+    const uint8_t *data0 = NULL, *data1 = NULL, *data2 = NULL;
+
+    // JS_GetArrayBuffer 直接返回内部指针，零拷贝
+    if (argc > 0) {
+        data0 = JS_GetArrayBuffer(ctx, &len0, argv[0]);
+        if (!data0 && min_args > 0) {
+            return JS_ThrowTypeError(ctx, "%s: argument 1 must be an ArrayBuffer/Uint8Array", fn_name);
+        }
+    }
+    if (argc > 1) {
+        data1 = JS_GetArrayBuffer(ctx, &len1, argv[1]);
+        if (!data1 && min_args > 1) {
+            return JS_ThrowTypeError(ctx, "%s: argument 2 must be an ArrayBuffer/Uint8Array", fn_name);
+        }
+    }
+    if (argc > 2) {
+        data2 = JS_GetArrayBuffer(ctx, &len2, argv[2]);
+        if (!data2 && min_args > 2) {
+            return JS_ThrowTypeError(ctx, "%s: argument 3 must be an ArrayBuffer/Uint8Array", fn_name);
+        }
+    }
+
+    size_t out_len = 0;
+    int is_error = 0;
+    const uint8_t *result = g_crypto_cb_binary(op,
+        data0, len0, data1, len1, data2, len2,
+        &out_len, &is_error);
+
+    if (is_error || !result) {
+        return JS_ThrowTypeError(ctx, "%s: %s", fn_name, "binary failed");
+    }
+
+    // JS_NewArrayBufferCopy 会复制数据到 QuickJS 管理的内存
+    // 这是唯一一次拷贝（从 Dart 环形缓冲区到 JS）
+    JSValue ret = JS_NewArrayBufferCopy(ctx, result, out_len);
+    return ret;
+}
+
+// ---------- JS 函数注册 ----------
+// 字符串路径（小数据，< 1KB）
 static JSValue js_crypto_aes_decrypt(JSContext *ctx, JSValueConst this_val,
                                      int argc, JSValueConst *argv) {
     return js_call_crypto(ctx, 0, argc, argv, 3, "aesDecrypt");
 }
-
-// JS 函数: __nativeCrypto.aesEncrypt(data_utf8, key_utf8, iv_utf8) -> base64
 static JSValue js_crypto_aes_encrypt(JSContext *ctx, JSValueConst this_val,
                                      int argc, JSValueConst *argv) {
     return js_call_crypto(ctx, 1, argc, argv, 3, "aesEncrypt");
 }
-
-// JS 函数: __nativeCrypto.md5(data_utf8)
 static JSValue js_crypto_md5(JSContext *ctx, JSValueConst this_val,
                              int argc, JSValueConst *argv) {
     return js_call_crypto(ctx, 2, argc, argv, 1, "md5");
 }
-
-// JS 函数: __nativeCrypto.sha256(data_utf8)
 static JSValue js_crypto_sha256(JSContext *ctx, JSValueConst this_val,
                                 int argc, JSValueConst *argv) {
     return js_call_crypto(ctx, 3, argc, argv, 1, "sha256");
 }
-
-// JS 函数: __nativeCrypto.hmacSHA256(data_utf8, key_utf8)
 static JSValue js_crypto_hmac_sha256(JSContext *ctx, JSValueConst this_val,
                                      int argc, JSValueConst *argv) {
     return js_call_crypto(ctx, 4, argc, argv, 2, "hmacSHA256");
 }
-
-// JS 函数: __nativeCrypto.sha1(data_utf8)
 static JSValue js_crypto_sha1(JSContext *ctx, JSValueConst this_val,
                               int argc, JSValueConst *argv) {
     return js_call_crypto(ctx, 5, argc, argv, 1, "sha1");
+}
+
+// ArrayBuffer 路径（大数据，>= 1KB）
+static JSValue js_crypto_aes_decrypt_bin(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv) {
+    return js_call_crypto_binary(ctx, 0, argc, argv, 3, "aesDecryptBin");
+}
+static JSValue js_crypto_aes_encrypt_bin(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv) {
+    return js_call_crypto_binary(ctx, 1, argc, argv, 3, "aesEncryptBin");
+}
+static JSValue js_crypto_md5_bin(JSContext *ctx, JSValueConst this_val,
+                             int argc, JSValueConst *argv) {
+    return js_call_crypto_binary(ctx, 2, argc, argv, 1, "md5Bin");
+}
+static JSValue js_crypto_sha256_bin(JSContext *ctx, JSValueConst this_val,
+                                int argc, JSValueConst *argv) {
+    return js_call_crypto_binary(ctx, 3, argc, argv, 1, "sha256Bin");
+}
+static JSValue js_crypto_hmac_sha256_bin(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv) {
+    return js_call_crypto_binary(ctx, 4, argc, argv, 2, "hmacSHA256Bin");
+}
+static JSValue js_crypto_sha1_bin(JSContext *ctx, JSValueConst this_val,
+                              int argc, JSValueConst *argv) {
+    return js_call_crypto_binary(ctx, 5, argc, argv, 1, "sha1Bin");
 }
 
 QuickJSBridge *quickjs_bridge_create(void) {
@@ -110,10 +196,12 @@ QuickJSBridge *quickjs_bridge_create(void) {
     }
 
     // 注册原生加密全局对象 __nativeCrypto
-    // JS 代码可通过 __nativeCrypto.xxx() 调用原生加解密
-    // 失败回退到纯 JS 的 CryptoJS 实现
+    // 字符串路径：aesDecrypt/aesEncrypt/md5/sha256/hmacSHA256/sha1
+    // ArrayBuffer 路径：aesDecryptBin/aesEncryptBin/md5Bin/sha256Bin/hmacSHA256Bin/sha1Bin
     JSValue global_obj = JS_GetGlobalObject(bridge->ctx);
     JSValue crypto_obj = JS_NewObject(bridge->ctx);
+
+    // 字符串路径
     JS_SetPropertyStr(bridge->ctx, crypto_obj, "aesDecrypt",
         JS_NewCFunction(bridge->ctx, js_crypto_aes_decrypt, "aesDecrypt", 3));
     JS_SetPropertyStr(bridge->ctx, crypto_obj, "aesEncrypt",
@@ -126,6 +214,21 @@ QuickJSBridge *quickjs_bridge_create(void) {
         JS_NewCFunction(bridge->ctx, js_crypto_hmac_sha256, "hmacSHA256", 2));
     JS_SetPropertyStr(bridge->ctx, crypto_obj, "sha1",
         JS_NewCFunction(bridge->ctx, js_crypto_sha1, "sha1", 1));
+
+    // ArrayBuffer 路径（零拷贝，大数据）
+    JS_SetPropertyStr(bridge->ctx, crypto_obj, "aesDecryptBin",
+        JS_NewCFunction(bridge->ctx, js_crypto_aes_decrypt_bin, "aesDecryptBin", 3));
+    JS_SetPropertyStr(bridge->ctx, crypto_obj, "aesEncryptBin",
+        JS_NewCFunction(bridge->ctx, js_crypto_aes_encrypt_bin, "aesEncryptBin", 3));
+    JS_SetPropertyStr(bridge->ctx, crypto_obj, "md5Bin",
+        JS_NewCFunction(bridge->ctx, js_crypto_md5_bin, "md5Bin", 1));
+    JS_SetPropertyStr(bridge->ctx, crypto_obj, "sha256Bin",
+        JS_NewCFunction(bridge->ctx, js_crypto_sha256_bin, "sha256Bin", 1));
+    JS_SetPropertyStr(bridge->ctx, crypto_obj, "hmacSHA256Bin",
+        JS_NewCFunction(bridge->ctx, js_crypto_hmac_sha256_bin, "hmacSHA256Bin", 2));
+    JS_SetPropertyStr(bridge->ctx, crypto_obj, "sha1Bin",
+        JS_NewCFunction(bridge->ctx, js_crypto_sha1_bin, "sha1Bin", 1));
+
     JS_SetPropertyStr(bridge->ctx, global_obj, "__nativeCrypto", crypto_obj);
     JS_FreeValue(bridge->ctx, global_obj);
 
