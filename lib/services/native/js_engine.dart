@@ -253,6 +253,8 @@ class JsEngine {
 
   bool _initialized = false;
   JavascriptRuntime? _jsRuntime;
+  /// 日志 flush 防递归标志：_flushConsoleLogs 内部调用 evaluate 时设为 true
+  bool _isFlushingLogs = false;
   final Map<String, String> _installedPackages = {};
   final Map<String, String> _moduleCache = {};
 
@@ -672,22 +674,54 @@ class JsEngine {
       // 借鉴 legado：所有 console 输出同步到调试页面
       // 注意：总是覆盖 console，因为 QuickJS 可能已有内置 console 但没有 _getLogs
       var _consoleLogs = [];
+      var _logSeq = 0;
+      function _jsLog(msg, level) {
+        level = level || 'log';
+        _logSeq++;
+        _consoleLogs.push({
+          seq: _logSeq,
+          ts: Date.now(),
+          level: level,
+          msg: typeof msg === 'string' ? msg : (msg && msg.toString ? msg.toString() : String(msg))
+        });
+        // 防止日志数组无限增长（保留最近 500 条）
+        if (_consoleLogs.length > 500) _consoleLogs.splice(0, _consoleLogs.length - 500);
+      }
       globalThis.console = {
-        log: function() { var msg = Array.from(arguments).join(' '); _consoleLogs.push({level:'log', msg:msg}); },
-        warn: function() { var msg = Array.from(arguments).join(' '); _consoleLogs.push({level:'warn', msg:msg}); },
-        error: function() { var msg = Array.from(arguments).join(' '); _consoleLogs.push({level:'error', msg:msg}); },
-        info: function() { var msg = Array.from(arguments).join(' '); _consoleLogs.push({level:'info', msg:msg}); },
-        debug: function() { var msg = Array.from(arguments).join(' '); _consoleLogs.push({level:'debug', msg:msg}); },
-        dir: function(obj) { _consoleLogs.push({level:'log', msg: JSON.stringify(obj, null, 2)}); },
-        table: function(data) { _consoleLogs.push({level:'log', msg: JSON.stringify(data, null, 2)}); },
+        log: function() { _jsLog(Array.from(arguments).join(' '), 'log'); },
+        warn: function() { _jsLog(Array.from(arguments).join(' '), 'warn'); },
+        error: function() { _jsLog(Array.from(arguments).join(' '), 'error'); },
+        info: function() { _jsLog(Array.from(arguments).join(' '), 'info'); },
+        debug: function() { _jsLog(Array.from(arguments).join(' '), 'debug'); },
+        trace: function() { _jsLog(Array.from(arguments).join(' '), 'trace'); },
+        dir: function(obj) { _jsLog(JSON.stringify(obj, null, 2), 'log'); },
+        table: function(data) { _jsLog(JSON.stringify(data, null, 2), 'log'); },
         time: function(label) { _consoleLogs._timers = _consoleLogs._timers || {}; _consoleLogs._timers[label] = Date.now(); },
-        timeEnd: function(label) { _consoleLogs._timers = _consoleLogs._timers || {}; if (_consoleLogs._timers[label]) { var ms = Date.now() - _consoleLogs._timers[label]; _consoleLogs.push({level:'info', msg: label + ': ' + ms + 'ms'}); delete _consoleLogs._timers[label]; } },
-        count: function(label) { _consoleLogs._counts = _consoleLogs._counts || {}; _consoleLogs._counts[label] = (_consoleLogs._counts[label] || 0) + 1; _consoleLogs.push({level:'info', msg: label + ': ' + _consoleLogs._counts[label]}); },
-        assert: function(condition) { if (!condition) { var msg = Array.from(arguments).slice(1).join(' ') || 'Assertion failed'; _consoleLogs.push({level:'error', msg: msg}); } },
+        timeEnd: function(label) {
+          _consoleLogs._timers = _consoleLogs._timers || {};
+          if (_consoleLogs._timers[label]) {
+            var ms = Date.now() - _consoleLogs._timers[label];
+            _jsLog(label + ': ' + ms + 'ms', 'info');
+            delete _consoleLogs._timers[label];
+          }
+        },
+        count: function(label) {
+          _consoleLogs._counts = _consoleLogs._counts || {};
+          _consoleLogs._counts[label] = (_consoleLogs._counts[label] || 0) + 1;
+          _jsLog(label + ': ' + _consoleLogs._counts[label], 'info');
+        },
+        assert: function(condition) {
+          if (!condition) {
+            _jsLog(Array.from(arguments).slice(1).join(' ') || 'Assertion failed', 'error');
+          }
+        },
         clear: function() { _consoleLogs.length = 0; },
         _getLogs: function() { return _consoleLogs; },
-        _clearLogs: function() { _consoleLogs.length = 0; },
+        _clearLogs: function() { _consoleLogs.length = 0; _logSeq = 0; },
+        _logSeq: function() { return _logSeq; },
       };
+      // 暴露 _jsLog 为全局，供内部调用
+      globalThis._jsLog = _jsLog;
 
       // ===== btoa/atob 全局函数 =====
       // Base64 编码/解码，QuickJS 原生可能不提供
@@ -1712,26 +1746,42 @@ class JsEngine {
           _javaCache[key] = JSON.stringify(value);
         },
 
-        // ===== 加密/解密（优先使用纯 JS _AES 引擎，fallback 到缓存）=====
+        // ===== 加密/解密（优先走 CryptoJS.AES → __nativeCrypto C 原生）=====
         aesEncode: function(data, key, iv) {
           var cacheKey = 'aes_enc:' + data + ':' + key + ':' + (iv || '');
           if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
           try {
-            var mode = iv ? 'CBC' : 'ECB';
-            var result = _AES.encrypt(data, key, iv, mode);
+            var result;
+            if (typeof CryptoJS !== 'undefined' && CryptoJS.AES) {
+              // 走 CryptoJS.AES → __nativeCrypto.aesEncryptNative（C 原生，零 Dart 回调）
+              var cfg = iv ? { iv: CryptoJS.enc.Utf8.parse(iv), mode: CryptoJS.mode.CBC } : { mode: CryptoJS.mode.ECB };
+              result = CryptoJS.AES.encrypt(data, CryptoJS.enc.Utf8.parse(key), cfg).toString();
+            } else {
+              // 回退：纯 JS _AES 引擎
+              var mode = iv ? 'CBC' : 'ECB';
+              result = _AES.encrypt(data, key, iv, mode);
+            }
             _javaCache[cacheKey] = result;
             return result;
-          } catch(e) { return ''; }
+          } catch(e) { _jsLog('AES encrypt failed: ' + e, 'error'); return ''; }
         },
         aesDecode: function(data, key, iv) {
           var cacheKey = 'aes_dec:' + data + ':' + key + ':' + (iv || '');
           if (_javaCache[cacheKey] !== undefined) return _javaCache[cacheKey];
           try {
-            var mode = iv ? 'CBC' : 'ECB';
-            var result = _AES.decrypt(data, key, iv, mode);
+            var result;
+            if (typeof CryptoJS !== 'undefined' && CryptoJS.AES) {
+              // 走 CryptoJS.AES → __nativeCrypto.aesDecryptNative（C 原生，零 Dart 回调）
+              var cfg = iv ? { iv: CryptoJS.enc.Utf8.parse(iv), mode: CryptoJS.mode.CBC } : { mode: CryptoJS.mode.ECB };
+              result = CryptoJS.AES.decrypt(data, CryptoJS.enc.Utf8.parse(key), cfg).toString(CryptoJS.enc.Utf8);
+            } else {
+              // 回退：纯 JS _AES 引擎
+              var mode = iv ? 'CBC' : 'ECB';
+              result = _AES.decrypt(data, key, iv, mode);
+            }
             _javaCache[cacheKey] = result;
             return result;
-          } catch(e) { return ''; }
+          } catch(e) { _jsLog('AES decrypt failed: ' + e, 'error'); return ''; }
         },
         md5Encode: function(str) {
           // 优先使用纯 JS _MD5 引擎，fallback 到缓存
@@ -3153,14 +3203,44 @@ class JsEngine {
 
   dynamic evaluate(String script) {
     if (_jsRuntime == null) return null;
+    final sw = Stopwatch()..start();
+    String? resultStr;
+    bool isError = false;
+    String? errMsg;
     try {
       final result = _jsRuntime!.evaluate(script);
-      if (result.isError) {
-        return null;
-      }
-      return result.stringResult;
+      isError = result.isError;
+      resultStr = result.stringResult;
+      return resultStr;
     } catch (e) {
+      isError = true;
+      errMsg = e.toString();
       return null;
+    } finally {
+      sw.stop();
+      // 自动 flush JS console 日志（防递归：日志 flush 内部调用 evaluate 时不再次 flush）
+      if (!_isFlushingLogs) {
+        _flushConsoleLogs();
+        // 输出执行链路：脚本预览 + 行数 + 耗时 + 结果
+        _logExecutionTrace(script, sw.elapsedMilliseconds, isError, errMsg ?? resultStr);
+      }
+    }
+  }
+
+  /// 输出 JS 执行链路追踪：脚本预览 + 行数 + 耗时 + 结果
+  void _logExecutionTrace(String script, int elapsedMs, bool isError, String? resultOrErr) {
+    if (!kDebugMode) return;
+    final lineCount = '\n'.allMatches(script).length + 1;
+    final preview = script.length > 80 ? '${script.substring(0, 80)}...' : script;
+    final status = isError ? 'ERROR' : 'OK';
+    final resultPreview = (resultOrErr ?? '').length > 100
+        ? '${(resultOrErr ?? '').substring(0, 100)}...'
+        : (resultOrErr ?? '');
+    AppLogger.instance.debug(LogCategory.js, '[JS eval ${elapsedMs}ms $status] $lineCount lines',
+      detail: 'code: $preview\nresult: $resultPreview');
+    debugPrint('[JS eval ${elapsedMs}ms $status] $lineCount lines | $preview');
+    if (resultPreview.isNotEmpty) {
+      debugPrint('  → $resultPreview');
     }
   }
 
@@ -3747,6 +3827,9 @@ class JsEngine {
     if (!_initialized || _jsRuntime == null) return;
     // Release 模式跳过日志提取（性能优化）
     if (kReleaseMode) return;
+    // 防递归：内部调用 evaluate 时不再次触发 _flushConsoleLogs
+    if (_isFlushingLogs) return;
+    _isFlushingLogs = true;
     try {
       // 单次 evaluate：检查+获取+清除日志
       final result = evaluate('''(function(){
@@ -3788,7 +3871,9 @@ class JsEngine {
             AppLogger.instance.info(LogCategory.js, msg);
         }
       }
-    } catch (_) {}
+    } catch (_) {} finally {
+      _isFlushingLogs = false;
+    }
   }
 
   // ===== 序列化工具方法 =====
