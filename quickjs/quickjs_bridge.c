@@ -46,20 +46,6 @@ static void _ensure_globals(void) {
     }
 }
 
-// P2: QuickJS 中断处理器 — 超时熔断
-// QuickJS 周期性调用此函数，返回非 0 值中断当前脚本
-static int _interrupt_handler(JSRuntime *rt, void *opaque) {
-    (void)rt;
-    QuickJSBridge *bridge = (QuickJSBridge *)opaque;
-    if (!bridge || bridge->eval_timeout_us == 0) return 0;
-    uint64_t now = _now_us();
-    if (now - bridge->eval_start_time_us > bridge->eval_timeout_us) {
-        bridge->eval_interrupted = 1;
-        return 1; // 中断执行，QuickJS 会抛出异常
-    }
-    return 0;
-}
-
 // P4: 输入长度限制 — 防止超大报文导致内存膨胀/解析崩溃
 #define MAX_SCRIPT_SIZE    (1ULL * 1024 * 1024)    // JS 脚本：1MB
 #define MAX_HTML_SIZE      (10ULL * 1024 * 1024)   // HTML 输入：10MB
@@ -115,6 +101,35 @@ static uint64_t _now_us(void) {
     return (uint64_t)ts.tv_sec * 1000000 + (uint64_t)ts.tv_nsec / 1000;
 }
 #endif
+
+// P2: QuickJS 中断处理器 — 超时熔断
+// QuickJS 周期性调用此函数，返回非 0 值中断当前脚本
+// 注意：必须位于 struct QuickJSBridge 定义之后、_now_us 定义之后
+static int _interrupt_handler(JSRuntime *rt, void *opaque) {
+    (void)rt;
+    QuickJSBridge *bridge = (QuickJSBridge *)opaque;
+    if (!bridge || bridge->eval_timeout_us == 0) return 0;
+    uint64_t now = _now_us();
+    if (now - bridge->eval_start_time_us > bridge->eval_timeout_us) {
+        bridge->eval_interrupted = 1;
+        return 1; // 中断执行，QuickJS 会抛出异常
+    }
+    return 0;
+}
+
+// Base64 前向声明（定义在文件后段，但 AES+LZ 组合早于定义处使用）
+static uint8_t *b64_decode(const char *src, size_t src_len, size_t *out_len);
+static char *b64_encode(const uint8_t *src, size_t src_len, size_t *out_len);
+
+// _str_dup 本地副本（html_native.c 中也有同名 static，互不冲突）
+// 返回 malloc 分配的字符串，调用方负责 free
+static char *_str_dup(const char *s, size_t len) {
+    char *p = (char *)malloc(len + 1);
+    if (!p) return NULL;
+    memcpy(p, s, len);
+    p[len] = 0;
+    return p;
+}
 
 static void _stats_update(crypto_stats_t *s, uint64_t bytes_in, uint64_t bytes_out, uint64_t elapsed_us) {
     s->total_calls++;
@@ -564,7 +579,7 @@ const char *quickjs_bridge_base64_decode(const char *input, size_t input_len, si
     if (input_len == 0) {
         char *out = (char *)malloc(1); if (out) out[0] = '\0'; return out;
     }
-    return b64_decode(input, input_len, output_len);
+    return (const char *)b64_decode(input, input_len, output_len);
 }
 
 // ---------- C 原生 HTML 解析 + CSS 选择器引擎 ----------
