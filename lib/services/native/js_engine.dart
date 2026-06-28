@@ -255,6 +255,8 @@ class JsEngine {
   JavascriptRuntime? _jsRuntime;
   /// 日志 flush 防递归标志：_flushConsoleLogs 内部调用 evaluate 时设为 true
   bool _isFlushingLogs = false;
+  /// 最近一次 _executeQuickJSSync 的错误信息（供 executeSync 读取后写入 traceNode）
+  String? _lastEvalError;
   final Map<String, String> _installedPackages = {};
   final Map<String, String> _moduleCache = {};
 
@@ -3296,16 +3298,29 @@ class JsEngine {
       tracer.push(traceNode);
     }
 
-    final result = _executeQuickJSSync(resolved.code, content, baseUrl: baseUrl, variables: variables);
-
-    // 追踪树：记录输出
-    if (traceNode != null) {
-      final outputStr = result?.toString();
-      final outputShort = outputStr != null && outputStr.length > 200 ? '${outputStr.substring(0, 200)}...' : outputStr;
-      JsTracer.instance.pop(
-        outputPreview: outputShort,
-        outputType: result?.runtimeType.toString(),
-      );
+    dynamic result;
+    Object? caughtError;
+    String? evalError;
+    _lastEvalError = null;
+    try {
+      result = _executeQuickJSSync(resolved.code, content, baseUrl: baseUrl, variables: variables);
+      evalError = _lastEvalError;
+    } catch (e) {
+      caughtError = e;
+      rethrow;
+    } finally {
+      // 追踪树：记录输出（无论成功或异常都 pop，保证栈平衡）
+      if (traceNode != null) {
+        final outputStr = result?.toString();
+        final outputShort = outputStr != null && outputStr.length > 200
+            ? '${outputStr.substring(0, 200)}...'
+            : outputStr;
+        JsTracer.instance.pop(
+          outputPreview: outputShort,
+          outputType: result?.runtimeType.toString(),
+          error: caughtError?.toString() ?? evalError,
+        );
+      }
     }
 
     return result;
@@ -3379,10 +3394,8 @@ class JsEngine {
       _flushConsoleLogs();
       if (evalResult.isError) {
         AppLogger.instance.logJsError('QuickJS', evalResult.stringResult);
-        // 追踪树：记录错误
-        if (JsTracer.instance.enabled && JsTracer.instance._stack.isNotEmpty) {
-          JsTracer.instance._stack.last.error = evalResult.stringResult;
-        }
+        // 追踪树：记录错误（由 executeSync 的 finally 统一 pop，这里只暂存错误信息）
+        _lastEvalError = evalResult.stringResult;
         return null;
       }
       final parsed = _parseJsResult(evalResult.stringResult);
@@ -3394,10 +3407,7 @@ class JsEngine {
       return parsed;
     } catch (e) {
       AppLogger.instance.logJsError('QuickJS', e.toString());
-      // 追踪树：记录异常
-      if (JsTracer.instance.enabled && JsTracer.instance._stack.isNotEmpty) {
-        JsTracer.instance._stack.last.error = e.toString();
-      }
+      _lastEvalError = e.toString();
       return null;
     }
   }
