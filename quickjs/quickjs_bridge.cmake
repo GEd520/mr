@@ -14,6 +14,11 @@ set(QUICKJS_SOURCES
     ${QUICKJS_SRC_DIR}/libregexp.c
     ${QUICKJS_SRC_DIR}/libunicode.c
     ${QUICKJS_SRC_DIR}/quickjs_bridge.c
+    ${QUICKJS_SRC_DIR}/crypto/md5.c
+    ${QUICKJS_SRC_DIR}/crypto/sha1.c
+    ${QUICKJS_SRC_DIR}/crypto/sha256.c
+    ${QUICKJS_SRC_DIR}/crypto/hmac_sha256.c
+    ${QUICKJS_SRC_DIR}/crypto/aes.c
 )
 
 add_library(quickjs_c_bridge SHARED ${QUICKJS_SOURCES})

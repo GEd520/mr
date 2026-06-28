@@ -2704,6 +2704,15 @@ class JsEngine {
         for (var i = 0; i < u8.length; i++) bin += String.fromCharCode(u8[i]);
         return btoa(bin);
       }
+      // 辅助：Uint8Array 转 hex 字符串（小写）
+      function _u8ToHex(u8) {
+        var hex = '';
+        for (var i = 0; i < u8.length; i++) {
+          var b = u8[i];
+          hex += (b < 16 ? '0' : '') + b.toString(16);
+        }
+        return hex;
+      }
       // 辅助：自动选择路径阈值（1KB）
       var _CRYPTO_BINARY_THRESHOLD = 1024;
 
@@ -2713,7 +2722,36 @@ class JsEngine {
             var iv = cfg && cfg.iv ? cfg.iv : null;
             var mode = (cfg && cfg.mode === CryptoJS.mode.ECB) ? 'ECB' : 'CBC';
 
-            // 优先走原生 AES 加密（仅 CBC 模式）
+            // 优先走 C 原生 AES 加密（仅 CBC 模式，零 Dart 回调）
+            if (typeof __nativeCrypto !== 'undefined' && __nativeCrypto &&
+                __nativeCrypto.aesEncryptNative && mode === 'CBC') {
+              try {
+                var dataStr;
+                if (typeof data === 'string') {
+                  dataStr = data;
+                } else if (data && data.toString) {
+                  dataStr = data.toString();
+                } else {
+                  dataStr = String(data);
+                }
+                var keyStr = CryptoJS.enc.Utf8.stringify(key);
+                var ivStr = iv ? CryptoJS.enc.Utf8.stringify(iv) : '';
+
+                var dataU8 = _strToU8(dataStr);
+                var keyU8 = _strToU8(keyStr);
+                var ivU8 = _strToU8(ivStr);
+                var cipherU8 = __nativeCrypto.aesEncryptNative(dataU8, keyU8, ivU8);
+                var resultB64 = _u8ToB64(cipherU8);
+                return {
+                  toString: function() { return resultB64; },
+                  ciphertext: { toString: function(enc) { return resultB64; } }
+                };
+              } catch (e) {
+                // C 原生失败，回退到 Dart 回调或纯 JS
+              }
+            }
+
+            // 回退：Dart 回调路径
             if (typeof __nativeCrypto !== 'undefined' && __nativeCrypto &&
                 __nativeCrypto.aesEncrypt && mode === 'CBC') {
               try {
@@ -2727,37 +2765,17 @@ class JsEngine {
                 }
                 var keyStr = CryptoJS.enc.Utf8.stringify(key);
                 var ivStr = iv ? CryptoJS.enc.Utf8.stringify(iv) : '';
-
-                // 自动选择路径：大数据走 ArrayBuffer 零拷贝
-                if (dataStr.length >= _CRYPTO_BINARY_THRESHOLD && __nativeCrypto.aesEncryptBin) {
-                  var dataU8 = _strToU8(dataStr);
-                  var keyU8 = _strToU8(keyStr);
-                  var ivU8 = _strToU8(ivStr);
-                  var resultU8 = __nativeCrypto.aesEncryptBin(dataU8, keyU8, ivU8);
-                  var resultB64 = _u8ToStr(resultU8);
-                  return {
-                    toString: function() { return resultB64; },
-                    ciphertext: { toString: function(enc) { return resultB64; } }
-                  };
-                }
-
-                // 小数据走字符串路径
                 var nativeResult = __nativeCrypto.aesEncrypt(dataStr, keyStr, ivStr);
                 if (nativeResult !== null && nativeResult !== undefined) {
                   return {
                     toString: function() { return nativeResult; },
-                    ciphertext: { toString: function(enc) {
-                      if (enc === CryptoJS.enc.Base64) return nativeResult;
-                      return nativeResult;
-                    }}
+                    ciphertext: { toString: function(enc) { return nativeResult; } }
                   };
                 }
-              } catch (e) {
-                // native 失败，回退到纯 JS _AES 引擎
-              }
+              } catch (e) {}
             }
 
-            // 回退：纯 JS _AES 引擎
+            // 最终回退：纯 JS _AES 引擎
             var result = _AES.encrypt(data, key, iv, mode);
             return { toString: function() { return result; }, ciphertext: { toString: function(enc) { return result; } } };
           },
@@ -2765,9 +2783,9 @@ class JsEngine {
             var iv = cfg && cfg.iv ? cfg.iv : null;
             var mode = (cfg && cfg.mode === CryptoJS.mode.ECB) ? 'ECB' : 'CBC';
 
-            // 优先走原生 AES 解密（仅 CBC 模式）
+            // 优先走 C 原生 AES 解密（仅 CBC 模式，零 Dart 回调）
             if (typeof __nativeCrypto !== 'undefined' && __nativeCrypto &&
-                __nativeCrypto.aesDecrypt && mode === 'CBC') {
+                __nativeCrypto.aesDecryptNative && mode === 'CBC') {
               try {
                 // 提取 base64 密文
                 var dataB64;
@@ -2782,29 +2800,12 @@ class JsEngine {
                 var keyStr = CryptoJS.enc.Utf8.stringify(key);
                 var ivStr = iv ? CryptoJS.enc.Utf8.stringify(iv) : '';
 
-                // 自动选择路径：大数据走 ArrayBuffer 零拷贝
-                if (dataB64.length >= _CRYPTO_BINARY_THRESHOLD && __nativeCrypto.aesDecryptBin) {
-                  var dataU8 = _strToU8(dataB64);
-                  var keyU8 = _strToU8(keyStr);
-                  var ivU8 = _strToU8(ivStr);
-                  var resultU8 = __nativeCrypto.aesDecryptBin(dataU8, keyU8, ivU8);
-                  var nativeResult = _u8ToStr(resultU8);
-                  if (nativeResult !== null && nativeResult !== undefined) {
-                    return {
-                      toString: function(enc) {
-                        if (enc === CryptoJS.enc.Base64) {
-                          return java.base64Encode(nativeResult) || '';
-                        }
-                        return nativeResult;
-                      }
-                    };
-                  }
-                }
-
-                // 小数据走字符串路径
-                var nativeResult = __nativeCrypto.aesDecrypt(dataB64, keyStr, ivStr);
+                var cipherU8 = _b64ToU8(dataB64);
+                var keyU8 = _strToU8(keyStr);
+                var ivU8 = _strToU8(ivStr);
+                var plainU8 = __nativeCrypto.aesDecryptNative(cipherU8, keyU8, ivU8);
+                var nativeResult = _u8ToStr(plainU8);
                 if (nativeResult !== null && nativeResult !== undefined) {
-                  // 包装成 CryptoJS 格式，保持 toString(Utf8) 兼容
                   return {
                     toString: function(enc) {
                       if (enc === CryptoJS.enc.Base64) {
@@ -2815,80 +2816,114 @@ class JsEngine {
                   };
                 }
               } catch (e) {
-                // native 失败，回退到纯 JS _AES 引擎
+                // C 原生失败，回退到 Dart 回调或纯 JS
               }
             }
 
-            // 回退：纯 JS _AES 引擎
+            // 回退：Dart 回调路径
+            if (typeof __nativeCrypto !== 'undefined' && __nativeCrypto &&
+                __nativeCrypto.aesDecrypt && mode === 'CBC') {
+              try {
+                var dataB64;
+                if (typeof data === 'string') {
+                  dataB64 = data;
+                } else if (data && data.ciphertext && typeof data.ciphertext.toString === 'function') {
+                  dataB64 = data.ciphertext.toString(CryptoJS.enc.Base64);
+                } else {
+                  dataB64 = String(data);
+                }
+                var keyStr = CryptoJS.enc.Utf8.stringify(key);
+                var ivStr = iv ? CryptoJS.enc.Utf8.stringify(iv) : '';
+                var nativeResult = __nativeCrypto.aesDecrypt(dataB64, keyStr, ivStr);
+                if (nativeResult !== null && nativeResult !== undefined) {
+                  return {
+                    toString: function(enc) {
+                      if (enc === CryptoJS.enc.Base64) {
+                        return java.base64Encode(nativeResult) || '';
+                      }
+                      return nativeResult;
+                    }
+                  };
+                }
+              } catch (e) {}
+            }
+
+            // 最终回退：纯 JS _AES 引擎
             var result = _AES.decrypt(data, key, iv, mode);
             return { toString: function(enc) { return result; } };
           },
         },
         MD5: function(str) {
-          // 优先走原生
+          // 优先走 C 原生实现（零 Dart 回调）
+          if (typeof __nativeCrypto !== 'undefined' && __nativeCrypto && __nativeCrypto.md5Native) {
+            try {
+              var u8 = _strToU8(str);
+              var r8 = __nativeCrypto.md5Native(u8);
+              var r = _u8ToHex(r8);
+              if (r) return { toString: function() { return r; } };
+            } catch (e) {}
+          }
+          // 回退到 Dart 回调
           if (typeof __nativeCrypto !== 'undefined' && __nativeCrypto && __nativeCrypto.md5) {
             try {
-              // 大数据走 ArrayBuffer 零拷贝
-              if (str.length >= _CRYPTO_BINARY_THRESHOLD && __nativeCrypto.md5Bin) {
-                var u8 = _strToU8(str);
-                var r8 = __nativeCrypto.md5Bin(u8);
-                var r = _u8ToStr(r8);
-                if (r) return { toString: function() { return r; } };
-              } else {
-                var r = __nativeCrypto.md5(str);
-                if (r) return { toString: function() { return r; } };
-              }
+              var r = __nativeCrypto.md5(str);
+              if (r) return { toString: function() { return r; } };
             } catch (e) {}
           }
           return { toString: function() { return java.md5Encode(str); } };
         },
         SHA1: function(str) {
+          // 优先走 C 原生实现
+          if (typeof __nativeCrypto !== 'undefined' && __nativeCrypto && __nativeCrypto.sha1Native) {
+            try {
+              var u8 = _strToU8(str);
+              var r8 = __nativeCrypto.sha1Native(u8);
+              var r = _u8ToHex(r8);
+              if (r) return { toString: function() { return r; } };
+            } catch (e) {}
+          }
           if (typeof __nativeCrypto !== 'undefined' && __nativeCrypto && __nativeCrypto.sha1) {
             try {
-              if (str.length >= _CRYPTO_BINARY_THRESHOLD && __nativeCrypto.sha1Bin) {
-                var u8 = _strToU8(str);
-                var r8 = __nativeCrypto.sha1Bin(u8);
-                var r = _u8ToStr(r8);
-                if (r) return { toString: function() { return r; } };
-              } else {
-                var r = __nativeCrypto.sha1(str);
-                if (r) return { toString: function() { return r; } };
-              }
+              var r = __nativeCrypto.sha1(str);
+              if (r) return { toString: function() { return r; } };
             } catch (e) {}
           }
           return { toString: function() { return java.sha1Encode ? java.sha1Encode(str) : ''; } };
         },
         SHA256: function(str) {
+          // 优先走 C 原生实现
+          if (typeof __nativeCrypto !== 'undefined' && __nativeCrypto && __nativeCrypto.sha256Native) {
+            try {
+              var u8 = _strToU8(str);
+              var r8 = __nativeCrypto.sha256Native(u8);
+              var r = _u8ToHex(r8);
+              if (r) return { toString: function() { return r; } };
+            } catch (e) {}
+          }
           if (typeof __nativeCrypto !== 'undefined' && __nativeCrypto && __nativeCrypto.sha256) {
             try {
-              if (str.length >= _CRYPTO_BINARY_THRESHOLD && __nativeCrypto.sha256Bin) {
-                var u8 = _strToU8(str);
-                var r8 = __nativeCrypto.sha256Bin(u8);
-                var r = _u8ToStr(r8);
-                if (r) return { toString: function() { return r; } };
-              } else {
-                var r = __nativeCrypto.sha256(str);
-                if (r) return { toString: function() { return r; } };
-              }
+              var r = __nativeCrypto.sha256(str);
+              if (r) return { toString: function() { return r; } };
             } catch (e) {}
           }
           return { toString: function() { return java.sha256Encode ? java.sha256Encode(str) : ''; } };
         },
         HmacSHA256: function(data, key) {
+          var keyStr = (typeof key === 'string') ? key : CryptoJS.enc.Utf8.stringify(key);
+          // 优先走 C 原生实现
+          if (typeof __nativeCrypto !== 'undefined' && __nativeCrypto && __nativeCrypto.hmacSHA256Native) {
+            try {
+              var dataU8 = _strToU8(data);
+              var keyU8 = _strToU8(keyStr);
+              var r8 = __nativeCrypto.hmacSHA256Native(dataU8, keyU8);
+              var r = _u8ToHex(r8);
+              if (r) return { toString: function() { return r; } };
+            } catch (e) {}
+          }
           if (typeof __nativeCrypto !== 'undefined' && __nativeCrypto && __nativeCrypto.hmacSHA256) {
             try {
-              var keyStr = (typeof key === 'string') ? key : CryptoJS.enc.Utf8.stringify(key);
-              // 大数据走 ArrayBuffer 零拷贝
-              if (data.length >= _CRYPTO_BINARY_THRESHOLD && __nativeCrypto.hmacSHA256Bin) {
-                var dataU8 = _strToU8(data);
-                var keyU8 = _strToU8(keyStr);
-                var r8 = __nativeCrypto.hmacSHA256Bin(dataU8, keyU8);
-                var r = _u8ToStr(r8);
-                if (r) return { toString: function() { return r; } };
-              } else {
-                var r = __nativeCrypto.hmacSHA256(data, keyStr);
-                if (r) return { toString: function() { return r; } };
-              }
+              var r = __nativeCrypto.hmacSHA256(data, keyStr);
+              if (r) return { toString: function() { return r; } };
             } catch (e) {}
           }
           return { toString: function() { return java.hmacSHA256 ? java.hmacSHA256(data, key) : ''; } };

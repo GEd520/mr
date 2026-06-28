@@ -1,6 +1,11 @@
 #include "quickjs_bridge.h"
 #include <stdlib.h>
 #include <string.h>
+#include "crypto/md5.h"
+#include "crypto/sha1.h"
+#include "crypto/sha256.h"
+#include "crypto/hmac_sha256.h"
+#include "crypto/aes.h"
 
 struct QuickJSBridge {
     JSRuntime *runtime;
@@ -121,6 +126,154 @@ static JSValue js_call_crypto_binary(JSContext *ctx, int op, int argc, JSValueCo
     return ret;
 }
 
+// ---------- 原生 C 实现（零 Dart 回调，纯 C 计算）----------
+// 这些函数直接在 C 层调用 crypto 库，完全消除跨语言往返
+// 接受 ArrayBuffer，返回 ArrayBuffer（原始字节）
+
+// 辅助：从 JSValue 取 ArrayBuffer 指针
+static const uint8_t *get_ab(JSContext *ctx, JSValueConst val, size_t *len, const char *fn_name, int arg_idx) {
+    const uint8_t *p = JS_GetArrayBuffer(ctx, len, val);
+    if (!p) {
+        JS_ThrowTypeError(ctx, "%s: argument %d must be an ArrayBuffer/Uint8Array", fn_name, arg_idx);
+    }
+    return p;
+}
+
+// MD5：输入 data ArrayBuffer，输出 16 字节摘要
+static JSValue js_native_md5(JSContext *ctx, JSValueConst this_val,
+                             int argc, JSValueConst *argv) {
+    if (argc < 1) return JS_ThrowTypeError(ctx, "md5Native requires 1 argument, got %d", argc);
+    size_t len;
+    const uint8_t *data = get_ab(ctx, argv[0], &len, "md5Native", 1);
+    if (!data) return JS_EXCEPTION;
+
+    uint8_t digest[16];
+    md5(data, len, digest);
+    return JS_NewArrayBufferCopy(ctx, digest, 16);
+}
+
+// SHA1：输入 data ArrayBuffer，输出 20 字节摘要
+static JSValue js_native_sha1(JSContext *ctx, JSValueConst this_val,
+                              int argc, JSValueConst *argv) {
+    if (argc < 1) return JS_ThrowTypeError(ctx, "sha1Native requires 1 argument, got %d", argc);
+    size_t len;
+    const uint8_t *data = get_ab(ctx, argv[0], &len, "sha1Native", 1);
+    if (!data) return JS_EXCEPTION;
+
+    uint8_t digest[20];
+    sha1(data, len, digest);
+    return JS_NewArrayBufferCopy(ctx, digest, 20);
+}
+
+// SHA256：输入 data ArrayBuffer，输出 32 字节摘要
+static JSValue js_native_sha256(JSContext *ctx, JSValueConst this_val,
+                                int argc, JSValueConst *argv) {
+    if (argc < 1) return JS_ThrowTypeError(ctx, "sha256Native requires 1 argument, got %d", argc);
+    size_t len;
+    const uint8_t *data = get_ab(ctx, argv[0], &len, "sha256Native", 1);
+    if (!data) return JS_EXCEPTION;
+
+    uint8_t digest[32];
+    sha256(data, len, digest);
+    return JS_NewArrayBufferCopy(ctx, digest, 32);
+}
+
+// HMAC-SHA256：输入 (data, key) ArrayBuffer，输出 32 字节摘要
+static JSValue js_native_hmac_sha256(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv) {
+    if (argc < 2) return JS_ThrowTypeError(ctx, "hmacSHA256Native requires 2 arguments, got %d", argc);
+    size_t data_len, key_len;
+    const uint8_t *data = get_ab(ctx, argv[0], &data_len, "hmacSHA256Native", 1);
+    if (!data) return JS_EXCEPTION;
+    const uint8_t *key = get_ab(ctx, argv[1], &key_len, "hmacSHA256Native", 2);
+    if (!key) return JS_EXCEPTION;
+
+    uint8_t digest[32];
+    hmac_sha256(key, key_len, data, data_len, digest);
+    return JS_NewArrayBufferCopy(ctx, digest, 32);
+}
+
+// AES-CBC-PKCS7 加密：输入 (plaintext, key, iv) ArrayBuffer，输出 ciphertext ArrayBuffer
+static JSValue js_native_aes_encrypt(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv) {
+    if (argc < 3) return JS_ThrowTypeError(ctx, "aesEncryptNative requires 3 arguments, got %d", argc);
+    size_t pt_len, key_len, iv_len;
+    const uint8_t *pt = get_ab(ctx, argv[0], &pt_len, "aesEncryptNative", 1);
+    if (!pt) return JS_EXCEPTION;
+    const uint8_t *key = get_ab(ctx, argv[1], &key_len, "aesEncryptNative", 2);
+    if (!key) return JS_EXCEPTION;
+    const uint8_t *iv = get_ab(ctx, argv[2], &iv_len, "aesEncryptNative", 3);
+    if (!iv) return JS_EXCEPTION;
+
+    if (key_len != 16 && key_len != 24 && key_len != 32) {
+        return JS_ThrowTypeError(ctx, "aesEncryptNative: key length must be 16/24/32, got %d", (int)key_len);
+    }
+    if (iv_len != 16) {
+        return JS_ThrowTypeError(ctx, "aesEncryptNative: iv length must be 16, got %d", (int)iv_len);
+    }
+
+    aes_ctx_t actx;
+    if (aes_init(&actx, key, key_len) != 0) {
+        return JS_ThrowTypeError(ctx, "aesEncryptNative: key expansion failed");
+    }
+
+    // 密文长度 = 明文长度向上取 16 的倍数 + padding
+    size_t max_out = pt_len + 16;
+    uint8_t *out = (uint8_t *)malloc(max_out);
+    if (!out) return JS_ThrowTypeError(ctx, "aesEncryptNative: out of memory");
+
+    size_t out_len = aes_cbc_encrypt(&actx, iv, pt, pt_len, out);
+    if (out_len == (size_t)-1) {
+        free(out);
+        return JS_ThrowTypeError(ctx, "aesEncryptNative: encryption failed");
+    }
+
+    JSValue ret = JS_NewArrayBufferCopy(ctx, out, out_len);
+    free(out);
+    return ret;
+}
+
+// AES-CBC-PKCS7 解密：输入 (ciphertext, key, iv) ArrayBuffer，输出 plaintext ArrayBuffer
+static JSValue js_native_aes_decrypt(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv) {
+    if (argc < 3) return JS_ThrowTypeError(ctx, "aesDecryptNative requires 3 arguments, got %d", argc);
+    size_t ct_len, key_len, iv_len;
+    const uint8_t *ct = get_ab(ctx, argv[0], &ct_len, "aesDecryptNative", 1);
+    if (!ct) return JS_EXCEPTION;
+    const uint8_t *key = get_ab(ctx, argv[1], &key_len, "aesDecryptNative", 2);
+    if (!key) return JS_EXCEPTION;
+    const uint8_t *iv = get_ab(ctx, argv[2], &iv_len, "aesDecryptNative", 3);
+    if (!iv) return JS_EXCEPTION;
+
+    if (key_len != 16 && key_len != 24 && key_len != 32) {
+        return JS_ThrowTypeError(ctx, "aesDecryptNative: key length must be 16/24/32, got %d", (int)key_len);
+    }
+    if (iv_len != 16) {
+        return JS_ThrowTypeError(ctx, "aesDecryptNative: iv length must be 16, got %d", (int)iv_len);
+    }
+    if (ct_len == 0 || ct_len % 16 != 0) {
+        return JS_ThrowTypeError(ctx, "aesDecryptNative: ciphertext length must be multiple of 16, got %d", (int)ct_len);
+    }
+
+    aes_ctx_t actx;
+    if (aes_init(&actx, key, key_len) != 0) {
+        return JS_ThrowTypeError(ctx, "aesDecryptNative: key expansion failed");
+    }
+
+    uint8_t *out = (uint8_t *)malloc(ct_len);
+    if (!out) return JS_ThrowTypeError(ctx, "aesDecryptNative: out of memory");
+
+    size_t out_len = aes_cbc_decrypt(&actx, iv, ct, ct_len, out);
+    if (out_len == (size_t)-1) {
+        free(out);
+        return JS_ThrowTypeError(ctx, "aesDecryptNative: decryption failed (bad padding or key)");
+    }
+
+    JSValue ret = JS_NewArrayBufferCopy(ctx, out, out_len);
+    free(out);
+    return ret;
+}
+
 // ---------- JS 函数注册 ----------
 // 字符串路径（小数据，< 1KB）
 static JSValue js_crypto_aes_decrypt(JSContext *ctx, JSValueConst this_val,
@@ -228,6 +381,21 @@ QuickJSBridge *quickjs_bridge_create(void) {
         JS_NewCFunction(bridge->ctx, js_crypto_hmac_sha256_bin, "hmacSHA256Bin", 2));
     JS_SetPropertyStr(bridge->ctx, crypto_obj, "sha1Bin",
         JS_NewCFunction(bridge->ctx, js_crypto_sha1_bin, "sha1Bin", 1));
+
+    // 原生 C 实现路径（零 Dart 回调，纯 C 计算，接受/返回 ArrayBuffer）
+    // 优先于字符串/ArrayBuffer 回调路径
+    JS_SetPropertyStr(bridge->ctx, crypto_obj, "md5Native",
+        JS_NewCFunction(bridge->ctx, js_native_md5, "md5Native", 1));
+    JS_SetPropertyStr(bridge->ctx, crypto_obj, "sha1Native",
+        JS_NewCFunction(bridge->ctx, js_native_sha1, "sha1Native", 1));
+    JS_SetPropertyStr(bridge->ctx, crypto_obj, "sha256Native",
+        JS_NewCFunction(bridge->ctx, js_native_sha256, "sha256Native", 1));
+    JS_SetPropertyStr(bridge->ctx, crypto_obj, "hmacSHA256Native",
+        JS_NewCFunction(bridge->ctx, js_native_hmac_sha256, "hmacSHA256Native", 2));
+    JS_SetPropertyStr(bridge->ctx, crypto_obj, "aesEncryptNative",
+        JS_NewCFunction(bridge->ctx, js_native_aes_encrypt, "aesEncryptNative", 3));
+    JS_SetPropertyStr(bridge->ctx, crypto_obj, "aesDecryptNative",
+        JS_NewCFunction(bridge->ctx, js_native_aes_decrypt, "aesDecryptNative", 3));
 
     JS_SetPropertyStr(bridge->ctx, global_obj, "__nativeCrypto", crypto_obj);
     JS_FreeValue(bridge->ctx, global_obj);
