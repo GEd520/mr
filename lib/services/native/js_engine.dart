@@ -110,8 +110,8 @@ class JsTracer {
   /// 获取当前栈顶节点
   JsTraceNode? get currentStackTop => _stack.isNotEmpty ? _stack.last : null;
 
-  /// 是否启用追踪
-  bool enabled = true;
+  /// 是否启用追踪（Release 模式禁用，避免构建大执行树导致 OOM）
+  bool enabled = kDebugMode;
 
   /// 追踪 ID 计数器
   int _idCounter = 0;
@@ -3927,21 +3927,26 @@ class JsEngine {
       // 追踪树：创建节点
       if (JsTracer.instance.enabled) {
         final tracer = JsTracer.instance;
-        // 安全生成 inputPreview：List/Map 用 jsonEncode，String 截断，其他 toString
+        // 安全生成 inputPreview：List/Map 用 jsonEncode（截断），String 截断，其他 toString
         String? inputPreview;
         if (result is List || result is Map) {
           final encoded = jsonEncode(result);
-          inputPreview = encoded;
+          inputPreview = encoded.length > 500 ? '${encoded.substring(0, 500)}...' : encoded;
         } else if (result is String) {
-          inputPreview = result;
+          inputPreview = result.length > 500 ? '${result.substring(0, 500)}...' : result;
         } else {
           inputPreview = result?.toString();
+          if (inputPreview != null && inputPreview.length > 500) {
+            inputPreview = '${inputPreview.substring(0, 500)}...';
+          }
         }
+        final codePreviewTrunc = codePreview.length > 500
+            ? '${codePreview.substring(0, 500)}...' : codePreview;
         if (tracer._stack.isEmpty) {
-          traceNode = tracer.beginRoot('_executeQuickJSRule', 'QuickJS', codePreview,
+          traceNode = tracer.beginRoot('_executeQuickJSRule', 'QuickJS', codePreviewTrunc,
             inputPreview: inputPreview, ruleStep: ruleStep);
         } else {
-          traceNode = tracer.addChild('_executeQuickJSRule', 'QuickJS', codePreview,
+          traceNode = tracer.addChild('_executeQuickJSRule', 'QuickJS', codePreviewTrunc,
             inputPreview: inputPreview, ruleStep: ruleStep);
         }
         tracer.push(traceNode);
@@ -4366,6 +4371,19 @@ class JsEngine {
     _jsLibCache.remove(sourceUrl);
   }
 
+  /// 清除 JS 侧 _javaCache（桥接预缓存结果）
+  /// 防止调试多个书源/规则时 _javaCache 无限膨胀导致 QuickJS 堆 OOM
+  void clearJavaCache() {
+    if (_jsRuntime == null || !_initialized) return;
+    try {
+      evaluate('_javaCache = {};');
+      _cachedKeys.clear();
+      _bridgeCache.clear();
+    } catch (e) {
+      debugPrint('清除 _javaCache 失败: $e');
+    }
+  }
+
   Future<void> loadSharedScope(String sourceUrl, String? jsLib) async {
     if (jsLib == null || jsLib.trim().isEmpty) return;
     if (_sharedScopeVars.containsKey(sourceUrl)) return;
@@ -4581,7 +4599,7 @@ class JsEngine {
       AppLogger.instance.debug(LogCategory.js, '预缓存 ${httpUrls.length} 个HTTP请求');
       // 从 env 中获取自定义 headers（书源配置的 header 字段）
       final customHeaders = env?['headers'] as Map<String, String>?;
-      final futures = httpUrls.map((url) async {
+      final results = await _runWithConcurrency(() => httpUrls.map((url) async {
         try {
           String? result;
           if (url.startsWith('http://')) {
@@ -4598,9 +4616,7 @@ class JsEngine {
           AppLogger.instance.warn(LogCategory.js, '预缓存HTTP失败: $url', detail: e.toString());
         }
         return null;
-      });
-
-      final results = await Future.wait(futures);
+      }));
       final cacheEntries = <String, String>{};
       for (final entry in results) {
         if (entry != null) {
@@ -4696,7 +4712,7 @@ class JsEngine {
         }
         if (postUrls.isNotEmpty) {
           final customHeaders = env?['headers'] as Map<String, String>?;
-          final postFutures = postUrls.entries.map((entry) async {
+          final postResults = await _runWithConcurrency(() => postUrls.entries.map((entry) async {
             try {
               String? result;
               if (entry.key.startsWith('http://')) {
@@ -4717,8 +4733,7 @@ class JsEngine {
               AppLogger.instance.warn(LogCategory.js, '预缓存POST失败: ${entry.key}', detail: e.toString());
             }
             return null;
-          });
-          final postResults = await Future.wait(postFutures);
+          }));
           final postCacheEntries = <String, String>{};
           for (final entry in postResults) {
             if (entry != null) postCacheEntries[entry.key] = entry.value;
@@ -4746,7 +4761,7 @@ class JsEngine {
         }
         if (headUrls.isNotEmpty) {
           final customHeaders = env?['headers'] as Map<String, String>?;
-          final headFutures = headUrls.map((url) async {
+          final headResults = await _runWithConcurrency(() => headUrls.map((url) async {
             try {
               final result = await NativeChannel.instance.httpHead(url, headers: customHeaders);
               if (result != null) {
@@ -4757,8 +4772,7 @@ class JsEngine {
               AppLogger.instance.warn(LogCategory.js, '预缓存HEAD失败: $url', detail: e.toString());
             }
             return null;
-          });
-          final headResults = await Future.wait(headFutures);
+          }));
           final headCacheEntries = <String, String>{};
           for (final entry in headResults) {
             if (entry != null) headCacheEntries[entry.key] = entry.value;
@@ -4778,7 +4792,7 @@ class JsEngine {
           }
         }
         if (cookieUrls.isNotEmpty) {
-          final cookieFutures = cookieUrls.map((tag) async {
+          final cookieResults = await _runWithConcurrency(() => cookieUrls.map((tag) async {
             try {
               final result = await NativeChannel.instance.getCookie(tag);
               if (result != null) {
@@ -4788,8 +4802,7 @@ class JsEngine {
               AppLogger.instance.warn(LogCategory.js, '预缓存Cookie失败: $tag', detail: e.toString());
             }
             return null;
-          });
-          final cookieResults = await Future.wait(cookieFutures);
+          }));
           final cookieCacheEntries = <String, String>{};
           for (final entry in cookieResults) {
             if (entry != null) cookieCacheEntries[entry.key] = entry.value;
@@ -5397,6 +5410,27 @@ class JsEngine {
   /// 检查缓存键是否已存在
   bool _isCached(String key) {
     return _cachedKeys.contains(key);
+  }
+
+  /// 并发受限的批量执行器：限制同时运行的 Future 数量，防止 OOM
+  /// 书源 JS 若含大量 java.ajax() 调用，无限制并发会导致响应体同时驻留内存
+  static const int _maxConcurrentRequests = 4;
+  Future<List<T?>> _runWithConcurrency<T>(
+    Iterable<Future<T?>> Function() futureBuilder,
+  ) async {
+    final futures = futureBuilder().toList();
+    if (futures.isEmpty) return [];
+    final results = <T?>[];
+    for (var i = 0; i < futures.length; i += _maxConcurrentRequests) {
+      final batch = futures.sublist(
+        i,
+        (i + _maxConcurrentRequests > futures.length)
+            ? futures.length
+            : i + _maxConcurrentRequests,
+      );
+      results.addAll(await Future.wait(batch));
+    }
+    return results;
   }
 
   /// 解析相对URL

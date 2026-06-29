@@ -83,8 +83,11 @@ class AppLogger {
   AppLogger._();
   static final AppLogger instance = AppLogger._();
 
-  /// 日志缓冲区（无上限，确保导出日志完整）
-  static const int maxBufferSize = -1;
+  /// 日志缓冲区上限（防止 OOM：调试时高频日志会无限累积导致内存溢出卡死）
+  static const int maxBufferSize = 2000;
+
+  /// 日志 detail 字段最大长度（截断大字符串，避免单条日志占数 MB）
+  static const int maxDetailLength = 2000;
 
   /// 日志缓冲区
   final List<LogEntry> _buffer = [];
@@ -129,16 +132,25 @@ class AppLogger {
   void _log(LogLevel level, LogCategory category, String message, {String? detail}) {
     if (level.index < minLevel.index) return;
 
+    // 截断大 detail，避免单条日志（完整 HTML/JS 内容）占用过多内存
+    String? truncatedDetail = detail;
+    if (detail != null && detail.length > maxDetailLength) {
+      truncatedDetail = '${detail.substring(0, maxDetailLength)}\n... (已截断, 原长 ${detail.length})';
+    }
+
     final entry = LogEntry(
       time: DateTime.now(),
       level: level,
       category: category,
       message: message,
-      detail: detail,
+      detail: truncatedDetail,
     );
 
     _buffer.add(entry);
-    // 无上限，不删除旧日志，确保导出完整
+    // 超过上限时移除最旧日志，防止 OOM
+    if (_buffer.length > maxBufferSize) {
+      _buffer.removeRange(0, _buffer.length - maxBufferSize);
+    }
 
     _controller.add(entry);
 
@@ -146,7 +158,7 @@ class AppLogger {
     if (kDebugMode) {
       debugPrint(entry.toShortString());
       if (detail != null) {
-        debugPrint('  $detail');
+        debugPrint('  ${truncatedDetail!.length > 200 ? truncatedDetail.substring(0, 200) : truncatedDetail}');
       }
     }
   }

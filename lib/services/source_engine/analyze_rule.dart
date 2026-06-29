@@ -76,6 +76,8 @@ class AnalyzeRule {
   static void clearCache() {
     _stringRuleCache.clear();
     _regexCache.clear();
+    // 联动清除 LegadoJsonPath 的正则缓存
+    LegadoJsonPath.clearCache();
   }
 
   AnalyzeRule setContent(dynamic content, {String? baseUrl}) {
@@ -1770,6 +1772,10 @@ class AnalyzeRule {
   }
 
   RegExp? _compileRegex(String pattern) {
+    // LRU 淘汰：缓存超限时移除最旧条目，防止动态正则导致缓存无限增长
+    if (_regexCache.length >= _maxCacheSize && !_regexCache.containsKey(pattern)) {
+      _regexCache.remove(_regexCache.keys.first);
+    }
     return _regexCache.putIfAbsent(pattern, () {
       try {
         return RegExp(pattern, multiLine: true, dotAll: true);

@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import '../models/book_source.dart';
 import '../models/book.dart';
 import '../models/chapter.dart';
+import 'native/js_engine.dart';
 import 'source_engine/source_engine.dart';
 
 /// 调试状态码（与 Legado 保持一致）
@@ -133,6 +134,17 @@ class SourceDebugService {
     _isCancelled = true;
     _debugTask?.complete();
     _debugTask = null;
+
+    // 清空源码缓存，释放大 HTML 内存
+    _searchSrc = '';
+    _bookSrc = '';
+    _tocSrc = '';
+    _contentSrc = '';
+
+    // 清理 JS 侧 _javaCache，防止 OOM
+    try {
+      JsEngine.instance.clearJavaCache();
+    } catch (_) {}
 
     if (destroy) {
       callback = null;
@@ -310,6 +322,9 @@ class SourceDebugService {
   }) async {
     if (_isCancelled) return;
 
+    // 清理上一步的 JS 桥接缓存，防止单次调试链内 _javaCache 无限增长
+    JsEngine.instance.clearJavaCache();
+
     log('︾开始解析详情页');
     webBook ??= WebBook(bookSource);
 
@@ -374,6 +389,9 @@ class SourceDebugService {
     WebBook? webBook,
   }) async {
     if (_isCancelled) return;
+
+    // 清理上一步的 JS 桥接缓存，防止单次调试链内 _javaCache 无限增长
+    JsEngine.instance.clearJavaCache();
 
     log('︾开始解析目录页');
     webBook ??= WebBook(bookSource);
@@ -448,6 +466,9 @@ class SourceDebugService {
     List<Chapter>? allChapters,
   }) async {
     if (_isCancelled) return;
+
+    // 清理上一步的 JS 桥接缓存，防止单次调试链内 _javaCache 无限增长
+    JsEngine.instance.clearJavaCache();
 
     log('︾开始解析正文页');
     webBook ??= WebBook(bookSource);

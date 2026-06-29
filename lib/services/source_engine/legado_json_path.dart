@@ -7,14 +7,24 @@ class LegadoJsonPath {
   );
   static final RegExp _regexExtractRegex = RegExp(r'^/(.*?)/([ims]*)$');
   static final Map<String, RegExp> _userRegexCache = {};
+  static const int _maxRegexCacheSize = 512;
   static RegExp _getCachedUserRegex(String pattern, String flags) {
     final cacheKey = '$pattern|$flags';
+    // LRU 淘汰：缓存超限时移除最旧条目
+    if (_userRegexCache.length >= _maxRegexCacheSize && !_userRegexCache.containsKey(cacheKey)) {
+      _userRegexCache.remove(_userRegexCache.keys.first);
+    }
     return _userRegexCache.putIfAbsent(cacheKey, () => RegExp(
       pattern,
       caseSensitive: !flags.contains('i'),
       multiLine: flags.contains('m'),
       dotAll: flags.contains('s'),
     ));
+  }
+
+  /// 清除正则缓存（由 AnalyzeRule.clearCache 联动调用）
+  static void clearCache() {
+    _userRegexCache.clear();
   }
 
   static dynamic read(dynamic input, String path) {
