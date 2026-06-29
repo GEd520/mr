@@ -33,7 +33,6 @@ class AnalyzeRule {
   Map<String, dynamic>? _sourceInfo;  // 书源元数据
   Map<String, dynamic>? _bookInfo;    // 书籍信息
   Map<String, dynamic>? _chapterInfo; // 章节信息
-  String? _nextChapterUrl;            // 下一章URL（JS中可用）
 
   // 规则缓存
   static final Map<String, List<_SourceRule>> _stringRuleCache = {};
@@ -119,10 +118,7 @@ class AnalyzeRule {
     return this;
   }
 
-  AnalyzeRule setNextChapterUrl(String? url) {
-    _nextChapterUrl = url;
-    return this;
-  }
+  
 
   /// 检测内容是否为JSON
   /// 对齐 legado：检查首尾是否匹配 JSON 格式
@@ -280,19 +276,6 @@ class AnalyzeRule {
 
     final ruleList = _splitSourceRuleCacheString(ruleStr);
     return _getElementsAsync(ruleList);
-  }
-
-  /// 检测规则是否包含 JS 部分（@js: / <js>...</js>）或模板表达式（{{}}）
-  /// 含 JS 或模板的规则走 Dart 端，不含的走 Native JSoup
-  static final _jsPattern = RegExp(r'@js:|<js>|\{\{', caseSensitive: false);
-  bool _containsJsRule(String ruleStr) => _jsPattern.hasMatch(ruleStr);
-
-  /// 将 content 转为字符串（Element → outerHtml，其他 → toString）
-  String _anyToString(dynamic any) {
-    if (any == null) return '';
-    if (any is dom.Element) return any.outerHtml;
-    if (any is String) return any;
-    return any.toString();
   }
 
   /// 获取Map列表

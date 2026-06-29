@@ -5090,7 +5090,6 @@ class JsEngine {
               } catch (_) {
                 return null;
               }
-              if (archiveObj == null) return null;
 
               switch (method) {
                 case 'unzipFile':

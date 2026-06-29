@@ -32,9 +32,6 @@ class ChapterPrefetchService {
   /// 默认预取并发数
   static const int _defaultConcurrency = 4;
 
-  /// 默认预取前瞻深度（章）
-  static const int _defaultLookahead = 5;
-
   int get memoryCacheSize => _memoryCache.length;
   int get prefetchingCount => _prefetching.length;
 

@@ -1470,8 +1470,7 @@ class WebBook {
         ..setSourceEngine(source.engineType)
         ..setSourceInfo(_sourceToMap(source))
         ..setBookInfo(book != null ? _bookToMap(book) : null)
-        ..setChapterInfo(chapter != null ? _chapterToMap(chapter) : null)
-        ..setNextChapterUrl(nextChapterUrl);
+        ..setChapterInfo(chapter != null ? _chapterToMap(chapter) : null);
       // 对齐 legado BookContent.kt：先不 unescape，格式化后再 unescape
       // legado: getString(contentRule.content, unescape = false) → formatKeepImg → unescapeHtml4
       var content = await analyzer.getStringAsync(contentRule.content ?? '', unescape: false);
@@ -1572,8 +1571,7 @@ class WebBook {
                 ..setSourceEngine(source.engineType)
                 ..setSourceInfo(_sourceToMap(source))
                 ..setBookInfo(book != null ? _bookToMap(book) : null)
-                ..setChapterInfo(chapter != null ? _chapterToMap(chapter) : null)
-                ..setNextChapterUrl(nextChapterUrl);
+                ..setChapterInfo(chapter != null ? _chapterToMap(chapter) : null);
 
               // 提取正文（对齐 legado：先不 unescape，格式化后再 unescape）
               var nextContent = await nextAnalyzer.getStringAsync(contentRule.content ?? '', unescape: false);
@@ -1757,22 +1755,6 @@ class WebBook {
     final lines = replaceRegex.split('\n');
     for (final line in lines) {
       if (line.isEmpty) continue;
-
-      // 构造 AnalyzeRule 规则格式：##pattern##replacement 或 ##pattern##replacement###（replaceFirst）
-      // Kotlin AnalyzeRule.SourceRule 的 splitRegex 用 ## 分割：
-      //   parts[0]=空(因为以##开头) → parts[1]=pattern → parts[2]=replacement → parts[3]=replaceFirst标记
-      String rule;
-      final idx = line.indexOf('##');
-      if (idx < 0) {
-        // 无 ## → 整条作为 pattern，替换为空
-        rule = '##$line';
-      } else if (idx == 0) {
-        // ## 开头 → 后面是 pattern，替换为空
-        rule = line;
-      } else {
-        // xxx##yyy → pattern=xxx, replacement=yyy
-        rule = '##$line';
-      }
 
       // Dart 端正则替换
       result = _applyContentReplaceLine(result, line);

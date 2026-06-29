@@ -480,29 +480,29 @@ const char *quickjs_bridge_aes_decrypt(const char *cipher_b64, size_t b64_len,
         char *out = (char *)malloc(1); if (out) out[0] = '\0'; return out;
     }
 
-    // AES-128-CBC 解密
+    // AES-128-CBC 解密（key/iv 不足 16 字节以 0 填充）
     uint8_t aes_key[16] = {0};
     memcpy(aes_key, key, key_len < 16 ? key_len : 16);
 
     uint8_t aes_iv[16] = {0};
     if (iv && iv_len > 0) memcpy(aes_iv, iv, iv_len < 16 ? iv_len : 16);
 
-    size_t plain_len = enc_len + 16;
-    uint8_t *plain = (uint8_t *)malloc(plain_len);
-    if (!plain) { free(enc); return NULL; }
-
-    int result = aes_decrypt(enc, enc_len, aes_key, aes_iv, plain, &plain_len);
-    free(enc);
-
-    if (result != 0 || plain_len == 0) {
-        free(plain);
+    aes_ctx_t actx;
+    if (aes_init(&actx, aes_key, 16) != 0) {
+        free(enc);
         char *out = (char *)malloc(1); if (out) out[0] = '\0'; return out;
     }
 
-    // PKCS7 去填充
-    uint8_t pad = plain[plain_len - 1];
-    if (pad > 0 && pad <= 16 && pad <= plain_len) {
-        plain_len -= pad;
+    // aes_cbc_decrypt 原地解密且自动去 PKCS7 padding，返回明文长度，失败返回 (size_t)-1
+    uint8_t *plain = (uint8_t *)malloc(enc_len + 1);
+    if (!plain) { free(enc); return NULL; }
+
+    size_t plain_len = aes_cbc_decrypt(&actx, aes_iv, enc, enc_len, plain);
+    free(enc);
+
+    if (plain_len == (size_t)-1 || plain_len == 0) {
+        free(plain);
+        char *out = (char *)malloc(1); if (out) out[0] = '\0'; return out;
     }
 
     *output_len = plain_len;
@@ -521,29 +521,26 @@ const char *quickjs_bridge_aes_encrypt(const char *plaintext, size_t pt_len,
     if (pt_len == 0 || key_len == 0) return empty;
     free(empty);
 
-    // AES-128-CBC 加密
+    // AES-128-CBC 加密（key/iv 不足 16 字节以 0 填充）
     uint8_t aes_key[16] = {0};
     memcpy(aes_key, key, key_len < 16 ? key_len : 16);
 
     uint8_t aes_iv[16] = {0};
     if (iv && iv_len > 0) memcpy(aes_iv, iv, iv_len < 16 ? iv_len : 16);
 
-    // PKCS7 填充
-    size_t padded_len = pt_len + (16 - (pt_len % 16));
-    uint8_t *padded = (uint8_t *)malloc(padded_len);
-    if (!padded) return NULL;
-    memcpy(padded, plaintext, pt_len);
-    uint8_t pad_val = (uint8_t)(padded_len - pt_len);
-    memset(padded + pt_len, pad_val, padded_len - pt_len);
+    aes_ctx_t actx;
+    if (aes_init(&actx, aes_key, 16) != 0) {
+        char *out = (char *)malloc(1); if (out) out[0] = '\0'; return out;
+    }
 
-    size_t cipher_len = padded_len;
-    uint8_t *cipher = (uint8_t *)malloc(cipher_len);
-    if (!cipher) { free(padded); return NULL; }
+    // aes_cbc_encrypt 内部完成 PKCS7 填充，返回密文长度，失败返回 (size_t)-1
+    size_t cipher_cap = pt_len + 16;
+    uint8_t *cipher = (uint8_t *)malloc(cipher_cap);
+    if (!cipher) return NULL;
 
-    int result = aes_encrypt(padded, padded_len, aes_key, aes_iv, cipher, &cipher_len);
-    free(padded);
+    size_t cipher_len = aes_cbc_encrypt(&actx, aes_iv, (const uint8_t *)plaintext, pt_len, cipher);
 
-    if (result != 0 || cipher_len == 0) {
+    if (cipher_len == (size_t)-1 || cipher_len == 0) {
         free(cipher);
         char *out = (char *)malloc(1); if (out) out[0] = '\0'; return out;
     }

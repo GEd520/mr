@@ -190,7 +190,7 @@ class AppLogger {
   // ===== JS 引擎专用 =====
 
   /// 记录 JS 执行（info 级别，确保 Release 模式可见）
-  /// 注意：此方法不再自动增加计数，由调用方（processJsRule/executeSync/EngineDispatcher）显式调用 incrementQuickjsCount()
+  /// 注意：此方法不再自动增加计数，由调用方（processJsRule/executeSync）显式调用 incrementQuickjsCount()
   void logJsExecute(String engine, String code, {int? codeLength}) {
     info(LogCategory.js, '[$engine] 执行JS #$_quickjsExecutionCount (${codeLength ?? code.length} chars)',
       detail: code);
