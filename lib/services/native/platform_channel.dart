@@ -24,8 +24,10 @@ class NativeChannel {
 
   Future<double> getScreenBrightness() async {
     try {
-    return await _channel.invokeMethod<double>('getScreenBrightness') ?? -1;
-    } on PlatformException {
+      return await _channel.invokeMethod<double>('getScreenBrightness') ?? -1;
+    } on PlatformException catch (_) {
+      return -1;
+    } on MissingPluginException catch (_) {
       return -1;
     }
   }
@@ -36,7 +38,9 @@ class NativeChannel {
             'value': value.clamp(-1.0, 1.0),
           }) ??
           false;
-    } on PlatformException {
+    } on PlatformException catch (_) {
+      return false;
+    } on MissingPluginException catch (_) {
       return false;
     }
   }
@@ -55,7 +59,9 @@ class NativeChannel {
         'timeoutMs': timeoutMs,
       });
       return result;
-    } on PlatformException {
+    } on PlatformException catch (_) {
+      return null;
+    } on MissingPluginException catch (_) {
       return null;
     }
   }
@@ -74,7 +80,9 @@ class NativeChannel {
         'timeoutMs': timeoutMs,
       });
       return result;
-    } on PlatformException {
+    } on PlatformException catch (_) {
+      return null;
+    } on MissingPluginException catch (_) {
       return null;
     }
   }
@@ -89,7 +97,9 @@ class NativeChannel {
       });
       if (result == null) return null;
       return result.map((k, v) => MapEntry(k, v?.toString() ?? ''));
-    } on PlatformException {
+    } on PlatformException catch (_) {
+      return null;
+    } on MissingPluginException catch (_) {
       return null;
     }
   }
@@ -101,7 +111,9 @@ class NativeChannel {
         'key': key,
       });
       return result;
-    } on PlatformException {
+    } on PlatformException catch (_) {
+      return null;
+    } on MissingPluginException catch (_) {
       return null;
     }
   }
@@ -118,7 +130,9 @@ class NativeChannel {
         'headers': headers,
       });
       return result;
-    } on PlatformException {
+    } on PlatformException catch (_) {
+      return null;
+    } on MissingPluginException catch (_) {
       return null;
     }
   }
@@ -130,7 +144,9 @@ class NativeChannel {
       final result = await _channel.invokeMethod<Map>('getDeviceInfo');
       if (result == null) return null;
       return Map<String, dynamic>.from(result);
-    } on PlatformException {
+    } on PlatformException catch (_) {
+      return null;
+    } on MissingPluginException catch (_) {
       return null;
     }
   }
@@ -153,7 +169,9 @@ class NativeChannel {
         'delayTime': delayTime,
       });
       return result;
-    } on PlatformException {
+    } on PlatformException catch (_) {
+      return null;
+    } on MissingPluginException catch (_) {
       return null;
     }
   }
@@ -167,7 +185,9 @@ class NativeChannel {
         'value': value,
       });
       return true;
-    } on PlatformException {
+    } on PlatformException catch (_) {
+      return false;
+    } on MissingPluginException catch (_) {
       return false;
     }
   }
@@ -179,7 +199,9 @@ class NativeChannel {
         'defaultValue': defaultValue,
       });
       return result;
-    } on PlatformException {
+    } on PlatformException catch (_) {
+      return null;
+    } on MissingPluginException catch (_) {
       return null;
     }
   }
@@ -188,7 +210,9 @@ class NativeChannel {
     try {
       await _channel.invokeMethod<void>('deleteData', {'key': key});
       return true;
-    } on PlatformException {
+    } on PlatformException catch (_) {
+      return false;
+    } on MissingPluginException catch (_) {
       return false;
     }
   }
@@ -207,7 +231,9 @@ class NativeChannel {
         'cacheMaxAge': cacheMaxAge,
       });
       return result;
-    } on PlatformException {
+    } on PlatformException catch (_) {
+      return null;
+    } on MissingPluginException catch (_) {
       return null;
     }
   }

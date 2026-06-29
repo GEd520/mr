@@ -3833,6 +3833,9 @@ class JsEngine {
     AppLogger.instance.logJsStep('QuickJS', '[processJsRule] 入参',
       detail: 'result type=${actualResult.runtimeType}, len=${actualResult is String ? actualResult.length : (actualResult is List ? actualResult.length : '?')}, baseUrl=$baseUrl');
 
+    // 让出事件循环，避免长时间 JS 执行阻塞 UI 刷新
+    await Future(() {});
+
     return _evalLock.synchronized(() {
       _evalBusy = true;
       try {
@@ -4109,7 +4112,8 @@ class JsEngine {
           return __returnValue;
         })();
       ''';
-
+      // 先 yield 让出事件循环，避免长时间 JS 执行阻塞 UI 刷新
+      await Future(() {});
       final evalResult = _jsRuntime!.evaluate(wrappedScript);
 
       // 提取 console 缓存的日志，同步到 AppLogger（借鉴 legado 的调试输出机制）

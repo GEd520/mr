@@ -12,10 +12,11 @@ import 'analyze_rule.dart';
 import 'analyze_url.dart' as legado_url;
 import 'charset_utils.dart';
 import 'web_proxy.dart';
-import 'proxy_service.dart';
 import '../native/js_advanced_service.dart';
 import '../native/js_engine.dart';
-import '../native/quickjs_runtime.dart' show nativeHttpGet, nativeHttpPost;
+import '../native/quickjs_runtime_stub.dart'
+    if (dart.library.io) '../native/quickjs_runtime.dart'
+    show nativeHttpGet, nativeHttpPost;
 
 /// URL 请求选项（类似 OkHttp 的 Request.Builder）
 class UrlOption {
@@ -154,10 +155,9 @@ class HttpClient {
     try {
       // Web 端受 CORS 限制，必须走代理
       if (kIsWeb) {
-        final requestUrl =
-            'http://localhost:${ProxyService.instance.port}/$url';
+        // WebProxy.fetch() 内部会拼接代理前缀，这里只传原始 URL
         final html = await WebProxy.instance.fetch(
-          requestUrl,
+          url,
           method: method,
           headers: headers,
           body: body,
@@ -196,12 +196,6 @@ class HttpClient {
           debugPrint(
               '🔵 [Native HTTP] 响应: ${okResult != null ? "${okResult.length} chars" : "null"}');
           AppLogger.instance.logResponse(url, 200, okResult?.length ?? 0);
-          // Native HTTP 响应体熔断：超过 2MB 不再进入 JS/解析链，避免 OOM/卡死
-          if (okResult != null && okResult.length > 2 * 1024 * 1024) {
-            AppLogger.instance.warn(LogCategory.network, 'Native HTTP 响应体过大，已截断',
-                detail: 'url=$url, size=${okResult.length}');
-            okResult = '${okResult.substring(0, 2 * 1024 * 1024)}\n\n<!-- MR: response truncated at 2MB -->';
-          }
           if (okResult != null && okResult.isNotEmpty) {
             return StrResponse(
               url: url,
@@ -236,8 +230,9 @@ class HttpClient {
           data: body,
           options: options,
         );
+        final rawBytes = response.data ?? <int>[];
         final bodyStr = CharsetUtils.decodeResponse(
-          Uint8List.fromList(response.data ?? []), charset);
+          Uint8List.fromList(rawBytes), charset);
         return StrResponse(
           url: response.realUri.toString(),
           body: bodyStr,
@@ -670,6 +665,12 @@ class WebBook {
         headers: headers,
         body: body,
         charset: parsed.option?.charset,
+        connectTimeout: parsed.option?.connectTimeout == null
+            ? null
+            : Duration(milliseconds: parsed.option!.connectTimeout!),
+        readTimeout: parsed.option?.readTimeout == null
+            ? null
+            : Duration(milliseconds: parsed.option!.readTimeout!),
       );
     }
     final bodyJs = parsed.option?.bodyJs;
@@ -817,16 +818,24 @@ class WebBook {
           ..putVariable('key', keyword)
           ..putVariable('page', page);
 
-        // 并发提取所有字段，避免逐个串行 await
+        // 并发提取所有字段，每个字段独立 catchError 防止一个异常毁了整条结果
         final fields = await Future.wait([
-          itemAnalyzer.getStringAsync(searchRule.name ?? ''),
-          itemAnalyzer.getStringAsync(searchRule.author ?? ''),
-          itemAnalyzer.getStringAsync(searchRule.coverUrl ?? '', isUrl: true),
-          itemAnalyzer.getStringAsync(searchRule.intro ?? ''),
-          itemAnalyzer.getStringAsync(searchRule.bookUrl ?? '', isUrl: true),
-          itemAnalyzer.getStringAsync(searchRule.kind ?? ''),
-          itemAnalyzer.getStringAsync(searchRule.lastChapter ?? ''),
-          itemAnalyzer.getStringAsync(searchRule.wordCount ?? ''),
+          itemAnalyzer.getStringAsync(searchRule.name ?? '')
+              .catchError((_) => null),
+          itemAnalyzer.getStringAsync(searchRule.author ?? '')
+              .catchError((_) => null),
+          itemAnalyzer.getStringAsync(searchRule.coverUrl ?? '', isUrl: true)
+              .catchError((_) => null),
+          itemAnalyzer.getStringAsync(searchRule.intro ?? '')
+              .catchError((_) => null),
+          itemAnalyzer.getStringAsync(searchRule.bookUrl ?? '', isUrl: true)
+              .catchError((_) => null),
+          itemAnalyzer.getStringAsync(searchRule.kind ?? '')
+              .catchError((_) => null),
+          itemAnalyzer.getStringAsync(searchRule.lastChapter ?? '')
+              .catchError((_) => null),
+          itemAnalyzer.getStringAsync(searchRule.wordCount ?? '')
+              .catchError((_) => null),
         ]);
         var name = fields[0];
         var author = fields[1];
@@ -975,7 +984,7 @@ class WebBook {
           ..setSourceEngine(source.engineType)
           ..setSourceInfo(exploreSourceMap);
 
-        // 并发提取所有字段
+        // 并发提取所有字段，每个字段独立 catchError
         final nameRule = useSearchFallback ? (searchRule?.name ?? '') : exploreRule.name;
         final authorRule = useSearchFallback ? (searchRule?.author ?? '') : exploreRule.author;
         final coverUrlRule = useSearchFallback ? (searchRule?.coverUrl ?? '') : exploreRule.coverUrl;
@@ -986,14 +995,22 @@ class WebBook {
         final wordCountRule = useSearchFallback ? (searchRule?.wordCount ?? '') : exploreRule.wordCount;
 
         final fields = await Future.wait([
-          itemAnalyzer.getStringAsync(nameRule),
-          itemAnalyzer.getStringAsync(authorRule),
-          itemAnalyzer.getStringAsync(coverUrlRule, isUrl: true),
-          itemAnalyzer.getStringAsync(introRule),
-          itemAnalyzer.getStringAsync(bookUrlRule, isUrl: true),
-          itemAnalyzer.getStringAsync(kindRule),
-          itemAnalyzer.getStringAsync(lastChapterRule),
-          itemAnalyzer.getStringAsync(wordCountRule),
+          itemAnalyzer.getStringAsync(nameRule)
+              .catchError((_) => null),
+          itemAnalyzer.getStringAsync(authorRule)
+              .catchError((_) => null),
+          itemAnalyzer.getStringAsync(coverUrlRule, isUrl: true)
+              .catchError((_) => null),
+          itemAnalyzer.getStringAsync(introRule)
+              .catchError((_) => null),
+          itemAnalyzer.getStringAsync(bookUrlRule, isUrl: true)
+              .catchError((_) => null),
+          itemAnalyzer.getStringAsync(kindRule)
+              .catchError((_) => null),
+          itemAnalyzer.getStringAsync(lastChapterRule)
+              .catchError((_) => null),
+          itemAnalyzer.getStringAsync(wordCountRule)
+              .catchError((_) => null),
         ]);
         final name = fields[0];
         if (name == null || name.isEmpty) continue;
@@ -1358,14 +1375,20 @@ class WebBook {
           ..setSourceInfo(sourceMap)
           ..setBookInfo(bookMap);
 
-        // 并发提取所有字段
+        // 并发提取所有字段，每个字段独立 catchError
         final fields = await Future.wait([
-          itemAnalyzer.getStringAsync(tocRule.chapterName ?? ''),
-          itemAnalyzer.getStringAsync(tocRule.chapterUrl ?? ''),
-          itemAnalyzer.getStringAsync(tocRule.isVolume ?? ''),
-          itemAnalyzer.getStringAsync(tocRule.updateTime ?? ''),
-          itemAnalyzer.getStringAsync(tocRule.isVip ?? ''),
-          itemAnalyzer.getStringAsync(tocRule.isPay ?? ''),
+          itemAnalyzer.getStringAsync(tocRule.chapterName ?? '')
+              .catchError((_) => null),
+          itemAnalyzer.getStringAsync(tocRule.chapterUrl ?? '')
+              .catchError((_) => null),
+          itemAnalyzer.getStringAsync(tocRule.isVolume ?? '')
+              .catchError((_) => null),
+          itemAnalyzer.getStringAsync(tocRule.updateTime ?? '')
+              .catchError((_) => null),
+          itemAnalyzer.getStringAsync(tocRule.isVip ?? '')
+              .catchError((_) => null),
+          itemAnalyzer.getStringAsync(tocRule.isPay ?? '')
+              .catchError((_) => null),
         ]);
         final title = fields[0] ?? '';
         final url = fields[1] ?? '';

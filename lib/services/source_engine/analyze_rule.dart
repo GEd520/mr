@@ -422,13 +422,18 @@ class AnalyzeRule {
       // 记录步骤输出（info 级别，Release 模式可见）
       final resultType = result?.runtimeType;
       final resultLen = result?.toString().length ?? 0;
-      final resultPreview = result?.toString();
+      final resultPreview = _safePreview(result);
       AppLogger.instance.logJsStep('AnalyzeRule', '$stepDesc 完成',
         detail: 'resultType=$resultType, resultLen=$resultLen, preview=$resultPreview');
 
       // 应用正则替换
       if (result != null && rule.replaceRegex.isNotEmpty) {
         result = _applyReplaceRegex(result.toString(), rule);
+      }
+
+      // 每 5 步让出事件循环，避免长规则链阻塞 UI
+      if (i % 5 == 0) {
+        await Future(() {});
       }
     }
 
@@ -503,7 +508,7 @@ class AnalyzeRule {
       // 记录步骤输出（info 级别，Release 模式可见）
       final resultType = result?.runtimeType;
       final resultLen = result?.toString().length ?? 0;
-      final resultPreview = result?.toString();
+      final resultPreview = _safePreview(result);
       AppLogger.instance.logJsStep('AnalyzeRule', '$stepDesc 完成 (async)',
         detail: 'resultType=$resultType, resultLen=$resultLen, preview=$resultPreview');
 
@@ -2090,6 +2095,14 @@ class AnalyzeRule {
       }
     }
     return null;
+  }
+
+  /// 安全截断预览，避免大对象 toString() 撑爆内存
+  String _safePreview(dynamic value) {
+    if (value == null) return 'null';
+    final str = value.toString();
+    if (str.length <= 1024) return str;
+    return '${str.substring(0, 1024)}...(truncated, total=${str.length})';
   }
 
   String? _toString(dynamic value) {

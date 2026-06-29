@@ -120,6 +120,7 @@ class JsAdvancedService {
 
       final completer = Completer<String?>();
 
+      // 借鉴 legado 的 WebViewPool：复用配置创建 HeadlessWebView
       final headlessWebView = HeadlessInAppWebView(
         initialSettings: InAppWebViewSettings(
           javaScriptEnabled: true,
@@ -192,33 +193,35 @@ class JsAdvancedService {
             : null,
       );
 
-      // 运行 HeadlessWebView
-      await headlessWebView.run();
+      try {
+        // 运行 HeadlessWebView
+        await headlessWebView.run();
 
-      // 加载页面
-      if (html != null && html.isNotEmpty) {
-        await headlessWebView.webViewController?.loadData(
-          data: html,
-          mimeType: 'text/html',
-          encoding: 'utf-8',
-          baseUrl: WebUri(url),
+        // 加载页面
+        if (html != null && html.isNotEmpty) {
+          await headlessWebView.webViewController?.loadData(
+            data: html,
+            mimeType: 'text/html',
+            encoding: 'utf-8',
+            baseUrl: WebUri(url),
+          );
+        } else {
+          await headlessWebView.webViewController?.loadUrl(
+            urlRequest: URLRequest(url: WebUri(url)),
+          );
+        }
+
+        // 借鉴 legado 的超时机制：30 秒超时
+        final result = await completer.future.timeout(
+          const Duration(seconds: 30),
+          onTimeout: () => null,
         );
-      } else {
-        await headlessWebView.webViewController?.loadUrl(
-          urlRequest: URLRequest(url: WebUri(url)),
-        );
+
+        return result;
+      } finally {
+        // 确保任何路径都释放 WebView，防止内存泄漏
+        await headlessWebView.dispose();
       }
-
-      // 借鉴 legado 的超时机制：30 秒超时
-      final result = await completer.future.timeout(
-        const Duration(seconds: 30),
-        onTimeout: () => null,
-      );
-
-      // 清理 WebView
-      await headlessWebView.dispose();
-
-      return result;
     } catch (e) {
       AppLogger.instance.logJsError('executeWebJs', 'WebView JS执行失败: $e');
       return null;
