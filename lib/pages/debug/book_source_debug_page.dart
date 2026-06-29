@@ -50,6 +50,12 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
   LogLevel _logFilterLevel = LogLevel.verbose;
   LogCategory? _logFilterCategory;
 
+  // setState 节流：调试期间日志高频产生，逐条 setState 会导致 UI 卡死
+  // 用 Timer 批量合并刷新，避免 O(n²) 重建
+  final List<String> _pendingDebugLogs = [];
+  Timer? _flushTimer;
+  bool _appLogsDirty = false; // AppLogger 流已修改 _appLogs，需要刷新 UI
+
   // 发现分类缓存
   List<_ExploreKindItem> _exploreKinds = [];
 
@@ -76,15 +82,17 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
     SourceDebugService.instance.callback = this;
 
     // 订阅 AppLogger 日志流
+    // 注意：不在此处直接 setState，而是标记后由 _scheduleFlush 节流合并刷新，
+    // 否则调试期间每条 AppLogger 日志（JS 执行/网络/解析，数百条/秒）都会触发全量重建。
     _logSubscription = AppLogger.instance.stream.listen((entry) {
       if (!mounted) return;
-      setState(() {
-        _appLogs.add(entry);
-        // 限制日志数量，防止内存无限增长
-        if (_appLogs.length > 500) {
-          _appLogs.removeRange(0, _appLogs.length - 500);
-        }
-      });
+      _appLogs.add(entry);
+      // 限制日志数量，防止内存无限增长
+      if (_appLogs.length > 500) {
+        _appLogs.removeRange(0, _appLogs.length - 500);
+      }
+      _appLogsDirty = true;
+      _scheduleFlush();
     });
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -100,6 +108,10 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
     SourceDebugService.instance.callback = null;
     SourceDebugService.instance.cancelDebug(destroy: true);
 
+    // 取消节流定时器，避免页面销毁后触发 setState
+    _flushTimer?.cancel();
+    _flushTimer = null;
+
     _logSubscription?.cancel();
     _searchController.dispose();
     _searchFocusNode.dispose();
@@ -112,8 +124,29 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
   @override
   void printLog(int state, String msg) {
     if (!mounted) return;
+    // 不逐条 setState，缓冲后由 _scheduleFlush 节流合并刷新
+    _pendingDebugLogs.add(msg);
+    _scheduleFlush();
+  }
+
+  /// 节流批量刷新：用 Timer 合并 100ms 内的所有日志更新为一次 setState，
+  /// 避免高频日志逐条触发重建导致 UI 卡死。
+  void _scheduleFlush() {
+    if (_flushTimer != null) return;
+    _flushTimer = Timer(const Duration(milliseconds: 100), _flushPending);
+  }
+
+  void _flushPending() {
+    _flushTimer = null;
+    if (!mounted) return;
+    // 无待处理内容时跳过（Timer 可能被多条日志共享触发）
+    if (_pendingDebugLogs.isEmpty && !_appLogsDirty) return;
     setState(() {
-      _debugLogs.add(msg);
+      if (_pendingDebugLogs.isNotEmpty) {
+        _debugLogs.addAll(_pendingDebugLogs);
+        _pendingDebugLogs.clear();
+      }
+      _appLogsDirty = false;
     });
   }
 
@@ -538,11 +571,12 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
           Scrollbar(
             controller: _scrollController,
             thumbVisibility: true,
-            child: ListView(
-              controller: _scrollController,
-              padding: const EdgeInsets.fromLTRB(12, 12, 12, 28),
-              children: _debugLogs.isEmpty
-                  ? [
+            // 使用 ListView.builder 懒加载，避免日志条目多时全量构建导致卡顿
+            child: _debugLogs.isEmpty
+                ? ListView(
+                    controller: _scrollController,
+                    padding: const EdgeInsets.fromLTRB(12, 12, 12, 28),
+                    children: [
                       const SizedBox(height: 120),
                       Text(
                         '等待调试结果...',
@@ -551,9 +585,15 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
                           color: hintColor,
                         ),
                       ),
-                    ]
-                  : _debugLogs.map(_buildLogLine).toList(),
-            ),
+                    ],
+                  )
+                : ListView.builder(
+                    controller: _scrollController,
+                    padding: const EdgeInsets.fromLTRB(12, 12, 12, 28),
+                    itemCount: _debugLogs.length,
+                    itemBuilder: (context, index) =>
+                        _buildLogLine(_debugLogs[index]),
+                  ),
           )
         else
           SingleChildScrollView(
