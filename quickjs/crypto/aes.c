@@ -352,23 +352,21 @@ size_t aes_ecb_decrypt(const aes_ctx_t *ctx,
 size_t aes_ecb_encrypt(const aes_ctx_t *ctx,
                        const uint8_t *plaintext, size_t plaintext_len,
                        uint8_t *ciphertext) {
-    // PKCS7 padding
+    // PKCS7 padding（直接写入 ciphertext 输出缓冲区，避免额外 malloc）
     size_t pad_len = 16 - (plaintext_len % 16);
     if (pad_len == 0) pad_len = 16;
 
     size_t padded_len = plaintext_len + pad_len;
 
-    uint8_t *padded = (uint8_t *)malloc(padded_len);
-    if (!padded) return (size_t)-1;
-    memcpy(padded, plaintext, plaintext_len);
+    // 输出缓冲区由调用者保证 >= padded_len，直接写入
+    memcpy(ciphertext, plaintext, plaintext_len);
     for (size_t i = plaintext_len; i < padded_len; i++) {
-        padded[i] = (uint8_t)pad_len;
+        ciphertext[i] = (uint8_t)pad_len;
     }
 
     for (size_t off = 0; off < padded_len; off += 16) {
-        aes_encrypt_block(ctx, padded + off, ciphertext + off);
+        aes_encrypt_block(ctx, ciphertext + off, ciphertext + off);
     }
 
-    free(padded);
     return padded_len;
 }

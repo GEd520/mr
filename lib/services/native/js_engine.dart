@@ -2973,7 +2973,7 @@ class JsEngine {
           aesDecode: function(data, key, iv) {
             try {
               var mode = iv ? 'CBC' : 'ECB';
-              // 优先走 CryptoJS 路径（C 原生优先）
+              // 回退到 CryptoJS 路径（优先走 C 原生）
               if (typeof CryptoJS !== 'undefined' && CryptoJS.AES) {
                 var cfg = iv ? { iv: CryptoJS.enc.Utf8.parse(iv), mode: CryptoJS.mode.CBC } : { mode: CryptoJS.mode.ECB };
                 return CryptoJS.AES.decrypt(data, CryptoJS.enc.Utf8.parse(key), cfg).toString(CryptoJS.enc.Utf8);
