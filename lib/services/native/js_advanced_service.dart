@@ -469,7 +469,6 @@ class JsAdvancedService {
       'loginUi': source.loginUi ?? '',
       'loginCheckJs': source.loginCheckJs ?? '',
       'coverDecodeJs': source.coverDecodeJs ?? '',
-      'jsLib': source.jsLib ?? '',
       'variable': source.variable ?? '',
     };
   }

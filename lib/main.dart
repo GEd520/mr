@@ -28,6 +28,9 @@ void main() async {
     // 初始化崩溃日志服务（必须最先，注册全局错误捕获）
     await CrashLogService.instance.init();
 
+    // 初始化应用日志文件系统（启动即记录所有操作日志）
+    AppLogger.instance.initFileLogging();
+
     try {
       await Hive.initFlutter();
       await StorageService.instance.init();

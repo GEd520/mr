@@ -739,11 +739,13 @@ class WebBook {
       }
 
       // 使用 AnalyzeRule 引擎解析
+      // 预计算 sourceMap，避免在搜索结果循环内重复创建
+      final searchSourceMap = _sourceToMap(source);
       final analyzer = AnalyzeRule()
         ..setContent(html, baseUrl: parsed.url)
         ..setRedirectUrl(response.url)
         ..setSourceEngine(source.engineType)
-        ..setSourceInfo(_sourceToMap(source)) // 借鉴 legado：注入 source 上下文
+        ..setSourceInfo(searchSourceMap) // 借鉴 legado：注入 source 上下文
         ..putVariable('key', keyword) // 注入搜索关键词
         ..putVariable('page', page); // 注入页码
 
@@ -800,7 +802,7 @@ class WebBook {
           ..setContent(element, baseUrl: parsed.url)
           ..setRedirectUrl(response.url)
           ..setSourceEngine(source.engineType)
-          ..setSourceInfo(_sourceToMap(source))
+          ..setSourceInfo(searchSourceMap)
           ..putVariable('key', keyword)
           ..putVariable('page', page);
 
@@ -933,11 +935,13 @@ class WebBook {
       }
 
       // 使用 AnalyzeRule 引擎解析
+      // 预计算 sourceMap，避免在发现结果循环内重复创建
+      final exploreSourceMap = _sourceToMap(source);
       final analyzer = AnalyzeRule()
         ..setContent(html, baseUrl: response.url)
         ..setRedirectUrl(response.url)
         ..setSourceEngine(source.engineType)
-        ..setSourceInfo(_sourceToMap(source))
+        ..setSourceInfo(exploreSourceMap)
         ..putVariable('baseUrl', exploreUrl)
         ..putVariable('url', exploreUrl)
         ..putVariable('page', 1);
@@ -958,7 +962,7 @@ class WebBook {
           ..setContent(element, baseUrl: exploreUrl)
           ..setRedirectUrl(response.url)
           ..setSourceEngine(source.engineType)
-          ..setSourceInfo(_sourceToMap(source));
+          ..setSourceInfo(exploreSourceMap);
 
         // 并发提取所有字段
         final nameRule = useSearchFallback ? (searchRule?.name ?? '') : exploreRule.name;
@@ -1295,12 +1299,16 @@ class WebBook {
     bool getNextUrl = true,
   }) async {
     // legado: analyzeRule.setContent(body).setBaseUrl(baseUrl).setRedirectUrl(redirectUrl)
+    // 预计算 sourceMap 和 bookMap，避免在 1000+ 章节的循环内重复创建 Map
+    final sourceMap = _sourceToMap(source);
+    final bookMap = book != null ? _bookToMap(book) : null;
+
     final analyzeRule = AnalyzeRule()
       ..setContent(body, baseUrl: baseUrl)
       ..setRedirectUrl(redirectUrl)
       ..setSourceEngine(source.engineType)
-      ..setSourceInfo(_sourceToMap(source))
-      ..setBookInfo(book != null ? _bookToMap(book) : null);
+      ..setSourceInfo(sourceMap)
+      ..setBookInfo(bookMap);
 
     // legado: val chapterList = arrayListOf<BookChapter>()
     final chapterList = <Chapter>[];
@@ -1331,12 +1339,13 @@ class WebBook {
       for (int index = 0; index < elements.length; index++) {
         final item = elements[index];
         // legado: analyzeRule.setContent(item)
+        // 复用预计算的 sourceMap/bookMap，避免每次循环创建新 Map
         final itemAnalyzer = AnalyzeRule()
           ..setContent(item, baseUrl: baseUrl)
           ..setRedirectUrl(redirectUrl)
           ..setSourceEngine(source.engineType)
-          ..setSourceInfo(_sourceToMap(source))
-          ..setBookInfo(book != null ? _bookToMap(book) : null);
+          ..setSourceInfo(sourceMap)
+          ..setBookInfo(bookMap);
 
         // 并发提取所有字段
         final fields = await Future.wait([
@@ -1794,6 +1803,9 @@ class WebBook {
 
   /// 将 BookSource 转为 Map（用于注入 JS 上下文）
   Map<String, dynamic> _sourceToMap(BookSource source) {
+    // 注意：不包含 jsLib 字段。jsLib 已通过 _loadJsLib() 加载到 QuickJS 全局作用域，
+    // 每次执行 JS 时不需要在 env 中重复序列化 jsLib（可达数十 KB），避免 1000+ 章节
+    // 解析时 6000 次 jsonEncode(source) 导致内存峰值过高 OOM 闪退。
     return {
       'bookSourceUrl': source.bookSourceUrl,
       'bookSourceName': source.bookSourceName,
@@ -1804,7 +1816,6 @@ class WebBook {
       'loginCheckJs': source.loginCheckJs ?? '',
       'enabledCookieJar': source.enabledCookieJar,
       'concurrentRate': source.concurrentRate ?? '',
-      'jsLib': source.jsLib ?? '',
       'variable': source.variable ?? '',
     };
   }

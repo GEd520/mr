@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_html/flutter_html.dart';
@@ -12,9 +13,11 @@ import '../../models/chapter.dart';
 import '../../models/highlight.dart';
 import '../../providers/reader_provider.dart';
 import '../../providers/bookshelf_provider.dart';
+import '../../services/app_logger.dart';
 import '../../services/book_data_provider.dart';
 import '../../services/chapter_cache_service.dart';
 import '../../services/chapter_prefetch_service.dart';
+import '../../services/crash_log_service.dart';
 import '../../services/local_book/local_book_service.dart';
 import '../../services/reader_bookmark_service.dart';
 import '../../services/storage_service.dart';
@@ -499,6 +502,18 @@ class _NovelReaderPageState extends State<NovelReaderPage>
             ),
           );
         }
+      }
+
+      // 内存熔断：单章内容超过 5MB 时截断，防止 OOM 崩溃
+      if (content != null && content.length > 5 * 1024 * 1024) {
+        if (kDebugMode) debugPrint('⚠️ 章节内容过大 (${content.length} chars)，熔断截断');
+        AppLogger.instance.warn(LogCategory.system, '章节内容过大熔断',
+            detail: 'chapter=${chapter.title}, size=${content!.length}');
+        CrashLogService.instance.logJsEngineError(
+          'Reader.oom',
+          '章节内容过大: chapter=${chapter.title}, size=${content!.length}',
+        );
+        content = '${content!.substring(0, 5 * 1024 * 1024)}\n\n...(内容过长已截断)';
       }
 
       if (mounted &&

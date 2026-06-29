@@ -1,5 +1,9 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:path_provider/path_provider.dart';
+import 'crash_log_service.dart';
 
 /// 日志级别
 enum LogLevel {
@@ -32,6 +36,8 @@ class LogEntry {
   final LogCategory category;
   final String message;
   final String? detail;
+  /// 会话ID
+  final String sessionId;
 
   const LogEntry({
     required this.time,
@@ -39,6 +45,7 @@ class LogEntry {
     required this.category,
     required this.message,
     this.detail,
+    this.sessionId = '',
   });
 
   String get levelIcon {
@@ -69,7 +76,7 @@ class LogEntry {
   /// 导出文件用完整格式
   String toFullString() {
     final t = '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}:${time.second.toString().padLeft(2, '0')}';
-    final base = '[$t][$levelName][${category.label}] $message';
+    final base = '[$t][$levelName][${category.label}][$sessionId] $message';
     if (detail != null && detail!.isNotEmpty) {
       return '$base\n  $detail';
     }
@@ -78,16 +85,19 @@ class LogEntry {
 }
 
 /// 应用日志工具
-/// 支持分类、级别过滤、缓冲区、流式监听
+/// 支持分类、级别过滤、缓冲区、流式监听、文件持久化、日志轮转
 class AppLogger {
   AppLogger._();
   static final AppLogger instance = AppLogger._();
 
-  /// 日志缓冲区上限（防止 OOM：调试时高频日志会无限累积导致内存溢出卡死）
+  /// 日志缓冲区上限
   static const int maxBufferSize = 2000;
 
-  /// 日志 detail 字段最大长度（截断大字符串，避免单条日志占数 MB）
+  /// 日志 detail 字段最大长度
   static const int maxDetailLength = 2000;
+
+  /// 文件日志最大行数
+  static const int _maxFileLines = 5000;
 
   /// 日志缓冲区
   final List<LogEntry> _buffer = [];
@@ -95,22 +105,80 @@ class AppLogger {
   /// 日志流控制器
   final _controller = StreamController<LogEntry>.broadcast();
 
-  /// 日志流（供 UI 监听）
+  /// 日志流
   Stream<LogEntry> get stream => _controller.stream;
 
   /// 当前最低显示级别
-  /// 注意：JS 执行链路日志（执行次数、代码、输入、输出、执行树）统一使用 info 级别，
-  /// 确保 Release 模式下调试页面也能看到完整链路，避免被 minLevel 过滤掉。
   LogLevel minLevel = kDebugMode ? LogLevel.verbose : LogLevel.info;
 
-  // ===== JS 执行统计（仅保留累计执行序号，用于链路标识）=====
+  // ===== JS 执行统计 =====
   int _quickjsExecutionCount = 0;
 
-  /// QuickJS 累计执行次数（仅作序号用，不区分成功/失败）
   int get quickjsExecutionCount => _quickjsExecutionCount;
 
-  /// 增加 QuickJS 执行计数
   void incrementQuickjsCount() => _quickjsExecutionCount++;
+
+  /// 是否已初始化文件写入
+  bool _fileInitialized = false;
+
+  /// 日志文件目录
+  String? _logDirPath;
+
+  /// 当前日志文件
+  File? _logFile;
+
+  /// 会话启动标记是否已写入
+  bool _sessionMarkerWritten = false;
+
+  /// 初始化文件日志系统
+  Future<void> initFileLogging() async {
+    if (_fileInitialized) return;
+    _fileInitialized = true;
+
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      _logDirPath = '${dir.path}/mr_logs';
+      final logDir = Directory(_logDirPath!);
+      if (!logDir.existsSync()) {
+        logDir.createSync(recursive: true);
+      }
+
+      final now = DateTime.now();
+      final dateStr = '${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}';
+      _logFile = File('$_logDirPath/app_$dateStr.log');
+
+      // 写入会话启动标记
+      if (!_sessionMarkerWritten && _logFile != null) {
+        _sessionMarkerWritten = true;
+        final sessionId = CrashLogService.instance.sessionId;
+        await _logFile!.writeAsString(
+          '\n========== 会话启动 [${now.toIso8601String()}] session=$sessionId ==========\n',
+          mode: FileMode.append,
+        );
+      }
+
+      if (kDebugMode) {
+        debugPrint('✅ AppLogger 文件日志初始化完成: ${_logFile?.path}');
+      }
+    } catch (e) {
+      if (kDebugMode) debugPrint('AppLogger 文件日志初始化失败: $e');
+    }
+  }
+
+  /// 写入一行到日志文件
+  Future<void> _writeToFile(String line) async {
+    if (_logFile == null) return;
+    try {
+      await _logFile!.writeAsString('$line\n', mode: FileMode.append);
+      // 日志轮转：超过最大行数时截断前一半
+      if (_logFile != null && await _logFile!.exists()) {
+        final lines = await _logFile!.readAsLines();
+        if (lines.length > _maxFileLines) {
+          await _logFile!.writeAsString(lines.skip(_maxFileLines ~/ 2).join('\n'));
+        }
+      }
+    } catch (_) {}
+  }
 
   /// 获取所有日志
   List<LogEntry> get logs => List.unmodifiable(_buffer);
@@ -132,7 +200,7 @@ class AppLogger {
   void _log(LogLevel level, LogCategory category, String message, {String? detail}) {
     if (level.index < minLevel.index) return;
 
-    // 截断大 detail，避免单条日志（完整 HTML/JS 内容）占用过多内存
+    // 截断大 detail
     String? truncatedDetail = detail;
     if (detail != null && detail.length > maxDetailLength) {
       truncatedDetail = '${detail.substring(0, maxDetailLength)}\n... (已截断, 原长 ${detail.length})';
@@ -144,17 +212,23 @@ class AppLogger {
       category: category,
       message: message,
       detail: truncatedDetail,
+      sessionId: CrashLogService.instance.sessionId,
     );
 
     _buffer.add(entry);
-    // 超过上限时移除最旧日志，防止 OOM
+    // 超过上限时移除最旧日志
     if (_buffer.length > maxBufferSize) {
       _buffer.removeRange(0, _buffer.length - maxBufferSize);
     }
 
     _controller.add(entry);
 
-    // 同时输出到控制台
+    // 文件持久化：异步写入，不阻塞
+    if (_fileInitialized) {
+      unawaited(_writeToFile(entry.toFullString()));
+    }
+
+    // 控制台输出
     if (kDebugMode) {
       debugPrint(entry.toShortString());
       if (detail != null) {
@@ -182,77 +256,63 @@ class AppLogger {
 
   // ===== 网络请求专用 =====
 
-  /// 记录网络请求开始
   void logRequest(String method, String url, {Map<String, String>? headers}) {
     info(LogCategory.network, '$method $url', detail: headers?.isNotEmpty == true
         ? 'Headers: ${headers!.entries.take(5).map((e) => '${e.key}: ${e.value}').join(', ')}'
         : null);
   }
 
-  /// 记录网络请求成功
   void logResponse(String url, int statusCode, int bodyLength) {
     info(LogCategory.network, '← $statusCode $url (${_formatSize(bodyLength)})');
   }
 
-  /// 记录网络请求失败
   void logRequestError(String url, String errorMsg) {
     _log(LogLevel.error, LogCategory.network, '✗ $url', detail: errorMsg);
   }
 
   // ===== JS 引擎专用 =====
 
-  /// 记录 JS 执行（info 级别，确保 Release 模式可见）
-  /// 注意：此方法不再自动增加计数，由调用方（processJsRule/executeSync）显式调用 incrementQuickjsCount()
   void logJsExecute(String engine, String code, {int? codeLength}) {
     info(LogCategory.js, '[$engine] 执行JS #$_quickjsExecutionCount (${codeLength ?? code.length} chars)',
       detail: code);
   }
 
-  /// 记录 JS 执行结果（info 级别，确保 Release 模式可见）
   void logJsResult(String engine, String? result) {
     info(LogCategory.js, '[$engine] 结果: ${result != null ? "${result.length} chars" : "null"}',
       detail: result);
   }
 
-  /// 记录 JS 执行失败
   void logJsError(String engine, String errorMsg) {
     _log(LogLevel.error, LogCategory.js, '[$engine] 执行失败', detail: errorMsg);
   }
 
-  /// 记录 JS 执行输入内容（info 级别，打印完整输入）
   void logJsInput(String engine, String? input, {String? tag}) {
     final label = tag != null ? '[$engine] 输入[$tag]' : '[$engine] 输入';
     info(LogCategory.js, '$label (${input?.length ?? 0} chars)', detail: input);
   }
 
-  /// 记录 JS 执行输出内容（info 级别，打印完整输出）
   void logJsOutput(String engine, String? output, {String? outputType, String? tag}) {
     final typeInfo = outputType != null ? '($outputType)' : '';
     final label = tag != null ? '[$engine] 输出[$tag]$typeInfo' : '[$engine] 输出$typeInfo';
     info(LogCategory.js, '$label (${output?.length ?? 0} chars)', detail: output);
   }
 
-  /// 记录 JS 执行树（info 级别，确保 Release 模式可见）
-  /// 将 JsTracer 生成的完整执行树输出到日志流
   void logJsTree(String engine, String treeString) {
     if (treeString.isEmpty || treeString == '(no trace)') return;
     info(LogCategory.js, '[$engine] JS执行树', detail: treeString);
   }
 
-  /// 记录 JS 执行链路步骤（info 级别）
   void logJsStep(String engine, String step, {String? detail}) {
     info(LogCategory.js, '[$engine] $step', detail: detail);
   }
 
   // ===== 规则解析专用 =====
 
-  /// 记录规则解析
   void logParse(String ruleType, String rule, {String? content}) {
     debug(LogCategory.parse, '解析$ruleType: $rule',
       detail: content != null ? '内容长度: ${content.length}' : null);
   }
 
-  /// 记录解析结果
   void logParseResult(String ruleType, int count) {
     info(LogCategory.parse, '$ruleType 解析完成: $count 条结果');
   }
@@ -263,7 +323,7 @@ class AppLogger {
     return '${(chars / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 
-  /// 导出日志为文本
+  /// 导出日志为文本（支持分类/级别过滤）
   String exportLogs({LogCategory? category, LogLevel? minLevel}) {
     final filtered = getLogs(category: category, minLevel: minLevel);
     if (filtered.isEmpty) return '暂无日志';
@@ -272,6 +332,7 @@ class AppLogger {
     sb.writeln('=== 日志导出 ===');
     sb.writeln('导出时间: ${DateTime.now().toString().substring(0, 19)}');
     sb.writeln('日志条数: ${filtered.length}');
+    sb.writeln('会话ID: ${CrashLogService.instance.sessionId}');
     sb.writeln('');
 
     for (final entry in filtered) {
@@ -279,5 +340,39 @@ class AppLogger {
     }
 
     return sb.toString();
+  }
+
+  /// 导出日志到文件
+  Future<String?> exportLogsToFile({LogCategory? category, LogLevel? minLevel}) async {
+    try {
+      final text = exportLogs(category: category, minLevel: minLevel);
+      if (text == '暂无日志') return null;
+
+      final dir = await getTemporaryDirectory();
+      final now = DateTime.now();
+      final fileName = 'mr_export_${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}.txt';
+      final file = File('${dir.path}/$fileName');
+      await file.writeAsString(text);
+      return file.path;
+    } catch (e) {
+      debugPrint('导出日志到文件失败: $e');
+      return null;
+    }
+  }
+
+  /// 获取今日日志文件列表
+  Future<List<File>> getTodayLogFiles() async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final logDir = Directory('${dir.path}/mr_logs');
+      if (!logDir.existsSync()) return [];
+      final now = DateTime.now();
+      final dateStr = '${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}';
+      return logDir.listSync().where((e) =>
+        e is File && e.path.contains(dateStr)
+      ).cast<File>().toList();
+    } catch (_) {
+      return [];
+    }
   }
 }

@@ -287,6 +287,27 @@ class JsEngine {
   /// 跨引擎共享缓存
   final Map<String, String> _bridgeCache = {};
 
+  /// 缓存 jsonEncode(source Map) 结果
+  /// 同一书源的 source Map 在整个调试过程中不变，
+  /// 但每次 _executeQuickJSRule 都会重新 jsonEncode（CPU 密集型）。
+  /// 1000 章解析时 6000 次 jsonEncode → 缓存后仅 1 次。
+  String? _cachedSourceJson;
+  String? _cachedSourceKey;
+
+  /// 获取缓存的 source JSON 字符串（同一书源复用）
+  String getCachedSourceJson(Map<String, dynamic>? sourceMap) {
+    if (sourceMap == null || sourceMap.isEmpty) return '{}';
+    // 用 bookSourceUrl 作为缓存键（同一书源 source Map 不变）
+    final key = sourceMap['bookSourceUrl'] as String? ?? '';
+    if (key == _cachedSourceKey && _cachedSourceJson != null) {
+      return _cachedSourceJson!;
+    }
+    final encoded = jsonEncode(sourceMap);
+    _cachedSourceJson = encoded;
+    _cachedSourceKey = key;
+    return encoded;
+  }
+
   /// 获取桥接缓存
   String bridgeGet(String key) => _bridgeCache[key] ?? '';
 
@@ -3687,6 +3708,8 @@ class JsEngine {
     } catch (e) {
       AppLogger.instance.logJsError('QuickJS', e.toString());
       _lastEvalError = e.toString();
+      // 引擎级错误（OOM/段错误兜底）记录到崩溃日志
+      unawaited(CrashLogService.instance.logJsEngineError('QuickJS.eval', e.toString()));
       return null;
     }
   }
