@@ -69,9 +69,6 @@ class CrashLogService {
   CrashLogService._();
   static final CrashLogService instance = CrashLogService._();
 
-  /// 最大保留崩溃日志条数
-  static const int _maxEntries = 50;
-
   /// 崩溃日志文件名
   static const String _crashFileName = 'crash_logs.json';
 
@@ -192,11 +189,6 @@ class CrashLogService {
       _entries.add(entry);
       _hasNewCrash = true;
 
-      // 限制条数
-      if (_entries.length > _maxEntries) {
-        _entries.removeRange(0, _entries.length - _maxEntries);
-      }
-
       // 更新错误计数（按类型分类）
       _errorCounters[type] = (_errorCounters[type] ?? 0) + 1;
       _errorCounters['total'] = (_errorCounters['total'] ?? 0) + 1;
@@ -241,11 +233,6 @@ class CrashLogService {
         '[${DateTime.now().toIso8601String()}][session=$_sessionId] $context: $error\n',
         mode: FileMode.append,
       );
-      // 限制文件大小（1MB）
-      if (await jsLogFile.length() > 1024 * 1024) {
-        final lines = await jsLogFile.readAsLines();
-        await jsLogFile.writeAsString(lines.skip(500).join('\n'));
-      }
     } catch (_) {}
   }
 
@@ -297,10 +284,6 @@ class CrashLogService {
             }
           }
         }
-      }
-      // 限制加载总条数
-      if (_entries.length > _maxEntries) {
-        _entries.removeRange(0, _entries.length - _maxEntries);
       }
       if (_entries.isNotEmpty) {
         _hasNewCrash = true;

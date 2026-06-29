@@ -90,16 +90,7 @@ class AppLogger {
   AppLogger._();
   static final AppLogger instance = AppLogger._();
 
-  /// 日志缓冲区上限
-  static const int maxBufferSize = 2000;
-
-  /// 日志 detail 字段最大长度
-  static const int maxDetailLength = 2000;
-
-  /// 文件日志最大行数
-  static const int _maxFileLines = 5000;
-
-  /// 日志缓冲区
+  /// 日志缓冲区（无上限，全量流式投递）
   final List<LogEntry> _buffer = [];
 
   /// 日志流控制器
@@ -170,13 +161,6 @@ class AppLogger {
     if (_logFile == null) return;
     try {
       await _logFile!.writeAsString('$line\n', mode: FileMode.append);
-      // 日志轮转：超过最大行数时截断前一半
-      if (_logFile != null && await _logFile!.exists()) {
-        final lines = await _logFile!.readAsLines();
-        if (lines.length > _maxFileLines) {
-          await _logFile!.writeAsString(lines.skip(_maxFileLines ~/ 2).join('\n'));
-        }
-      }
     } catch (_) {}
   }
 
@@ -200,26 +184,16 @@ class AppLogger {
   void _log(LogLevel level, LogCategory category, String message, {String? detail}) {
     if (level.index < minLevel.index) return;
 
-    // 截断大 detail
-    String? truncatedDetail = detail;
-    if (detail != null && detail.length > maxDetailLength) {
-      truncatedDetail = '${detail.substring(0, maxDetailLength)}\n... (已截断, 原长 ${detail.length})';
-    }
-
     final entry = LogEntry(
       time: DateTime.now(),
       level: level,
       category: category,
       message: message,
-      detail: truncatedDetail,
+      detail: detail,
       sessionId: CrashLogService.instance.sessionId,
     );
 
     _buffer.add(entry);
-    // 超过上限时移除最旧日志
-    if (_buffer.length > maxBufferSize) {
-      _buffer.removeRange(0, _buffer.length - maxBufferSize);
-    }
 
     _controller.add(entry);
 
@@ -232,7 +206,7 @@ class AppLogger {
     if (kDebugMode) {
       debugPrint(entry.toShortString());
       if (detail != null) {
-        debugPrint('  ${truncatedDetail!.length > 200 ? truncatedDetail.substring(0, 200) : truncatedDetail}');
+        debugPrint('  ${detail.length > 200 ? detail.substring(0, 200) : detail}');
       }
     }
   }

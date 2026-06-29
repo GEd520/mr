@@ -88,10 +88,6 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
     _logSubscription = AppLogger.instance.stream.listen((entry) {
       if (!mounted) return;
       _appLogs.add(entry);
-      // 限制日志数量，防止内存无限增长
-      if (_appLogs.length > 500) {
-        _appLogs.removeRange(0, _appLogs.length - 500);
-      }
       _appLogsDirty = true;
       _scheduleFlush();
     });
@@ -146,10 +142,6 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
       if (_pendingDebugLogs.isNotEmpty) {
         _debugLogs.addAll(_pendingDebugLogs);
         _pendingDebugLogs.clear();
-        // 限制调试日志条数，防止 OOM（一次完整调试可达数千条）
-        if (_debugLogs.length > 2000) {
-          _debugLogs.removeRange(0, _debugLogs.length - 2000);
-        }
       }
       _appLogsDirty = false;
     });
