@@ -170,50 +170,6 @@ class HttpClient {
         );
       }
 
-      // 原生端：避免同步 FFI HTTP 阻塞 UI，统一走 Dio 异步链路
-      if (false) {
-        try {
-          final timeoutMs =
-              (connectTimeout ?? const Duration(seconds: 15)).inMilliseconds;
-          String? okResult;
-
-          debugPrint('🔵 [Native HTTP] $method $url');
-          AppLogger.instance.logRequest(method, url, headers: headers);
-          // yield 让 UI 先刷新
-          await Future(() {});
-          if (url.startsWith('http://')) {
-            if (method.toUpperCase() == 'POST') {
-              final r = nativeHttpPost(url, body ?? '',
-                  headers: headers != null ? headers.entries.map((e) => '${e.key}: ${e.value}').join('\r\n') : null,
-                  timeoutMs: timeoutMs);
-              okResult = r?['body'] as String?;
-            } else {
-              final r = nativeHttpGet(url,
-                  headers: headers != null ? headers.entries.map((e) => '${e.key}: ${e.value}').join('\r\n') : null,
-                  timeoutMs: timeoutMs);
-              okResult = r?['body'] as String?;
-            }
-          }
-
-          debugPrint(
-              '🔵 [Native HTTP] 响应: ${okResult != null ? "${okResult.length} chars" : "null"}');
-          AppLogger.instance.logResponse(url, 200, okResult?.length ?? 0);
-          if (okResult != null && okResult.isNotEmpty) {
-            return StrResponse(
-              url: url,
-              body: okResult,
-              statusCode: 200,
-              headers: headers ?? {},
-            );
-          }
-
-          // C native 返回 null 或空字符串，降级到 Dio
-          debugPrint('⚠️ Native HTTP 返回空，降级到 Dio: $url');
-        } catch (e) {
-          debugPrint('⚠️ Native HTTP 异常，降级到 Dio: $e');
-        }
-      }
-
       // 降级方案：使用 Dio
       // 当 charset 为非 UTF-8 时，用 ResponseType.bytes 获取原始字节后手动解码，
       // 确保 GBK/GB2312/GB18030 等编码正确转换
