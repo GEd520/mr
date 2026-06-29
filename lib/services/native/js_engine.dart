@@ -3562,6 +3562,8 @@ class JsEngine {
 
   /// 同步执行 JS 代码（用于 AnalyzeRule 规则解析）
   /// 默认走 QuickJS
+  /// 注意：此方法是同步的，不要直接调用 QuickJS FFI 的面板方法（getJsMemoryStats 等）
+  /// 调试面板已移除自动刷新 FFI 调用，避免并发崩溃
   dynamic executeSync(String jsCode, dynamic content, {String? baseUrl, JsEngineType? sourceEngine, Map<String, dynamic>? variables, String? ruleStep}) {
     // 先提取 JS 代码（去掉 <js></js> 标签或 @js: 前缀）
     final extracted = _extractJsCode(jsCode) ?? jsCode;
