@@ -1369,7 +1369,9 @@ class WebBook {
       final isVipJs = hasVip && (vipRule.startsWith('@js:') || vipRule.startsWith('<js>'));
       final isPayJs = hasPay && (payRule.startsWith('@js:') || payRule.startsWith('<js>'));
 
-      // 批量 evaluate JS 规则（每个字段 1 次 FFI 调用）
+      // [性能] 并发批次：所有字段的 batch evaluate 一次性发射
+      // 之前：await batchNames → await batchUrls → ... 串行 6 轮
+      // 现在：Future.wait 并发 6 个 batch，1 轮等待
       final batchAnalyzer = AnalyzeRule()
         ..setContent(body, baseUrl: baseUrl)
         ..setRedirectUrl(redirectUrl)
@@ -1377,12 +1379,25 @@ class WebBook {
         ..setSourceInfo(sourceMap)
         ..setBookInfo(bookMap);
 
-      final batchNames = isNameJs ? (await batchAnalyzer.batchApplyJsAsync(elements, nameRule.startsWith('@js:') ? nameRule.substring(4) : nameRule.substring(4, nameRule.length - 4))) : null;
-      final batchUrls = isUrlJs ? await batchAnalyzer.batchApplyJsAsync(elements, urlRule.startsWith('@js:') ? urlRule.substring(4) : urlRule.substring(4, urlRule.length - 4)) : null;
-      final batchVolumes = isVolumeJs ? await batchAnalyzer.batchApplyJsAsync(elements, volumeRule.startsWith('@js:') ? volumeRule.substring(4) : volumeRule.substring(4, volumeRule.length - 4)) : null;
-      final batchTimes = isTimeJs ? await batchAnalyzer.batchApplyJsAsync(elements, timeRule.startsWith('@js:') ? timeRule.substring(4) : timeRule.substring(4, timeRule.length - 4)) : null;
-      final batchVips = isVipJs ? await batchAnalyzer.batchApplyJsAsync(elements, vipRule.startsWith('@js:') ? vipRule.substring(4) : vipRule.substring(4, vipRule.length - 4)) : null;
-      final batchPays = isPayJs ? await batchAnalyzer.batchApplyJsAsync(elements, payRule.startsWith('@js:') ? payRule.substring(4) : payRule.substring(4, payRule.length - 4)) : null;
+      final batchFutures = <Future<List<String?>>?>[];
+      batchFutures.add(isNameJs ? batchAnalyzer.batchApplyJsAsync(elements, nameRule.startsWith('@js:') ? nameRule.substring(4) : nameRule.substring(4, nameRule.length - 4)) : null);
+      batchFutures.add(isUrlJs ? batchAnalyzer.batchApplyJsAsync(elements, urlRule.startsWith('@js:') ? urlRule.substring(4) : urlRule.substring(4, urlRule.length - 4)) : null);
+      batchFutures.add(isVolumeJs ? batchAnalyzer.batchApplyJsAsync(elements, volumeRule.startsWith('@js:') ? volumeRule.substring(4) : volumeRule.substring(4, volumeRule.length - 4)) : null);
+      batchFutures.add(isTimeJs ? batchAnalyzer.batchApplyJsAsync(elements, timeRule.startsWith('@js:') ? timeRule.substring(4) : timeRule.substring(4, timeRule.length - 4)) : null);
+      batchFutures.add(isVipJs ? batchAnalyzer.batchApplyJsAsync(elements, vipRule.startsWith('@js:') ? vipRule.substring(4) : vipRule.substring(4, vipRule.length - 4)) : null);
+      batchFutures.add(isPayJs ? batchAnalyzer.batchApplyJsAsync(elements, payRule.startsWith('@js:') ? payRule.substring(4) : payRule.substring(4, payRule.length - 4)) : null);
+
+      // 并发发射所有 JS batch（非 JS 字段为 null，不参与 await）
+      final batchResults = await Future.wait(
+        batchFutures.map((f) => f ?? Future.value(null)),
+      );
+
+      final batchNames = batchResults[0];
+      final batchUrls = batchResults[1];
+      final batchVolumes = batchResults[2];
+      final batchTimes = batchResults[3];
+      final batchVips = batchResults[4];
+      final batchPays = batchResults[5];
 
       final allResults = await Future.wait(
         List.generate(elements.length, (idx) async {

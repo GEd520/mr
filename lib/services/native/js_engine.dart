@@ -341,19 +341,9 @@ class JsEngine {
     // native lib 未就绪 → 跳过所有 FFI 调用，避免 SIGSEGV
     if (!_nativeLibChecked) return false;
 
-    if (_initialized && _jsRuntime != null) {
-      // 验证全局对象是否仍然存在（防止运行时被意外重置）
-      final check = evaluate('typeof java !== "undefined" && typeof CryptoJS !== "undefined" && typeof _javaCache !== "undefined" && typeof _AES !== "undefined"');
-      if (check == 'true') return true;
-      // 全局对象丢失，需要重新注入
-      _injectJavaBridge();
-      final recheck = evaluate('typeof java !== "undefined"');
-      if (recheck == 'true') return true;
-      // 重新注入也失败，重建运行时
-      _jsRuntime?.dispose();
-      _jsRuntime = null;
-      _initialized = false;
-    }
+    // [覆盖安装闪退修复] 快路径：_initialized 为真直接信任，零 FFI 调用
+    // 不做 evaluate() 健康检查，避免 SIGSEGV 裸奔（FFI 段错误 Dart catch 不住）
+    if (_initialized && _jsRuntime != null) return true;
 
     if (_initialized) return true;
     try {
@@ -390,6 +380,7 @@ class JsEngine {
   /// [覆盖安装闪退修复] Native lib 完整性安全验证
   /// 通过 MethodChannel 走到 Java 层检查 .so 文件 + loadLibrary，
   /// 不执行任何 FFI 调用，100% 避免 SIGSEGV。
+  /// 初始为 false，init() 成功设为 true，dispose() 重置
   bool _nativeLibChecked = false;
 
   bool get isAvailable => _initialized && _jsRuntime != null;
