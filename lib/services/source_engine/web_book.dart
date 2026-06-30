@@ -1197,7 +1197,7 @@ class WebBook {
     }
   }
 
-  /// 通用列表书籍提取方法：[全量并发] + [空规则跳过]
+  /// 通用列表书籍提取方法：[全量并发] + [空规则跳过] + [批量JS预计算]
   /// 搜索/发现/详情列表共用，减少重复代码
   Future<List<Map<String, dynamic>>> _extractBookItems({
     required List<dynamic> elements,
@@ -1225,6 +1225,50 @@ class WebBook {
     final hasLastChapter = lastChapterRule.isNotEmpty;
     final hasWordCount = wordCountRule.isNotEmpty;
 
+    // [批量JS优化] 预检查每个字段是否为 JS 规则（@js: 或 <js> 开头）
+    // JS 规则：一次 batchEvaluate 全部元素，1 次 FFI 替代 N 次 processJsRule
+    // 非 JS 规则（CSS/Jsoup/JSON 等）：走逐元素 getStringAsync
+    final isNameJs = hasName && (nameRule.startsWith('@js:') || nameRule.startsWith('<js>'));
+    final isAuthorJs = hasAuthor && (authorRule.startsWith('@js:') || authorRule.startsWith('<js>'));
+    final isCoverJs = hasCover && (coverUrlRule.startsWith('@js:') || coverUrlRule.startsWith('<js>'));
+    final isIntroJs = hasIntro && (introRule.startsWith('@js:') || introRule.startsWith('<js>'));
+    final isBookUrlJs = hasBookUrl && (bookUrlRule.startsWith('@js:') || bookUrlRule.startsWith('<js>'));
+    final isKindJs = hasKind && (kindRule.startsWith('@js:') || kindRule.startsWith('<js>'));
+    final isLastChapterJs = hasLastChapter && (lastChapterRule.startsWith('@js:') || lastChapterRule.startsWith('<js>'));
+    final isWordCountJs = hasWordCount && (wordCountRule.startsWith('@js:') || wordCountRule.startsWith('<js>'));
+
+    final batchAnalyzer = AnalyzeRule()
+      ..setContent(elements.isNotEmpty ? elements[0] : '', baseUrl: baseUrl)
+      ..setRedirectUrl(redirectUrl)
+      ..setSourceEngine(source.engineType)
+      ..setSourceInfo(sourceMap);
+
+    // 并发发射所有 JS batch（非 JS 字段为 null，不参与 await）
+    final batchFutures = <Future<List<String?>>?>[];
+    if (isNameJs) batchFutures.add(batchAnalyzer.batchApplyJsAsync(elements, _stripJsTag(nameRule)));
+    if (isAuthorJs) batchFutures.add(batchAnalyzer.batchApplyJsAsync(elements, _stripJsTag(authorRule)));
+    if (isCoverJs) batchFutures.add(batchAnalyzer.batchApplyJsAsync(elements, _stripJsTag(coverUrlRule)));
+    if (isIntroJs) batchFutures.add(batchAnalyzer.batchApplyJsAsync(elements, _stripJsTag(introRule)));
+    if (isBookUrlJs) batchFutures.add(batchAnalyzer.batchApplyJsAsync(elements, _stripJsTag(bookUrlRule)));
+    if (isKindJs) batchFutures.add(batchAnalyzer.batchApplyJsAsync(elements, _stripJsTag(kindRule)));
+    if (isLastChapterJs) batchFutures.add(batchAnalyzer.batchApplyJsAsync(elements, _stripJsTag(lastChapterRule)));
+    if (isWordCountJs) batchFutures.add(batchAnalyzer.batchApplyJsAsync(elements, _stripJsTag(wordCountRule)));
+
+    final batchResults = await Future.wait(
+      batchFutures.map((f) => f ?? Future.value(null)),
+    );
+
+    // 按 batchFutures 添加顺序提取结果
+    int bi = 0;
+    final batchNames = isNameJs ? batchResults[bi++] : null;
+    final batchAuthors = isAuthorJs ? batchResults[bi++] : null;
+    final batchCovers = isCoverJs ? batchResults[bi++] : null;
+    final batchIntros = isIntroJs ? batchResults[bi++] : null;
+    final batchBookUrls = isBookUrlJs ? batchResults[bi++] : null;
+    final batchKinds = isKindJs ? batchResults[bi++] : null;
+    final batchLastChapters = isLastChapterJs ? batchResults[bi++] : null;
+    final batchWordCounts = isWordCountJs ? batchResults[bi++] : null;
+
     // [性能] 全量并发：所有元素一次性发射
     final allResults = await Future.wait(
       List.generate(elements.length, (i) async {
@@ -1245,16 +1289,64 @@ class WebBook {
           }
         }
 
-        // 只对有值的规则发起异步调用，空规则直接短路
+        // JS 规则从预计算结果数组取值，非 JS 规则走逐元素异步
         final futures = <Future<String?>>[];
-        if (hasName) futures.add(itemAnalyzer.getStringAsync(nameRule).catchError((_) => null));
-        if (hasAuthor) futures.add(itemAnalyzer.getStringAsync(authorRule).catchError((_) => null));
-        if (hasCover) futures.add(itemAnalyzer.getStringAsync(coverUrlRule, isUrl: true).catchError((_) => null));
-        if (hasIntro) futures.add(itemAnalyzer.getStringAsync(introRule).catchError((_) => null));
-        if (hasBookUrl) futures.add(itemAnalyzer.getStringAsync(bookUrlRule, isUrl: true).catchError((_) => null));
-        if (hasKind) futures.add(itemAnalyzer.getStringAsync(kindRule).catchError((_) => null));
-        if (hasLastChapter) futures.add(itemAnalyzer.getStringAsync(lastChapterRule).catchError((_) => null));
-        if (hasWordCount) futures.add(itemAnalyzer.getStringAsync(wordCountRule).catchError((_) => null));
+        if (hasName) {
+          if (isNameJs) {
+            futures.add(Future.value(batchNames![i]));
+          } else {
+            futures.add(itemAnalyzer.getStringAsync(nameRule).catchError((_) => null));
+          }
+        }
+        if (hasAuthor) {
+          if (isAuthorJs) {
+            futures.add(Future.value(batchAuthors![i]));
+          } else {
+            futures.add(itemAnalyzer.getStringAsync(authorRule).catchError((_) => null));
+          }
+        }
+        if (hasCover) {
+          if (isCoverJs) {
+            futures.add(Future.value(batchCovers![i]));
+          } else {
+            futures.add(itemAnalyzer.getStringAsync(coverUrlRule, isUrl: true).catchError((_) => null));
+          }
+        }
+        if (hasIntro) {
+          if (isIntroJs) {
+            futures.add(Future.value(batchIntros![i]));
+          } else {
+            futures.add(itemAnalyzer.getStringAsync(introRule).catchError((_) => null));
+          }
+        }
+        if (hasBookUrl) {
+          if (isBookUrlJs) {
+            futures.add(Future.value(batchBookUrls![i]));
+          } else {
+            futures.add(itemAnalyzer.getStringAsync(bookUrlRule, isUrl: true).catchError((_) => null));
+          }
+        }
+        if (hasKind) {
+          if (isKindJs) {
+            futures.add(Future.value(batchKinds![i]));
+          } else {
+            futures.add(itemAnalyzer.getStringAsync(kindRule).catchError((_) => null));
+          }
+        }
+        if (hasLastChapter) {
+          if (isLastChapterJs) {
+            futures.add(Future.value(batchLastChapters![i]));
+          } else {
+            futures.add(itemAnalyzer.getStringAsync(lastChapterRule).catchError((_) => null));
+          }
+        }
+        if (hasWordCount) {
+          if (isWordCountJs) {
+            futures.add(Future.value(batchWordCounts![i]));
+          } else {
+            futures.add(itemAnalyzer.getStringAsync(wordCountRule).catchError((_) => null));
+          }
+        }
 
         final fields = futures.isNotEmpty ? await Future.wait(futures) : [];
         int fi = 0;
@@ -1295,6 +1387,15 @@ class WebBook {
       if (r != null) results.add(r);
     }
     return results;
+  }
+
+  /// 剥离 JS 规则前缀/标签，返回纯 JS 代码
+  static String _stripJsTag(String rule) {
+    if (rule.startsWith('@js:')) return rule.substring(4);
+    if (rule.startsWith('<js>') && rule.endsWith('</js>')) {
+      return rule.substring(4, rule.length - 5);
+    }
+    return rule;
   }
 
   /// 对齐 legado BookChapterList.analyzeChapterList (内层)
@@ -1380,12 +1481,12 @@ class WebBook {
         ..setBookInfo(bookMap);
 
       final batchFutures = <Future<List<String?>>?>[];
-      batchFutures.add(isNameJs ? batchAnalyzer.batchApplyJsAsync(elements, nameRule.startsWith('@js:') ? nameRule.substring(4) : nameRule.substring(4, nameRule.length - 4)) : null);
-      batchFutures.add(isUrlJs ? batchAnalyzer.batchApplyJsAsync(elements, urlRule.startsWith('@js:') ? urlRule.substring(4) : urlRule.substring(4, urlRule.length - 4)) : null);
-      batchFutures.add(isVolumeJs ? batchAnalyzer.batchApplyJsAsync(elements, volumeRule.startsWith('@js:') ? volumeRule.substring(4) : volumeRule.substring(4, volumeRule.length - 4)) : null);
-      batchFutures.add(isTimeJs ? batchAnalyzer.batchApplyJsAsync(elements, timeRule.startsWith('@js:') ? timeRule.substring(4) : timeRule.substring(4, timeRule.length - 4)) : null);
-      batchFutures.add(isVipJs ? batchAnalyzer.batchApplyJsAsync(elements, vipRule.startsWith('@js:') ? vipRule.substring(4) : vipRule.substring(4, vipRule.length - 4)) : null);
-      batchFutures.add(isPayJs ? batchAnalyzer.batchApplyJsAsync(elements, payRule.startsWith('@js:') ? payRule.substring(4) : payRule.substring(4, payRule.length - 4)) : null);
+      batchFutures.add(isNameJs ? batchAnalyzer.batchApplyJsAsync(elements, _stripJsTag(nameRule)) : null);
+      batchFutures.add(isUrlJs ? batchAnalyzer.batchApplyJsAsync(elements, _stripJsTag(urlRule)) : null);
+      batchFutures.add(isVolumeJs ? batchAnalyzer.batchApplyJsAsync(elements, _stripJsTag(volumeRule)) : null);
+      batchFutures.add(isTimeJs ? batchAnalyzer.batchApplyJsAsync(elements, _stripJsTag(timeRule)) : null);
+      batchFutures.add(isVipJs ? batchAnalyzer.batchApplyJsAsync(elements, _stripJsTag(vipRule)) : null);
+      batchFutures.add(isPayJs ? batchAnalyzer.batchApplyJsAsync(elements, _stripJsTag(payRule)) : null);
 
       // 并发发射所有 JS batch（非 JS 字段为 null，不参与 await）
       final batchResults = await Future.wait(

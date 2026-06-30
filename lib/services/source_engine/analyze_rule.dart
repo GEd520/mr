@@ -1725,17 +1725,41 @@ class AnalyzeRule {
       }
       itemsJson.write(']');
 
-      // 构造批量 JS：用 map 对数组中的每个元素执行同一规则
-      // 外层 JSON.parse 确保元素中的特殊字符不破坏 JS 语法
-      final batchCode = 'JSON.parse(JSON.stringify($itemsJson.map(function(el,idx){'
+      // 收集环境变量注入到批量 JS 作用域
+      final env = _collectVariables();
+      final baseUrlStr = jsonEncode(_baseUrl ?? '');
+      final bookStr = jsonEncode(env['book'] ?? {});
+      final sourceStr = jsonEncode(env['source'] ?? {});
+      final chapterStr = jsonEncode(env['chapter'] ?? {});
+      final cookieStr = jsonEncode(env['cookie'] ?? {});
+      // 额外变量注入（key/page 等自定义变量）
+      final extraVars = StringBuffer();
+      env.forEach((k, v) {
+        if (k != 'book' && k != 'source' && k != 'chapter' && k != 'cookie' &&
+            k != 'src' && v is String) {
+          extraVars.write('var $k = ${jsonEncode(v)};');
+        }
+      });
+
+      // 构造批量 JS：注入环境变量 + 用 map 对数组中的每个元素执行同一规则
+      final batchCode = '(function(){'
+          'var baseUrl=$baseUrlStr;'
+          'var book=$bookStr;'
+          'var source=$sourceStr;'
+          'var chapter=$chapterStr;'
+          'var cookie=$cookieStr;'
+          'var src="";'
+          '$extraVars'
+          'globalThis.baseUrl=baseUrl;globalThis.book=book;globalThis.source=source;'
+          'return JSON.parse(JSON.stringify($itemsJson.map(function(el,idx){'
           'var result=el;'
           'try{result=$jsCode}catch(e){result=null}'
-          'return result;}))';
+          'return result;}))})();';
 
       // [性能优化] 走轻量路径 batchEvaluate，跳过 processJsRule 重路径
       // 不执行 _preCacheBridgeCalls（6个正则扫描几十KB）、不构建 4KB+ wrappedScript、
-      // 不执行 JsTracer、不记录 info 级日志——只做一次 evaluate
-      final result = JsEngine.instance.batchEvaluate(batchCode);
+      // 不执行 JsTracer、正常路径零日志——只做一次 evaluate
+      final result = await JsEngine.instance.batchEvaluate(batchCode);
 
       if (result == null || result.isEmpty) {
         return List.filled(elements.length, null);

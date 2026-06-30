@@ -3695,18 +3695,26 @@ class JsEngine {
   /// 批量 JS 执行（轻量路径，用于目录/搜索列表批量解析）
   ///
   /// 跳过 processJsRule 的重路径：不执行 _preCacheBridgeCalls 正则扫描、
-  /// 不构建巨大 wrappedScript、不执行 JsTracer、不记录 info 级日志。
-  /// 只做必要的变量注入 + 一次 evaluate，加 _evalLock 串行保证线程安全。
+  /// 不构建巨大 wrappedScript、不执行 JsTracer。
+  /// 通过 _evalLock 串行保证线程安全。
+  /// 仅在出错时记录日志（正常路径零日志）。
   ///
-  /// [script] 完整的 JS 脚本（调用方已构造好）
+  /// [script] 完整的 JS 脚本（调用方已构造好，含变量注入）
   /// 返回 evaluate 的原始字符串结果
-  String? batchEvaluate(String script) {
+  Future<String?> batchEvaluate(String script) async {
     if (_jsRuntime == null) return null;
     try {
-      final result = _jsRuntime!.evaluate(script);
-      if (result.isError) return null;
-      return result.stringResult;
-    } catch (_) {
+      return _evalLock.synchronized(() {
+        final result = _jsRuntime!.evaluate(script);
+        if (result.isError) {
+          // 仅在出错时记录日志
+          AppLogger.instance.logJsError('batchEvaluate', result.stringResult);
+          return null;
+        }
+        return result.stringResult;
+      });
+    } catch (e) {
+      AppLogger.instance.logJsError('batchEvaluate', e.toString());
       return null;
     }
   }
