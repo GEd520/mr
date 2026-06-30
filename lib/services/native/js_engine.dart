@@ -3056,27 +3056,17 @@ class JsEngine {
         }
         return u8.subarray(0, n);
       }
-      // 辅助：Uint8Array 转字符串（UTF-8 解码，允许 malformed）
+      // 辅助：Uint8Array 转字符串（C 原生，零 JS 循环）
       function _u8ToStr(u8) {
-        try { return new TextDecoder('utf-8', { fatal: false }).decode(u8); }
-        catch (e) {
-          var s = '';
-          for (var i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
-          return s;
-        }
+        return __nativeBase64.uint8ToStr(u8);
       }
-      // 辅助：base64 转 Uint8Array
+      // 辅助：base64 转 Uint8Array（C 原生，零 JS 循环）
       function _b64ToU8(b64) {
-        var bin = atob(b64);
-        var u8 = new Uint8Array(bin.length);
-        for (var i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
-        return u8;
+        return __nativeBase64.decodeToBytes(b64);
       }
-      // 辅助：Uint8Array 转 base64
+      // 辅助：Uint8Array 转 base64（C 原生，零 JS 循环）
       function _u8ToB64(u8) {
-        var bin = '';
-        for (var i = 0; i < u8.length; i++) bin += String.fromCharCode(u8[i]);
-        return btoa(bin);
+        return __nativeBase64.b64FromBytes(u8);
       }
       // 辅助：Uint8Array 转 hex 字符串（小写）
       function _u8ToHex(u8) {

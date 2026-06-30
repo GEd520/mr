@@ -53,6 +53,18 @@ static void _ensure_globals(void) {
 #define MAX_BASE64_SIZE    (10ULL * 1024 * 1024)   // Base64 输入：10MB
 #define MAX_HTTP_BODY_SIZE (50ULL * 1024 * 1024)   // HTTP 响应体：50MB
 
+// ---------- AES Key Schedule 缓存 ----------
+// 同 key 复用轮密钥，避免每次 JS 调用都重新 aes_init
+#define AES_KEY_CACHE_SIZE 4
+typedef struct {
+    uint64_t hash;                          // key 的 FNV-1a 哈希
+    uint8_t round_key[240];                // 展开的轮密钥
+    int rounds;                             // 轮数 10/12/14
+    size_t key_len;                         // 16/24/32
+    int in_use;
+    uint64_t hits;                          // 命中次数
+} aes_key_cache_entry_t;
+
 // ---------- Phase 4: 字节码缓存 ----------
 // 跳过词法分析/语法解析/字节码生成阶段，对重复执行的脚本直接走 JS_EvalFunction
 #define BYTECODE_CACHE_SIZE 32
@@ -82,6 +94,8 @@ struct QuickJSBridge {
     uint64_t eval_start_time_us;  // 当前 eval 开始时间（微秒）
     uint64_t eval_timeout_us;     // 超时阈值（微秒），0 = 无超时
     int eval_interrupted;         // 是否被超时中断
+    // AES Key Schedule 缓存
+    aes_key_cache_entry_t aes_key_cache[AES_KEY_CACHE_SIZE];
 };
 
 // ---------- 性能统计辅助 ----------
@@ -225,6 +239,71 @@ static void _bytecode_cache_clear(QuickJSBridge *bridge) {
         }
     }
     bridge->bytecode_cache_count = 0;
+}
+
+// ---------- AES Key Schedule 缓存 ----------
+
+// 查找 key schedule 缓存，命中返回复制后的轮密钥，未命中返回 NULL
+static int _aes_key_cache_lookup(QuickJSBridge *bridge, const uint8_t *key, size_t key_len,
+                                  uint8_t *out_round_key, int *out_rounds) {
+    uint64_t hash = _fnv1a_hash((const char *)key, key_len);
+    for (int i = 0; i < AES_KEY_CACHE_SIZE; i++) {
+        aes_key_cache_entry_t *e = &bridge->aes_key_cache[i];
+        if (e->in_use && e->hash == hash && e->key_len == key_len) {
+            e->hits++;
+            memcpy(out_round_key, e->round_key, e->rounds * 16);
+            *out_rounds = e->rounds;
+            return 1; // 命中
+        }
+    }
+    return 0; // 未命中
+}
+
+// 存入 key schedule 缓存（LRU 近似：总是替换命中次数最小的条目）
+static void _aes_key_cache_store(QuickJSBridge *bridge, const uint8_t *key, size_t key_len,
+                                  const uint8_t *round_key, int rounds) {
+    int target = -1;
+    uint64_t min_hits = (uint64_t)-1;
+    for (int i = 0; i < AES_KEY_CACHE_SIZE; i++) {
+        if (!bridge->aes_key_cache[i].in_use) {
+            target = i;
+            break;
+        }
+        if (bridge->aes_key_cache[i].hits < min_hits) {
+            min_hits = bridge->aes_key_cache[i].hits;
+            target = i;
+        }
+    }
+    if (target < 0) {
+        // 全部活跃且存在永远不淘汰的风险，强制淘汰 hits 最少的
+        for (int i = 0; i < AES_KEY_CACHE_SIZE; i++) {
+            if (bridge->aes_key_cache[i].hits <= min_hits) {
+                target = i;
+                min_hits = bridge->aes_key_cache[i].hits;
+            }
+        }
+    }
+    if (target < 0) return;
+    aes_key_cache_entry_t *e = &bridge->aes_key_cache[target];
+    e->hash = _fnv1a_hash((const char *)key, key_len);
+    memcpy(e->round_key, round_key, rounds * 16);
+    e->rounds = rounds;
+    e->key_len = key_len;
+    e->hits = 0;
+    e->in_use = 1;
+}
+
+// 尝试用缓存初始化 AES 上下文：命中直接复制轮密钥，未命中则完整 key expansion 并缓存
+static int _aes_init_cached(QuickJSBridge *bridge, aes_ctx_t *ctx,
+                             const uint8_t *key, size_t key_len) {
+    if (bridge && _aes_key_cache_lookup(bridge, key, key_len, ctx->round_key, &ctx->rounds)) {
+        return 0; // 缓存命中，直接复用轮密钥
+    }
+    int ret = aes_init(ctx, key, key_len); // 完整 key expansion
+    if (ret == 0 && bridge) {
+        _aes_key_cache_store(bridge, key, key_len, ctx->round_key, ctx->rounds); // 缓存
+    }
+    return ret;
 }
 
 // ---------- 原生解析工具（不需要 bridge 上下文，纯函数）----------
@@ -993,8 +1072,10 @@ static JSValue js_native_aes_encrypt(JSContext *ctx, JSValueConst this_val,
         return JS_ThrowTypeError(ctx, "aesEncryptNative: iv length must be 16, got %d", (int)iv_len);
     }
 
+    QuickJSBridge *bridge = (QuickJSBridge *)JS_GetContextOpaque(ctx);
+
     aes_ctx_t actx;
-    if (aes_init(&actx, key, key_len) != 0) {
+    if (_aes_init_cached(bridge, &actx, key, key_len) != 0) {
         return JS_ThrowTypeError(ctx, "aesEncryptNative: key expansion failed");
     }
 
@@ -1003,7 +1084,6 @@ static JSValue js_native_aes_encrypt(JSContext *ctx, JSValueConst this_val,
     uint8_t *out = (uint8_t *)malloc(max_out);
     if (!out) return JS_ThrowTypeError(ctx, "aesEncryptNative: out of memory");
 
-    QuickJSBridge *bridge = (QuickJSBridge *)JS_GetContextOpaque(ctx);
     uint64_t t0 = bridge ? _now_us() : 0;
 
     size_t out_len = aes_cbc_encrypt(&actx, iv, pt, pt_len, out);
@@ -1042,15 +1122,16 @@ static JSValue js_native_aes_decrypt(JSContext *ctx, JSValueConst this_val,
         return JS_ThrowTypeError(ctx, "aesDecryptNative: ciphertext length must be multiple of 16, got %d", (int)ct_len);
     }
 
+    QuickJSBridge *bridge = (QuickJSBridge *)JS_GetContextOpaque(ctx);
+
     aes_ctx_t actx;
-    if (aes_init(&actx, key, key_len) != 0) {
+    if (_aes_init_cached(bridge, &actx, key, key_len) != 0) {
         return JS_ThrowTypeError(ctx, "aesDecryptNative: key expansion failed");
     }
 
     uint8_t *out = (uint8_t *)malloc(ct_len);
     if (!out) return JS_ThrowTypeError(ctx, "aesDecryptNative: out of memory");
 
-    QuickJSBridge *bridge = (QuickJSBridge *)JS_GetContextOpaque(ctx);
     uint64_t t0 = bridge ? _now_us() : 0;
 
     size_t out_len = aes_cbc_decrypt(&actx, iv, ct, ct_len, out);
@@ -1084,15 +1165,16 @@ static JSValue js_native_aes_decrypt_ecb(JSContext *ctx, JSValueConst this_val,
         return JS_ThrowTypeError(ctx, "aesDecryptNativeECB: ciphertext length must be multiple of 16, got %d", (int)ct_len);
     }
 
+    QuickJSBridge *bridge = (QuickJSBridge *)JS_GetContextOpaque(ctx);
+
     aes_ctx_t actx;
-    if (aes_init(&actx, key, key_len) != 0) {
+    if (_aes_init_cached(bridge, &actx, key, key_len) != 0) {
         return JS_ThrowTypeError(ctx, "aesDecryptNativeECB: key expansion failed");
     }
 
     uint8_t *out = (uint8_t *)malloc(ct_len);
     if (!out) return JS_ThrowTypeError(ctx, "aesDecryptNativeECB: out of memory");
 
-    QuickJSBridge *bridge = (QuickJSBridge *)JS_GetContextOpaque(ctx);
     uint64_t t0 = bridge ? _now_us() : 0;
 
     size_t out_len = aes_ecb_decrypt(&actx, ct, ct_len, out);
@@ -1123,8 +1205,10 @@ static JSValue js_native_aes_encrypt_ecb(JSContext *ctx, JSValueConst this_val,
         return JS_ThrowTypeError(ctx, "aesEncryptNativeECB: key length must be 16/24/32, got %d", (int)key_len);
     }
 
+    QuickJSBridge *bridge = (QuickJSBridge *)JS_GetContextOpaque(ctx);
+
     aes_ctx_t actx;
-    if (aes_init(&actx, key, key_len) != 0) {
+    if (_aes_init_cached(bridge, &actx, key, key_len) != 0) {
         return JS_ThrowTypeError(ctx, "aesEncryptNativeECB: key expansion failed");
     }
 
@@ -1132,7 +1216,6 @@ static JSValue js_native_aes_encrypt_ecb(JSContext *ctx, JSValueConst this_val,
     uint8_t *out = (uint8_t *)malloc(max_out);
     if (!out) return JS_ThrowTypeError(ctx, "aesEncryptNativeECB: out of memory");
 
-    QuickJSBridge *bridge = (QuickJSBridge *)JS_GetContextOpaque(ctx);
     uint64_t t0 = bridge ? _now_us() : 0;
 
     size_t out_len = aes_ecb_encrypt(&actx, pt, pt_len, out);
@@ -1312,6 +1395,57 @@ static JSValue js_native_btoa(JSContext *ctx, JSValueConst this_val,
 
     if (!b64) return JS_ThrowTypeError(ctx, "btoa: encoding failed");
 
+    JSValue ret = JS_NewStringLen(ctx, b64, b64_len);
+    free(b64);
+    return ret;
+}
+
+// ---------- Phase 5: 原生 base64↔bytes 零 JS 循环转换 ----------
+// 替代 _b64ToU8 / _u8ToStr / _u8ToB64 中的 JS 逐字节 for 循环
+// decodeToBytes: base64 字符串 → ArrayBuffer（Uint8Array）
+static JSValue js_native_decode_to_bytes(JSContext *ctx, JSValueConst this_val,
+                                         int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || JS_IsNull(argv[0]) || JS_IsUndefined(argv[0])) {
+        return JS_NewArrayBufferCopy(ctx, NULL, 0);
+    }
+    const char *input = JS_ToCString(ctx, argv[0]);
+    if (!input) return JS_ThrowTypeError(ctx, "decodeToBytes: argument must be a string");
+    size_t input_len = strlen(input);
+    size_t raw_len = 0;
+    uint8_t *raw = b64_decode(input, input_len, &raw_len);
+    JS_FreeCString(ctx, input);
+    if (!raw) return JS_NewArrayBufferCopy(ctx, NULL, 0);
+    JSValue ret = JS_NewArrayBufferCopy(ctx, raw, raw_len);
+    free(raw);
+    return ret;
+}
+
+// uint8ToStr: ArrayBuffer → UTF-8 字符串（零 JS 循环，零 charCodeAt）
+// 兼容 Uint8Array（QuickJS 中 ArrayBuffer 和 Uint8Array 底层共享 buffer，
+// JS_GetArrayBuffer 对两者都生效）
+static JSValue js_native_uint8_to_str(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1) return JS_NewString(ctx, "");
+    size_t len;
+    const uint8_t *data = JS_GetArrayBuffer(ctx, &len, argv[0]);
+    if (!data) return JS_NewString(ctx, "");
+    JSValue ret = JS_NewStringLen(ctx, (const char *)data, len);
+    return ret;
+}
+
+// b64FromBytes: ArrayBuffer → base64 字符串
+static JSValue js_native_b64_from_bytes(JSContext *ctx, JSValueConst this_val,
+                                        int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1) return JS_NewString(ctx, "");
+    size_t len;
+    const uint8_t *data = JS_GetArrayBuffer(ctx, &len, argv[0]);
+    if (!data || len == 0) return JS_NewString(ctx, "");
+    size_t b64_len = 0;
+    char *b64 = b64_encode(data, len, &b64_len);
+    if (!b64) return JS_NewString(ctx, "");
     JSValue ret = JS_NewStringLen(ctx, b64, b64_len);
     free(b64);
     return ret;
@@ -2052,6 +2186,13 @@ QuickJSBridge *quickjs_bridge_create_with_config(uint64_t memory_limit, uint64_t
         JS_NewCFunction(bridge->ctx, js_native_atob, "decode", 1));
     JS_SetPropertyStr(bridge->ctx, b64_obj, "encode",
         JS_NewCFunction(bridge->ctx, js_native_btoa, "encode", 1));
+    // Phase 5: 零 JS 循环 bytes 直转
+    JS_SetPropertyStr(bridge->ctx, b64_obj, "decodeToBytes",
+        JS_NewCFunction(bridge->ctx, js_native_decode_to_bytes, "decodeToBytes", 1));
+    JS_SetPropertyStr(bridge->ctx, b64_obj, "uint8ToStr",
+        JS_NewCFunction(bridge->ctx, js_native_uint8_to_str, "uint8ToStr", 1));
+    JS_SetPropertyStr(bridge->ctx, b64_obj, "b64FromBytes",
+        JS_NewCFunction(bridge->ctx, js_native_b64_from_bytes, "b64FromBytes", 1));
     JS_SetPropertyStr(bridge->ctx, global_obj, "__nativeBase64", b64_obj);
 
     // 注册编码转换原生全局对象 __nativeConv
