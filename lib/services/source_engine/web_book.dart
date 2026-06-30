@@ -753,81 +753,93 @@ class WebBook {
 
       final results = <Map<String, dynamic>>[];
 
-      for (int i = 0; i < bookElements.length; i++) {
-        var element = bookElements[i];
+      // [性能] 搜索列表批量化并发：每批 16 个元素并发提取 8 字段
+      // 替代之前的逐元素串行 await
+      const searchBatchSize = 16;
+      for (int batchStart = 0; batchStart < bookElements.length; batchStart += searchBatchSize) {
+        final batchEnd = (batchStart + searchBatchSize) < bookElements.length
+            ? batchStart + searchBatchSize
+            : bookElements.length;
+        final batchResults = await Future.wait(
+          List.generate(batchEnd - batchStart, (j) async {
+            final i = batchStart + j;
+            var element = bookElements[i];
 
-        // 关键修复：如果 bookList 返回的是 String 而非 Element，说明规则可能直接指向了文本内容
-        // 这种情况下，我们需要将其包装回 Element，或者在后续解析中做特殊处理
-        if (element is String && element.isNotEmpty && !element.trim().startsWith('<')) {
-          // 如果字符串不包含 HTML 标签，说明它可能就是我们想要的字段之一
-          // 为了兼容 AnalyzeRule 的逻辑，我们将其包装为简单的 HTML
-          element = '<div>$element</div>';
-        }
+            // 关键修复：如果 bookList 返回的是 String 而非 Element，说明规则可能直接指向了文本内容
+            if (element is String && element.isNotEmpty && !element.trim().startsWith('<')) {
+              element = '<div>$element</div>';
+            }
 
-        final itemAnalyzer = AnalyzeRule()
-          ..setContent(element, baseUrl: parsed.url)
-          ..setRedirectUrl(response.url)
-          ..setSourceEngine(source.engineType)
-          ..setSourceInfo(searchSourceMap)
-          ..putVariable('key', keyword)
-          ..putVariable('page', page);
+            final itemAnalyzer = AnalyzeRule()
+              ..setContent(element, baseUrl: parsed.url)
+              ..setRedirectUrl(response.url)
+              ..setSourceEngine(source.engineType)
+              ..setSourceInfo(searchSourceMap)
+              ..putVariable('key', keyword)
+              ..putVariable('page', page);
 
-        // 并发提取所有字段，每个字段独立 catchError 防止一个异常毁了整条结果
-        final fields = await Future.wait([
-          itemAnalyzer.getStringAsync(searchRule.name ?? '')
-              .catchError((_) => null),
-          itemAnalyzer.getStringAsync(searchRule.author ?? '')
-              .catchError((_) => null),
-          itemAnalyzer.getStringAsync(searchRule.coverUrl ?? '', isUrl: true)
-              .catchError((_) => null),
-          itemAnalyzer.getStringAsync(searchRule.intro ?? '')
-              .catchError((_) => null),
-          itemAnalyzer.getStringAsync(searchRule.bookUrl ?? '', isUrl: true)
-              .catchError((_) => null),
-          itemAnalyzer.getStringAsync(searchRule.kind ?? '')
-              .catchError((_) => null),
-          itemAnalyzer.getStringAsync(searchRule.lastChapter ?? '')
-              .catchError((_) => null),
-          itemAnalyzer.getStringAsync(searchRule.wordCount ?? '')
-              .catchError((_) => null),
-        ]);
-        var name = fields[0];
-        var author = fields[1];
-        final coverUrl = fields[2];
-        var intro = fields[3];
-        final bookUrl = fields[4];
-        final kind = fields[5];
-        final lastChapter = fields[6];
-        final wordCount = fields[7];
+            // 并发提取所有字段，每个字段独立 catchError 防止一个异常毁了整条结果
+            final fields = await Future.wait([
+              itemAnalyzer.getStringAsync(searchRule.name ?? '')
+                  .catchError((_) => null),
+              itemAnalyzer.getStringAsync(searchRule.author ?? '')
+                  .catchError((_) => null),
+              itemAnalyzer.getStringAsync(searchRule.coverUrl ?? '', isUrl: true)
+                  .catchError((_) => null),
+              itemAnalyzer.getStringAsync(searchRule.intro ?? '')
+                  .catchError((_) => null),
+              itemAnalyzer.getStringAsync(searchRule.bookUrl ?? '', isUrl: true)
+                  .catchError((_) => null),
+              itemAnalyzer.getStringAsync(searchRule.kind ?? '')
+                  .catchError((_) => null),
+              itemAnalyzer.getStringAsync(searchRule.lastChapter ?? '')
+                  .catchError((_) => null),
+              itemAnalyzer.getStringAsync(searchRule.wordCount ?? '')
+                  .catchError((_) => null),
+            ]);
+            var name = fields[0];
+            var author = fields[1];
+            final coverUrl = fields[2];
+            var intro = fields[3];
+            final bookUrl = fields[4];
+            final kind = fields[5];
+            final lastChapter = fields[6];
+            final wordCount = fields[7];
 
-        if (name != null && name.isNotEmpty) {
-          // 借鉴 legado：书名/作者格式化
-          name = _formatBookName(name);
-          author = _formatBookAuthor(author ?? '');
+            if (name != null && name.isNotEmpty) {
+              // 借鉴 legado：书名/作者格式化
+              name = _formatBookName(name);
+              author = _formatBookAuthor(author ?? '');
 
-          // 借鉴 legado：简介 HTML 格式化
-          if (intro != null && intro.isNotEmpty) {
-            intro = _formatIntro(intro);
-          }
+              // 借鉴 legado：简介 HTML 格式化
+              if (intro != null && intro.isNotEmpty) {
+                intro = _formatIntro(intro);
+              }
 
-          // 拼接相对链接：用书源URL作为基准
-          final resolvedBookUrl = resolveUrl(bookUrl, source.bookSourceUrl);
-          final resolvedCoverUrl = resolveUrl(coverUrl, source.bookSourceUrl);
+              // 拼接相对链接：用书源URL作为基准
+              final resolvedBookUrl = resolveUrl(bookUrl, source.bookSourceUrl);
+              final resolvedCoverUrl = resolveUrl(coverUrl, source.bookSourceUrl);
 
-          results.add({
-            'name': name,
-            'author': author,
-            'coverUrl': resolvedCoverUrl,
-            'intro': intro ?? '',
-            'bookUrl': resolvedBookUrl,
-            'kind': kind ?? '',
-            'lastChapter': lastChapter ?? '',
-            'wordCount': wordCount ?? '',
-            'sourceUrl': source.bookSourceUrl,
-            'sourceName': source.bookSourceName,
-            'mediaType': source.bookSourceType.mediaType.index,
-            'originType': BookOriginType.online.index,
-          });
+              return <String, dynamic>{
+                'name': name,
+                'author': author,
+                'coverUrl': resolvedCoverUrl,
+                'intro': intro ?? '',
+                'bookUrl': resolvedBookUrl,
+                'kind': kind ?? '',
+                'lastChapter': lastChapter ?? '',
+                'wordCount': wordCount ?? '',
+                'sourceUrl': source.bookSourceUrl,
+                'sourceName': source.bookSourceName,
+                'mediaType': source.bookSourceType.mediaType.index,
+                'originType': BookOriginType.online.index,
+              };
+            }
+            return null;
+          }),
+        );
+        for (final book in batchResults) {
+          if (book != null) results.add(book);
         }
       }
 
@@ -926,62 +938,76 @@ class WebBook {
       // 保存原始元素数量（用于调试）
       lastExploreElementCount = bookElements.length;
 
-      for (var element in bookElements) {
-        // 关键修复：处理非 HTML 字符串元素
-        if (element is String && element.isNotEmpty && !element.trim().startsWith('<')) {
-          element = '<div>$element</div>';
+      // [性能] 发现列表批量化并发：每批 16 个元素并发提取 8 字段
+      const exploreBatchSize = 16;
+      for (int batchStart = 0; batchStart < bookElements.length; batchStart += exploreBatchSize) {
+        final batchEnd = (batchStart + exploreBatchSize) < bookElements.length
+            ? batchStart + exploreBatchSize
+            : bookElements.length;
+        final batchResults = await Future.wait(
+          List.generate(batchEnd - batchStart, (j) async {
+            var element = bookElements[batchStart + j];
+
+            // 关键修复：处理非 HTML 字符串元素
+            if (element is String && element.isNotEmpty && !element.trim().startsWith('<')) {
+              element = '<div>$element</div>';
+            }
+
+            final itemAnalyzer = AnalyzeRule()
+              ..setContent(element, baseUrl: exploreUrl)
+              ..setRedirectUrl(response.url)
+              ..setSourceEngine(source.engineType)
+              ..setSourceInfo(exploreSourceMap);
+
+            // 并发提取所有字段，每个字段独立 catchError
+            final nameRule = useSearchFallback ? (searchRule?.name ?? '') : exploreRule.name;
+            final authorRule = useSearchFallback ? (searchRule?.author ?? '') : exploreRule.author;
+            final coverUrlRule = useSearchFallback ? (searchRule?.coverUrl ?? '') : exploreRule.coverUrl;
+            final introRule = useSearchFallback ? (searchRule?.intro ?? '') : exploreRule.intro;
+            final bookUrlRule = useSearchFallback ? (searchRule?.bookUrl ?? '') : exploreRule.bookUrl;
+            final kindRule = useSearchFallback ? (searchRule?.kind ?? '') : exploreRule.kind;
+            final lastChapterRule = useSearchFallback ? (searchRule?.lastChapter ?? '') : exploreRule.lastChapter;
+            final wordCountRule = useSearchFallback ? (searchRule?.wordCount ?? '') : exploreRule.wordCount;
+
+            final fields = await Future.wait([
+              itemAnalyzer.getStringAsync(nameRule)
+                  .catchError((_) => null),
+              itemAnalyzer.getStringAsync(authorRule)
+                  .catchError((_) => null),
+              itemAnalyzer.getStringAsync(coverUrlRule, isUrl: true)
+                  .catchError((_) => null),
+              itemAnalyzer.getStringAsync(introRule)
+                  .catchError((_) => null),
+              itemAnalyzer.getStringAsync(bookUrlRule, isUrl: true)
+                  .catchError((_) => null),
+              itemAnalyzer.getStringAsync(kindRule)
+                  .catchError((_) => null),
+              itemAnalyzer.getStringAsync(lastChapterRule)
+                  .catchError((_) => null),
+              itemAnalyzer.getStringAsync(wordCountRule)
+                  .catchError((_) => null),
+            ]);
+            final name = fields[0];
+            if (name == null || name.isEmpty) return null;
+            return <String, dynamic>{
+              'name': name,
+              'author': fields[1] ?? '',
+              'coverUrl': fields[2] ?? '',
+              'intro': fields[3] ?? '',
+              'bookUrl': fields[4] ?? '',
+              'kind': fields[5] ?? '',
+              'lastChapter': fields[6] ?? '',
+              'wordCount': fields[7] ?? '',
+              'sourceUrl': source.bookSourceUrl,
+              'sourceName': source.bookSourceName,
+              'mediaType': source.bookSourceType.mediaType.index,
+              'originType': BookOriginType.online.index,
+            };
+          }),
+        );
+        for (final book in batchResults) {
+          if (book != null) results.add(book);
         }
-
-        final itemAnalyzer = AnalyzeRule()
-          ..setContent(element, baseUrl: exploreUrl)
-          ..setRedirectUrl(response.url)
-          ..setSourceEngine(source.engineType)
-          ..setSourceInfo(exploreSourceMap);
-
-        // 并发提取所有字段，每个字段独立 catchError
-        final nameRule = useSearchFallback ? (searchRule?.name ?? '') : exploreRule.name;
-        final authorRule = useSearchFallback ? (searchRule?.author ?? '') : exploreRule.author;
-        final coverUrlRule = useSearchFallback ? (searchRule?.coverUrl ?? '') : exploreRule.coverUrl;
-        final introRule = useSearchFallback ? (searchRule?.intro ?? '') : exploreRule.intro;
-        final bookUrlRule = useSearchFallback ? (searchRule?.bookUrl ?? '') : exploreRule.bookUrl;
-        final kindRule = useSearchFallback ? (searchRule?.kind ?? '') : exploreRule.kind;
-        final lastChapterRule = useSearchFallback ? (searchRule?.lastChapter ?? '') : exploreRule.lastChapter;
-        final wordCountRule = useSearchFallback ? (searchRule?.wordCount ?? '') : exploreRule.wordCount;
-
-        final fields = await Future.wait([
-          itemAnalyzer.getStringAsync(nameRule)
-              .catchError((_) => null),
-          itemAnalyzer.getStringAsync(authorRule)
-              .catchError((_) => null),
-          itemAnalyzer.getStringAsync(coverUrlRule, isUrl: true)
-              .catchError((_) => null),
-          itemAnalyzer.getStringAsync(introRule)
-              .catchError((_) => null),
-          itemAnalyzer.getStringAsync(bookUrlRule, isUrl: true)
-              .catchError((_) => null),
-          itemAnalyzer.getStringAsync(kindRule)
-              .catchError((_) => null),
-          itemAnalyzer.getStringAsync(lastChapterRule)
-              .catchError((_) => null),
-          itemAnalyzer.getStringAsync(wordCountRule)
-              .catchError((_) => null),
-        ]);
-        final name = fields[0];
-        if (name == null || name.isEmpty) continue;
-        results.add({
-          'name': name,
-          'author': fields[1] ?? '',
-          'coverUrl': fields[2] ?? '',
-          'intro': fields[3] ?? '',
-          'bookUrl': fields[4] ?? '',
-          'kind': fields[5] ?? '',
-          'lastChapter': fields[6] ?? '',
-          'wordCount': fields[7] ?? '',
-          'sourceUrl': source.bookSourceUrl,
-          'sourceName': source.bookSourceName,
-          'mediaType': source.bookSourceType.mediaType.index,
-          'originType': BookOriginType.online.index,
-        });
       }
 
       return results;
@@ -1034,15 +1060,25 @@ class WebBook {
       // 保存源码
       lastBookInfoHtml = html;
 
-      // 直接使用 init 处理后的 analyzer（无需重新创建）
-      final name = await analyzer.getStringAsync(bookInfoRule.name ?? '');
-      final author = await analyzer.getStringAsync(bookInfoRule.author ?? '');
-      final rawCoverUrl = await analyzer.getStringAsync(bookInfoRule.coverUrl ?? '');
-      final intro = await analyzer.getStringAsync(bookInfoRule.intro ?? '');
-      final kind = await analyzer.getStringAsync(bookInfoRule.kind ?? '');
-      final lastChapter = await analyzer.getStringAsync(bookInfoRule.lastChapter ?? '');
-      final wordCount = await analyzer.getStringAsync(bookInfoRule.wordCount ?? '');
-      final rawTocUrl = await analyzer.getStringAsync(bookInfoRule.tocUrl ?? '');
+      // [性能] 详情页 8 字段并发提取，替代逐个串行 await
+      final detailFields = await Future.wait([
+        analyzer.getStringAsync(bookInfoRule.name ?? ''),
+        analyzer.getStringAsync(bookInfoRule.author ?? ''),
+        analyzer.getStringAsync(bookInfoRule.coverUrl ?? ''),
+        analyzer.getStringAsync(bookInfoRule.intro ?? ''),
+        analyzer.getStringAsync(bookInfoRule.kind ?? ''),
+        analyzer.getStringAsync(bookInfoRule.lastChapter ?? ''),
+        analyzer.getStringAsync(bookInfoRule.wordCount ?? ''),
+        analyzer.getStringAsync(bookInfoRule.tocUrl ?? ''),
+      ]);
+      final name = detailFields[0];
+      final author = detailFields[1];
+      final rawCoverUrl = detailFields[2];
+      final intro = detailFields[3];
+      final kind = detailFields[4];
+      final lastChapter = detailFields[5];
+      final wordCount = detailFields[6];
+      final rawTocUrl = detailFields[7];
 
       // 拼接相对链接：用详情页URL作为基准
       final resolvedCoverUrl = resolveUrl(rawCoverUrl, bookUrl);
