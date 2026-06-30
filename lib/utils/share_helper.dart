@@ -1,5 +1,5 @@
 import 'package:flutter/widgets.dart';
-import 'package:share_plus/share_plus.dart';plus.dart';
+import 'package:share_plus/share_plus.dart';
 
 /// 分享工具：统一处理 iOS/iPad 的 sharePositionOrigin。
 ///
@@ -18,13 +18,11 @@ class ShareHelper {
       if (box != null && box.hasSize) {
         final offset = box.localToGlobal(Offset.zero);
         final rect = offset & box.size;
-        // 确保矩形非零
         if (rect.width > 0 && rect.height > 0) return rect;
       }
     } catch (_) {
       // 忽略，走回退
     }
-    // 回退：屏幕中心一个 1x1 的矩形（非零，满足 UIKit 要求）
     final size = MediaQuery.maybeOf(context)?.size ?? const Size(400, 800);
     return Rect.fromCenter(
       center: Offset(size.width / 2, size.height / 2),
