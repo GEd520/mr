@@ -36,7 +36,8 @@ add_library(quickjs_c_bridge SHARED ${QUICKJS_SOURCES})
 # 体积优化：编译选项 —— 体积优先 + 裁剪未引用代码
 # -Oz：极致体积优先（比 -O3 体积小 20-30%，速度损失约 10-15%，移动端首选）
 #   注：QuickJS 主要计算开销已沉降至 C 原生函数（Phase 1-3），解释器速度损失用户感知不强
-# -flto：链接期跨文件内联 + 死代码消除（同时优化速度和体积）
+# -flto：链接期跨文件内联 + 死代码消除
+#   quickjs.c（5万+行）在 CI runner 上易 OOM，不给它加 -flto
 # -ffunction-sections -fdata-sections：按函数/数据分段，配合 --gc-sections 裁剪未引用代码
 # -fomit-frame-pointer：释放 fp 寄存器（arm64 默认行为，显式声明）
 target_compile_options(quickjs_c_bridge PRIVATE
@@ -49,12 +50,30 @@ target_compile_options(quickjs_c_bridge PRIVATE
     -ffunction-sections
     -fdata-sections
     -fomit-frame-pointer
-    -flto
 )
 
-# quickjs.c 异常大（5万+行），带 LTO 编译在低内存 CI runner 上容易 OOM
-# -fno-lto 覆盖 target 的 -flto，只影响 quickjs.c 一个文件
-set_source_files_properties(${QUICKJS_SRC_DIR}/quickjs.c PROPERTIES COMPILE_FLAGS "-fno-lto")
+# quickjs.c 单独跳过 -flto（文件太大，CI runner 内存不足时 OOM）
+# 其他所有文件正常使用 -flto，链接器的 -flto 仍能全量跨模块优化
+set_source_files_properties(
+    ${QUICKJS_SRC_DIR}/cutils.c
+    ${QUICKJS_SRC_DIR}/dtoa.c
+    ${QUICKJS_SRC_DIR}/libregexp.c
+    ${QUICKJS_SRC_DIR}/libunicode.c
+    ${QUICKJS_SRC_DIR}/quickjs_bridge.c
+    ${QUICKJS_SRC_DIR}/lzstring.c
+    ${QUICKJS_SRC_DIR}/batch_decompress.c
+    ${QUICKJS_SRC_DIR}/html_native.c
+    ${QUICKJS_SRC_DIR}/charset_conv.c
+    ${QUICKJS_SRC_DIR}/crypto/md5.c
+    ${QUICKJS_SRC_DIR}/crypto/sha1.c
+    ${QUICKJS_SRC_DIR}/crypto/sha256.c
+    ${QUICKJS_SRC_DIR}/crypto/hmac_sha256.c
+    ${QUICKJS_SRC_DIR}/crypto/aes.c
+    ${QUICKJS_SRC_DIR}/http_client.c
+    ${QUICKJS_SRC_DIR}/handle_table.c
+    ${QUICKJS_SRC_DIR}/memory_tracker.c
+    PROPERTIES COMPILE_FLAGS "-flto"
+)
 
 # 链接期优化：LTO + gc-sections + version-script 精确控制导出符号 + strip
 # -Wl,--gc-sections：移除未引用的函数/数据段
