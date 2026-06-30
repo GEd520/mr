@@ -9,6 +9,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../../utils/share_helper.dart';
 import '../../models/book_source.dart';
 import '../../routes/app_routes.dart';
 import '../../services/app_logger.dart';
@@ -1617,7 +1618,9 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
         _debugLogs.add('≡正在导出日志...');
       });
 
-      await Share.shareXFiles(
+      if (!mounted) return;
+      await ShareHelper.shareFiles(
+        context,
         [XFile(file.path)],
         subject: '导出调试日志',
         text: '导出调试日志',
