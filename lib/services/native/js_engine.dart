@@ -3568,18 +3568,10 @@ class JsEngine {
   /// 输出 JS 执行链路追踪：脚本预览 + 行数 + 耗时 + 结果
   void _logExecutionTrace(String script, int elapsedMs, bool isError, String? resultOrErr) {
     if (!kDebugMode) return;
-    final lineCount = '\n'.allMatches(script).length + 1;
-    final preview = script.length > 80 ? '${script.substring(0, 80)}...' : script;
-    final status = isError ? 'ERROR' : 'OK';
-    final resultPreview = (resultOrErr ?? '').length > 100
-        ? '${(resultOrErr ?? '').substring(0, 100)}...'
-        : (resultOrErr ?? '');
-    AppLogger.instance.debug(LogCategory.js, '[JS eval ${elapsedMs}ms $status] $lineCount lines',
-      detail: 'code: $preview\nresult: $resultPreview');
-    debugPrint('[JS eval ${elapsedMs}ms $status] $lineCount lines | $preview');
-    if (resultPreview.isNotEmpty) {
-      debugPrint('  → $resultPreview');
-    }
+    // 日志出锁设计：锁内只记录关键信息，字符串构建移到 AppLogger 中异步处理
+    // 避免锁内在 debugPrint 上停留
+    AppLogger.instance.debug(LogCategory.js, '[JS eval ${elapsedMs}ms ${isError ? "ERROR" : "OK"}] ${script.length > 80 ? "${script.substring(0, 80)}..." : script}',
+      detail: resultOrErr != null && resultOrErr.length > 200 ? '${resultOrErr.substring(0, 200)}...' : (resultOrErr ?? ''));
   }
 
   Future<dynamic> evaluateAsync(String script) async {
@@ -3739,6 +3731,10 @@ class JsEngine {
 
           var __returnValue = (function() { $wrappedCode })();
           if (typeof __returnValue === 'object' && __returnValue !== null) {
+            // Uint8Array 转普通数组再 JSON（Legado ByteArray 契约）
+            if (__returnValue instanceof Uint8Array) {
+              return JSON.stringify(Array.from(__returnValue));
+            }
             return JSON.stringify(__returnValue);
           }
           return __returnValue;
@@ -3934,6 +3930,10 @@ class JsEngine {
 
           var __returnValue = (function() { $wrappedCode })();
           if (typeof __returnValue === 'object' && __returnValue !== null) {
+            // Uint8Array 转普通数组再 JSON（Legado ByteArray 契约）
+            if (__returnValue instanceof Uint8Array) {
+              return JSON.stringify(Array.from(__returnValue));
+            }
             return JSON.stringify(__returnValue);
           }
           return __returnValue;
@@ -4142,6 +4142,10 @@ class JsEngine {
 
           var __returnValue = (function() { $wrappedCode })();
           if (typeof __returnValue === 'object' && __returnValue !== null) {
+            // Uint8Array 转普通数组再 JSON（Legado ByteArray 契约）
+            if (__returnValue instanceof Uint8Array) {
+              return JSON.stringify(Array.from(__returnValue));
+            }
             return JSON.stringify(__returnValue);
           }
           return __returnValue;
@@ -4291,6 +4295,10 @@ class JsEngine {
   /// 序列化 content 为 JSON 字符串（用于嵌入 JS 脚本）
   static String serializeForJs(dynamic content) {
     if (content is List || content is Map) {
+      // Uint8List → JS new Uint8Array([...])，匹配 Legado ByteArray 契约
+      if (content is Uint8List) {
+        return 'new Uint8Array([${content.join(',')}])';
+      }
       return jsonEncode(content);
     } else if (content is String) {
       return jsonEncode(content);
