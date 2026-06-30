@@ -142,6 +142,7 @@ class SourceDebugService {
     _contentSrc = '';
 
     // 清理 JS 侧 _javaCache，防止 OOM
+    // [覆盖安装闪退修复] clearJavaCache 内部已做 warmup 检查
     try {
       JsEngine.instance.clearJavaCache();
     } catch (_) {}
@@ -151,10 +152,32 @@ class SourceDebugService {
     }
   }
 
+  /// [覆盖安装闪退修复] 引擎预热 + 兜底重试
+  /// 覆盖安装后首次调用时 .so 虽已加载但 FFI 符号可能未完全解析，
+  /// 直接 evaluate 会 SIGSEGV 闪退。此方法先 warmup 确认链路活着，
+  /// 失败则 init 重建一次再重试。
+  Future<bool> _ensureEngineReady() async {
+    if (JsEngine.instance.ensureReady()) return true;
+    // 重建运行时
+    try {
+      await JsEngine.instance.init();
+      return JsEngine.instance.ensureReady();
+    } catch (e) {
+      debugPrint('引擎重建仍然失败: $e');
+      return false;
+    }
+  }
+
   /// 开始调试
   /// [bookSource] 书源对象
   /// [key] 调试关键字
   Future<void> startDebug(BookSource bookSource, String key) async {
+    // [覆盖安装闪退修复] 引擎预热 + 兜底重试
+    if (!await _ensureEngineReady()) {
+      log('⇒引擎初始化失败，请重启应用重试', state: DebugState.error.code);
+      return;
+    }
+
     // 重置状态
     cancelDebug();
     _isCancelled = false;

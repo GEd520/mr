@@ -376,6 +376,28 @@ class JsEngine {
     }
   }
 
+  /// [覆盖安装闪退修复] FFI 链路 warmup + 兜底重试
+  /// init() 只验证 JS 全局对象存在性，不验证 FFI 链路是否真的活着的。
+  /// 覆盖安装后 .so 虽已加载但 FFI 符号可能未完全解析，
+  /// 实际调用 evaluate() 时 SIGSEGV。
+  ///
+  /// warmup：执行一次跨 FFI 调用的 evaluate，确认链路活着
+  /// 失败则 dispose 重建一次
+  bool ensureReady() {
+    if (!_initialized || _jsRuntime == null) return false;
+    try {
+      evaluate('1+1');
+      return true;
+    } catch (_) {
+      // warmup 失败 → 销毁重建
+      debugPrint('JsEngine warmup 失败，尝试重建运行时...');
+      _jsRuntime?.dispose();
+      _jsRuntime = null;
+      _initialized = false;
+      return false;
+    }
+  }
+
   bool get isAvailable => _initialized && _jsRuntime != null;
 
   // ===== Phase 6: 性能统计接口（代理到 JavascriptRuntime）=====
@@ -4581,8 +4603,10 @@ class JsEngine {
 
   /// 清除 JS 侧 _javaCache（桥接预缓存结果）
   /// 防止调试多个书源/规则时 _javaCache 无限膨胀导致 QuickJS 堆 OOM
+  /// [覆盖安装闪退修复] 先 warmup 确认 FFI 链路活着再 evaluate
   void clearJavaCache() {
     if (_jsRuntime == null || !_initialized) return;
+    if (!ensureReady()) return; // warmup 失败（FFI 链路未就绪）→ 跳过，不崩溃
     try {
       evaluate('_javaCache = {};');
       _cachedKeys.clear();

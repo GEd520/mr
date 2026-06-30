@@ -14,6 +14,9 @@ import 'charset_utils.dart';
 import 'web_proxy.dart';
 import '../native/js_advanced_service.dart';
 import '../native/js_engine.dart';
+/// 每个规则类型只显示一次日志的集合
+final Set<String> _loggedRuleTags = {};
+
 /// URL 请求选项（类似 OkHttp 的 Request.Builder）
 class UrlOption {
   final String? method;
@@ -296,7 +299,9 @@ class WebBook {
         sourceEngine: source.engineType,
         env: env,
       );
-      AppLogger.instance.logJsResult('分流', jsResult);
+      if (_loggedRuleTags.add('flow')) {
+        AppLogger.instance.logJsResult('分流', jsResult);
+      }
       return jsResult;
     } catch (e) {
       AppLogger.instance.logJsError('分流', e.toString());
@@ -727,10 +732,14 @@ class WebBook {
         actualBookListRule = actualBookListRule.substring(1);
       }
 
-      AppLogger.instance.logParse('搜索列表', actualBookListRule);
+      if (_loggedRuleTags.add('搜索列表')) {
+        AppLogger.instance.logParse('搜索列表', actualBookListRule);
+      }
 
       var bookElements = await analyzer.getElementsAsync(actualBookListRule);
-      AppLogger.instance.logParseResult('搜索列表', bookElements.length);
+      if (_loggedRuleTags.add('搜索列表_结果')) {
+        AppLogger.instance.logParseResult('搜索列表', bookElements.length);
+      }
 
       // 保存原始元素数量（用于调试）
       lastSearchElementCount = bookElements.length;
@@ -934,7 +943,9 @@ class WebBook {
         final initElement = analyzer.getElement(bookInfoRule.init!);
         if (initElement != null) {
           analyzer.setContent(initElement);
-          AppLogger.instance.logJsResult('init', '元素定位成功，内容已替换');
+          if (_loggedRuleTags.add('详情_init')) {
+            AppLogger.instance.logJsResult('init', '元素定位成功，内容已替换');
+          }
         }
       }
 
@@ -1521,7 +1532,9 @@ class WebBook {
         content = '${content ?? ''}\n$subContent'.trim();
       }
 
-      AppLogger.instance.logParseResult('正文', content != null ? 1 : 0);
+      if (_loggedRuleTags.add('正文')) {
+        AppLogger.instance.logParseResult('正文', content != null ? 1 : 0);
+      }
 
       // 处理 nextContentUrl（正文下一页）
       // 对齐 legado BookContent.kt:257-259: nextUrlList.addAll(it)
@@ -1659,8 +1672,10 @@ class WebBook {
             result: content ?? '', baseUrl: chapterUrl);
         if (jsResult != null && jsResult.isNotEmpty) {
           content = jsResult;
-          AppLogger.instance
-              .logJsResult('content.js', '${jsResult.length} chars');
+          if (_loggedRuleTags.add('正文_js')) {
+            AppLogger.instance
+                .logJsResult('content.js', '${jsResult.length} chars');
+          }
         }
       }
 
@@ -1671,8 +1686,10 @@ class WebBook {
             result: content ?? '', baseUrl: chapterUrl);
         if (callBackResult != null && callBackResult.isNotEmpty) {
           content = callBackResult;
-          AppLogger.instance
-              .logJsResult('callBackJs', '${callBackResult.length} chars');
+          if (_loggedRuleTags.add('正文_callBackJs')) {
+            AppLogger.instance
+                .logJsResult('callBackJs', '${callBackResult.length} chars');
+          }
         }
       }
 
