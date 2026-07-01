@@ -1794,6 +1794,15 @@ class AnalyzeRule {
       });
 
       // 构造批量 JS：注入环境变量 + 用 map 对数组中的每个元素执行同一规则
+      // [bug 修复] JS 规则可能是表达式（result.trim()）或语句（return result.trim()）
+      // legado 的 Rhino eval 在函数上下文执行，return 合法
+      // QuickJS eval 在全局上下文执行，return 会 SyntaxError
+      // 解决：检测 jsCode 是否含 return/;/}，语句用函数包装，表达式直接赋值
+      final jsWrapper = jsCode.contains('return') ||
+              jsCode.contains(';') ||
+              jsCode.contains('}')
+          ? '(function(){ $jsCode })()'
+          : jsCode;
       final batchCode = '(function(){'
           'var baseUrl=$baseUrlStr;'
           'var book=$bookStr;'
@@ -1805,7 +1814,7 @@ class AnalyzeRule {
           'globalThis.baseUrl=baseUrl;globalThis.book=book;globalThis.source=source;'
           'return JSON.parse(JSON.stringify($itemsJson.map(function(el,idx){'
           'var result=el;'
-          'try{result=$jsCode}catch(e){result=null}'
+          'try{result=$jsWrapper}catch(e){result=null}'
           'return result;}))})();';
 
       // [性能优化] 走轻量路径 batchEvaluate，跳过 processJsRule 重路径
@@ -2112,6 +2121,15 @@ class AnalyzeRule {
       }
     });
 
+    // [bug 修复] JS 规则可能是表达式（result.trim()）或语句（return result.trim()）
+    // legado 的 Rhino eval 在函数上下文执行，return 合法
+    // QuickJS eval 在全局上下文执行，return 会 SyntaxError
+    // 解决：检测 jsCode 是否含 return/;/}，语句用函数包装，表达式直接赋值
+    final jsWrapper = jsCode.contains('return') ||
+            jsCode.contains(';') ||
+            jsCode.contains('}')
+        ? '(function(){ $jsCode })()'
+        : jsCode;
     final batchCode = '(function(){'
         'var baseUrl=$baseUrlStr;'
         'var book=$bookStr;'
@@ -2123,7 +2141,7 @@ class AnalyzeRule {
         'globalThis.baseUrl=baseUrl;globalThis.book=book;globalThis.source=source;'
         'return JSON.parse(JSON.stringify($itemsJson.map(function(el,idx){'
         'var result=el;'
-        'try{result=$jsCode}catch(e){result=null}'
+        'try{result=$jsWrapper}catch(e){result=null}'
         'return result;}))})();';
 
     final jsResult = await JsEngine.instance.batchEvaluate(batchCode);
