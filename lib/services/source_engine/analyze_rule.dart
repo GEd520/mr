@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:html/dom.dart' as dom;
 import 'package:html/parser.dart' as html_parser;
 import 'package:html/src/query_selector.dart' as html_query;
@@ -2087,6 +2088,22 @@ class AnalyzeRule {
       }
     }
 
+    // [TOC_DEBUG] 步骤一 CSS 提取结果统计
+    {
+      final nonEmpty = cssResults.where((s) => s.isNotEmpty).length;
+      final samples = <String>[];
+      for (var i = 0; i < cssResults.length && samples.length < 3; i++) {
+        if (cssResults[i].isNotEmpty) {
+          var s = cssResults[i];
+          if (s.length > 80) s = '${s.substring(0, 80)}...';
+          samples.add('[$i]=$s');
+        }
+      }
+      debugPrint('[TOC_DEBUG] step1 CSS: n=$n nonEmpty=$nonEmpty '
+          'cssRule="${cssRule.length > 60 ? '${cssRule.substring(0, 60)}...' : cssRule}" '
+          'isCss=$isCss groups=${groups.length} samples=$samples');
+    }
+
     // ===== 步骤二：批量 JS 执行 =====
     // 剥离 @js:/@webjs: 前缀（_splitSourceRule 保留完整前缀）
     final jsCode = (jsStep.mode == RuleMode.webJs
@@ -2145,12 +2162,45 @@ class AnalyzeRule {
         'return result;}))})();';
 
     final jsResult = await JsEngine.instance.batchEvaluate(batchCode);
+    // [TOC_DEBUG] 步骤二 JS 执行结果
+    {
+      final jsCodePreview = jsCode.length > 100
+          ? '${jsCode.substring(0, 100)}...'
+          : jsCode;
+      final resultPreview = jsResult == null
+          ? 'NULL'
+          : (jsResult.length > 200
+              ? '${jsResult.substring(0, 200)}...(len=${jsResult.length})'
+              : jsResult);
+      debugPrint('[TOC_DEBUG] step2 JS: jsCode="$jsCodePreview" '
+          'result=$resultPreview');
+    }
     if (jsResult == null || jsResult.isEmpty) {
+      debugPrint('[TOC_DEBUG] step2 JS 返回空，降级全 null');
       return List<String?>.filled(n, null);
     }
 
     final decoded = jsonDecode(jsResult);
-    if (decoded is! List) return List<String?>.filled(n, null);
+    // [TOC_DEBUG] 步骤二解码结果
+    debugPrint('[TOC_DEBUG] step2 decoded: type=${decoded.runtimeType} '
+        'len=${decoded is List ? decoded.length : 'N/A'}');
+    if (decoded is List) {
+      final nonNull = decoded.where((e) => e != null).length;
+      final samples = <String>[];
+      for (var i = 0; i < decoded.length && samples.length < 3; i++) {
+        final v = decoded[i]?.toString();
+        if (v != null && v.isNotEmpty) {
+          var s = v;
+          if (s.length > 80) s = '${s.substring(0, 80)}...';
+          samples.add('[$i]=$s');
+        }
+      }
+      debugPrint('[TOC_DEBUG] step2 decoded: nonNull=$nonNull samples=$samples');
+    }
+    if (decoded is! List) {
+      debugPrint('[TOC_DEBUG] step2 decoded 不是 List，降级全 null');
+      return List<String?>.filled(n, null);
+    }
 
     // 后处理：HTML 反转义 + URL 拼接
     final results = List<String?>.filled(n, null);
@@ -2173,6 +2223,22 @@ class AnalyzeRule {
         continue;
       }
       results[i] = value;
+    }
+
+    // [TOC_DEBUG] 最终结果统计
+    {
+      final nonNull = results.where((e) => e != null).length;
+      final samples = <String>[];
+      for (var i = 0; i < results.length && samples.length < 3; i++) {
+        final v = results[i];
+        if (v != null) {
+          var s = v;
+          if (s.length > 80) s = '${s.substring(0, 80)}...';
+          samples.add('[$i]=$s');
+        }
+      }
+      debugPrint('[TOC_DEBUG] final: n=$n nonNull=$nonNull isUrl=$isUrl '
+          'samples=$samples');
     }
 
     return results;
