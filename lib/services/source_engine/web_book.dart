@@ -1488,10 +1488,39 @@ class WebBook {
       batchFutures.add(isVipJs ? batchAnalyzer.batchApplyJsAsync(elements, _stripJsTag(vipRule)) : null);
       batchFutures.add(isPayJs ? batchAnalyzer.batchApplyJsAsync(elements, _stripJsTag(payRule)) : null);
 
-      // 并发发射所有 JS batch（非 JS 字段为 null，不参与 await）
+      // [批量提取路由器] 非 JS 字段并发发射 batchExtractAsync
+      // 路由器自动判断规则类型：
+      //   - 纯 CSS/Jsoup → batchCssExtractAsync（1 次规则解析 + N 次轻量调用）
+      //   - CSS+JS 两步混合（selector@js:code）→ batchCssThenJsInternal（1 次 batchCss + 1 次 batchEvaluate）
+      //   - 含变量/模板/多步复杂 → 返回 null 降级到逐元素 getStringAsync
+      // 之前：N 个元素 × M 非 JS 字段 = N×M 次 getStringAsync（每次创建 AnalyzeRule + JsTracer.clear + _applyVariablesAsync）
+      // 现在：M 字段 = M 次 batchExtractAsync，每字段规则只解析一次，跳过重路径
+      final batchCssFutures = <Future<List<String?>?>>[
+        !isNameJs && hasName
+            ? batchAnalyzer.batchExtractAsync(elements, nameRule)
+            : Future.value(null),
+        !isUrlJs && hasUrl
+            ? batchAnalyzer.batchExtractAsync(elements, urlRule, isUrl: true)
+            : Future.value(null),
+        !isVolumeJs && hasVolume
+            ? batchAnalyzer.batchExtractAsync(elements, volumeRule)
+            : Future.value(null),
+        !isTimeJs && hasTime
+            ? batchAnalyzer.batchExtractAsync(elements, timeRule)
+            : Future.value(null),
+        !isVipJs && hasVip
+            ? batchAnalyzer.batchExtractAsync(elements, vipRule)
+            : Future.value(null),
+        !isPayJs && hasPay
+            ? batchAnalyzer.batchExtractAsync(elements, payRule)
+            : Future.value(null),
+      ];
+
+      // 并发发射所有 JS batch 和 CSS batch（1 轮 await 替代 12 轮串行）
       final batchResults = await Future.wait(
-        batchFutures.map((f) => f ?? Future.value(null)),
+        batchFutures.map((f) => f ?? Future.value(<String?>[])),
       );
+      final batchCssResults = await Future.wait(batchCssFutures);
 
       final batchNames = batchResults[0];
       final batchUrls = batchResults[1];
@@ -1500,59 +1529,96 @@ class WebBook {
       final batchVips = batchResults[4];
       final batchPays = batchResults[5];
 
+      // CSS batch 可能返回 null（规则含变量/JS 需降级）
+      final batchCssNames = batchCssResults[0];
+      final batchCssUrls = batchCssResults[1];
+      final batchCssVolumes = batchCssResults[2];
+      final batchCssTimes = batchCssResults[3];
+      final batchCssVips = batchCssResults[4];
+      final batchCssPays = batchCssResults[5];
+
+      // 预计算每个字段是否走 CSS batch 命中路径（避免在 1000+ 循环内重复判空）
+      final useCssName = batchCssNames != null;
+      final useCssUrl = batchCssUrls != null;
+      final useCssVolume = batchCssVolumes != null;
+      final useCssTime = batchCssTimes != null;
+      final useCssVip = batchCssVips != null;
+      final useCssPay = batchCssPays != null;
+
       final allResults = await Future.wait(
         List.generate(elements.length, (idx) async {
-          final item = elements[idx];
-          final itemAnalyzer = AnalyzeRule()
-            ..setContent(item, baseUrl: baseUrl)
-            ..setRedirectUrl(redirectUrl)
-            ..setSourceEngine(source.engineType)
-            ..setSourceInfo(sourceMap)
-            ..setBookInfo(bookMap);
+          // CSS batch 命中的字段无需创建 itemAnalyzer，零对象/零 getStringAsync 开销
+          // 仅当至少有一个字段需降级时才创建 itemAnalyzer
+          final needItemAnalyzer = !useCssName && hasName && !isNameJs ||
+              !useCssUrl && hasUrl && !isUrlJs ||
+              !useCssVolume && hasVolume && !isVolumeJs ||
+              !useCssTime && hasTime && !isTimeJs ||
+              !useCssVip && hasVip && !isVipJs ||
+              !useCssPay && hasPay && !isPayJs;
 
-          // JS 规则从预计算结果数组取值，非 JS 规则走逐元素异步
+          final itemAnalyzer = needItemAnalyzer
+              ? (AnalyzeRule()
+                  ..setContent(elements[idx], baseUrl: baseUrl)
+                  ..setRedirectUrl(redirectUrl)
+                  ..setSourceEngine(source.engineType)
+                  ..setSourceInfo(sourceMap)
+                  ..setBookInfo(bookMap))
+              : null;
+
+          // JS 规则从预计算结果数组取值，CSS batch 命中字段也从数组取值，仅降级字段走逐元素
           final futures = <Future<String?>>[];
           if (hasName) {
             if (isNameJs) {
-              // 从批量结果取值，零 FFI 调用
               futures.add(Future.value(batchNames![idx]));
+            } else if (useCssName) {
+              futures.add(Future.value(batchCssNames![idx]));
             } else {
-              futures.add(itemAnalyzer.getStringAsync(nameRule).catchError((_) => null));
+              futures.add(itemAnalyzer!.getStringAsync(nameRule).catchError((_) => null));
             }
           }
           if (hasUrl) {
             if (isUrlJs) {
               futures.add(Future.value(batchUrls![idx]));
+            } else if (useCssUrl) {
+              futures.add(Future.value(batchCssUrls![idx]));
             } else {
-              futures.add(itemAnalyzer.getStringAsync(urlRule).catchError((_) => null));
+              futures.add(itemAnalyzer!.getStringAsync(urlRule).catchError((_) => null));
             }
           }
           if (hasVolume) {
             if (isVolumeJs) {
               futures.add(Future.value(batchVolumes![idx]));
+            } else if (useCssVolume) {
+              futures.add(Future.value(batchCssVolumes![idx]));
             } else {
-              futures.add(itemAnalyzer.getStringAsync(volumeRule).catchError((_) => null));
+              futures.add(itemAnalyzer!.getStringAsync(volumeRule).catchError((_) => null));
             }
           }
           if (hasTime) {
             if (isTimeJs) {
               futures.add(Future.value(batchTimes![idx]));
+            } else if (useCssTime) {
+              futures.add(Future.value(batchCssTimes![idx]));
             } else {
-              futures.add(itemAnalyzer.getStringAsync(timeRule).catchError((_) => null));
+              futures.add(itemAnalyzer!.getStringAsync(timeRule).catchError((_) => null));
             }
           }
           if (hasVip) {
             if (isVipJs) {
               futures.add(Future.value(batchVips![idx]));
+            } else if (useCssVip) {
+              futures.add(Future.value(batchCssVips![idx]));
             } else {
-              futures.add(itemAnalyzer.getStringAsync(vipRule).catchError((_) => null));
+              futures.add(itemAnalyzer!.getStringAsync(vipRule).catchError((_) => null));
             }
           }
           if (hasPay) {
             if (isPayJs) {
               futures.add(Future.value(batchPays![idx]));
+            } else if (useCssPay) {
+              futures.add(Future.value(batchCssPays![idx]));
             } else {
-              futures.add(itemAnalyzer.getStringAsync(payRule).catchError((_) => null));
+              futures.add(itemAnalyzer!.getStringAsync(payRule).catchError((_) => null));
             }
           }
 

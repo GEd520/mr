@@ -341,11 +341,13 @@ class AppLogger {
 
   void logJsTree(String engine, String treeString) {
     if (treeString.isEmpty || treeString == '(no trace)') return;
-    info(LogCategory.js, '[$engine] JS执行树', detail: treeString);
+    // 降级为 debug：Release 模式自动过滤，避免 1000+ 章节每字段每步 2 次日志的开销
+    debug(LogCategory.js, '[$engine] JS执行树', detail: treeString);
   }
 
   void logJsStep(String engine, String step, {String? detail}) {
-    info(LogCategory.js, '[$engine] $step', detail: detail);
+    // 降级为 debug：Release 模式自动过滤，避免 1000+ 章节每字段每步 2 次日志的开销
+    debug(LogCategory.js, '[$engine] $step', detail: detail);
   }
 
   // ===== 规则解析专用 =====
