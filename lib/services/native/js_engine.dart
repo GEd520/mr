@@ -347,11 +347,39 @@ class JsEngine {
       _nativeLibChecked = true;
     }
 
-    // [覆盖安装闪退修复] 快路径：_initialized 为真直接信任，零 FFI 调用
+    // [覆盖安装闪退修复] 快路径：_initialized 为真且 runtime 存在直接信任，零 FFI 调用
     // 不做 evaluate() 健康检查，避免 SIGSEGV 裸奔（FFI 段错误 Dart catch 不住）
     if (_initialized && _jsRuntime != null) return true;
 
-    if (_initialized) return true;
+    // [状态一致性修复] 上次 init() 在 getJavascriptRuntime() 之后失败的情况：
+    // _jsRuntime 已赋值但 _initialized=false，旧 runtime 未正确 dispose。
+    // 直接置 null 会让 Finalizer 在 GC 时回收，但时机不确定，可能在后续 FFI 调用
+    // 过程中释放 C 侧 bridge → 野指针 → SIGSEGV。这里主动 dispose 确保立即释放。
+    if (_jsRuntime != null && !_initialized) {
+      try {
+        _jsRuntime!.dispose();
+      } catch (_) {}
+      _jsRuntime = null;
+    }
+
+    // [FFI 健康检查] 在 getJavascriptRuntime() 之前，先调用简单的 C 函数验证 FFI 可用
+    // nativeGetCpuCount() 只调用 sysconf，不会 SIGSEGV
+    // 如果 DynamicLibrary.open 或 lookup 失败，会抛 ArgumentError（可捕获）
+    // 覆盖安装后第一次启动时，若 .so 未完全就绪，这里能安全检测并返回 false
+    // Dart 顶层 final 初始化失败后，后续访问会重新尝试初始化，故第二次 init() 可恢复
+    try {
+      final cpuCount = nativeGetCpuCount();
+      if (cpuCount <= 0) {
+        debugPrint('JsEngine init: FFI 健康检查失败，cpuCount=$cpuCount');
+        _nativeLibChecked = false;
+        return false;
+      }
+    } catch (e, st) {
+      debugPrint('JsEngine init: FFI 健康检查异常（.so 可能未就绪）: $e\n$st');
+      _nativeLibChecked = false;
+      return false;
+    }
+
     try {
       _jsRuntime = getJavascriptRuntime();
       // P2: 设置默认 JS 执行超时 5 秒，防止死循环卡死 App
@@ -369,6 +397,12 @@ class JsEngine {
         _injectJavaBridge();
         final retryResult = evaluate('typeof java !== "undefined" && typeof _AES !== "undefined"');
         if (retryResult != 'true') {
+          // [状态一致性修复] 验证失败时 dispose runtime，避免下次 init() 创建新 runtime
+          // 导致旧 runtime 的 Finalizer 在不确定时机释放 C 侧 bridge
+          try {
+            _jsRuntime!.dispose();
+          } catch (_) {}
+          _jsRuntime = null;
           return false;
         }
       }
@@ -379,6 +413,13 @@ class JsEngine {
       // FFI lookup 失败（QuickJS 符号未链接到二进制）会在此抛出 ArgumentError
       // 之前被静默吞掉，现在打印日志便于诊断
       debugPrint('JsEngine init failed: $e\n$st');
+      // [状态一致性修复] 异常路径 dispose runtime，避免野指针
+      if (_jsRuntime != null) {
+        try {
+          _jsRuntime!.dispose();
+        } catch (_) {}
+        _jsRuntime = null;
+      }
       return false;
     }
   }
