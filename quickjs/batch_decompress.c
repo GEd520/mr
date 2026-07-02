@@ -344,3 +344,334 @@ int aes_decrypt_lz_batch(const char **b64_inputs, const size_t *b64_lens, size_t
     free(ctxs);
     return 0;
 }
+
+// ---------- AES-CBC 批量解密（纯解密，无 LZ 解压）----------
+// 对应 aesDecryptFromBase64 的批量版本：独立 key + iv 参数
+typedef struct {
+    const char **b64_inputs;
+    const size_t *b64_lens;
+    const char *key_utf8;
+    size_t key_len;
+    const char *iv_utf8;
+    size_t iv_len;
+    char **outputs;
+    size_t *out_lens;
+    size_t start;
+    size_t end;
+} aes_cbc_batch_ctx_t;
+
+static void *aes_cbc_batch_worker(void *arg) {
+    aes_cbc_batch_ctx_t *ctx = (aes_cbc_batch_ctx_t *)arg;
+    // 预处理 key 长度（所有元素共用同一 key/iv，只需计算一次）
+    size_t actual_key_len;
+    if (ctx->key_len <= 16) actual_key_len = 16;
+    else if (ctx->key_len <= 24) actual_key_len = 24;
+    else actual_key_len = 32;
+
+    uint8_t aes_key[32];
+    memset(aes_key, 0, 32);
+    memcpy(aes_key, ctx->key_utf8, ctx->key_len < actual_key_len ? ctx->key_len : actual_key_len);
+
+    uint8_t aes_iv[16];
+    memset(aes_iv, 0, 16);
+    if (ctx->iv_utf8 && ctx->iv_len > 0)
+        memcpy(aes_iv, ctx->iv_utf8, ctx->iv_len < 16 ? ctx->iv_len : 16);
+
+    // Key expansion 只做一次（同一 key 适用于所有元素）
+    aes_ctx_t actx;
+    if (aes_init(&actx, aes_key, actual_key_len) != 0) {
+        size_t i;
+        for (i = ctx->start; i < ctx->end; i++) {
+            ctx->outputs[i] = NULL;
+            ctx->out_lens[i] = 0;
+        }
+        return NULL;
+    }
+
+    size_t i;
+    for (i = ctx->start; i < ctx->end; i++) {
+        const char *b64 = ctx->b64_inputs[i];
+        size_t b64_len = ctx->b64_lens[i];
+
+        // 1. base64 解码
+        size_t ct_len = 0;
+        uint8_t *ct = b64_decode_local(b64, b64_len, &ct_len);
+        if (!ct || ct_len == 0 || ct_len % 16 != 0) {
+            if (ct) free(ct);
+            ctx->outputs[i] = NULL;
+            ctx->out_lens[i] = 0;
+            continue;
+        }
+
+        // 2. AES-CBC-PKCS7 解密（原地解密在 ct buffer 上完成）
+        size_t pt_len = aes_cbc_decrypt(&actx, aes_iv, ct, ct_len, ct);
+        if (pt_len == (size_t)-1) {
+            free(ct);
+            ctx->outputs[i] = NULL;
+            ctx->out_lens[i] = 0;
+            continue;
+        }
+
+        // 3. 添加 NUL 终止符，移交所有权
+        // realloc 在原 buffer 末尾追加 1 字节（通常 in-place，不复制）
+        char *out = (char *)realloc(ct, pt_len + 1);
+        if (!out) {
+            // realloc 失败极少见，回退 malloc + memcpy
+            out = (char *)malloc(pt_len + 1);
+            if (!out) {
+                free(ct);
+                ctx->outputs[i] = NULL;
+                ctx->out_lens[i] = 0;
+                continue;
+            }
+            memcpy(out, ct, pt_len);
+            free(ct);
+        }
+        out[pt_len] = '\0';
+        ctx->outputs[i] = out;
+        ctx->out_lens[i] = pt_len;
+    }
+    return NULL;
+}
+
+int aes_decrypt_cbc_batch(const char **b64_inputs, const size_t *b64_lens, size_t count,
+                          const char *key_utf8, size_t key_len,
+                          const char *iv_utf8, size_t iv_len,
+                          char ***out_results, size_t **out_lens) {
+    if (count == 0) {
+        *out_results = NULL;
+        *out_lens = NULL;
+        return 0;
+    }
+    // key 长度校验
+    if (key_len != 16 && key_len != 24 && key_len != 32) {
+        return -2;
+    }
+
+    *out_results = (char **)calloc(count, sizeof(char *));
+    *out_lens = (size_t *)calloc(count, sizeof(size_t));
+    if (!*out_results || !*out_lens) {
+        free(*out_results);
+        free(*out_lens);
+        *out_results = NULL;
+        *out_lens = NULL;
+        return -1;
+    }
+
+    int nthreads = get_cpu_count();
+    if (nthreads < 1) nthreads = 1;
+    if (nthreads > (int)count) nthreads = (int)count;
+
+    if (nthreads == 1) {
+        aes_cbc_batch_ctx_t ctx = {
+            b64_inputs, b64_lens, key_utf8, key_len, iv_utf8, iv_len,
+            *out_results, *out_lens, 0, count
+        };
+        aes_cbc_batch_worker(&ctx);
+        return 0;
+    }
+
+    thread_t *threads = (thread_t *)malloc(nthreads * sizeof(thread_t));
+    aes_cbc_batch_ctx_t *ctxs = (aes_cbc_batch_ctx_t *)malloc(nthreads * sizeof(aes_cbc_batch_ctx_t));
+    if (!threads || !ctxs) {
+        free(threads);
+        free(ctxs);
+        aes_cbc_batch_ctx_t ctx = {
+            b64_inputs, b64_lens, key_utf8, key_len, iv_utf8, iv_len,
+            *out_results, *out_lens, 0, count
+        };
+        aes_cbc_batch_worker(&ctx);
+        return 0;
+    }
+
+    size_t per = count / nthreads;
+    size_t rem = count % nthreads;
+    size_t pos = 0;
+    int i;
+    int ok = 1;
+
+    for (i = 0; i < nthreads; i++) {
+        ctxs[i].b64_inputs = b64_inputs;
+        ctxs[i].b64_lens = b64_lens;
+        ctxs[i].key_utf8 = key_utf8;
+        ctxs[i].key_len = key_len;
+        ctxs[i].iv_utf8 = iv_utf8;
+        ctxs[i].iv_len = iv_len;
+        ctxs[i].outputs = *out_results;
+        ctxs[i].out_lens = *out_lens;
+        ctxs[i].start = pos;
+        pos += per + (i < (int)rem ? 1 : 0);
+        ctxs[i].end = pos;
+        if (thread_create(&threads[i], aes_cbc_batch_worker, &ctxs[i]) != 0) {
+            aes_cbc_batch_worker(&ctxs[i]);
+            threads[i] = 0;
+            ok = 0;
+        }
+    }
+
+    for (i = 0; i < nthreads; i++) {
+        if (ok && threads[i] != 0) {
+            thread_join(threads[i]);
+        }
+    }
+
+    free(threads);
+    free(ctxs);
+    return 0;
+}
+
+// ---------- AES-ECB 批量解密（纯解密，无 LZ 解压）----------
+typedef struct {
+    const char **b64_inputs;
+    const size_t *b64_lens;
+    const char *key_utf8;
+    size_t key_len;
+    char **outputs;
+    size_t *out_lens;
+    size_t start;
+    size_t end;
+} aes_ecb_batch_ctx_t;
+
+static void *aes_ecb_batch_worker(void *arg) {
+    aes_ecb_batch_ctx_t *ctx = (aes_ecb_batch_ctx_t *)arg;
+    size_t actual_key_len;
+    if (ctx->key_len <= 16) actual_key_len = 16;
+    else if (ctx->key_len <= 24) actual_key_len = 24;
+    else actual_key_len = 32;
+
+    uint8_t aes_key[32];
+    memset(aes_key, 0, 32);
+    memcpy(aes_key, ctx->key_utf8, ctx->key_len < actual_key_len ? ctx->key_len : actual_key_len);
+
+    aes_ctx_t actx;
+    if (aes_init(&actx, aes_key, actual_key_len) != 0) {
+        size_t i;
+        for (i = ctx->start; i < ctx->end; i++) {
+            ctx->outputs[i] = NULL;
+            ctx->out_lens[i] = 0;
+        }
+        return NULL;
+    }
+
+    size_t i;
+    for (i = ctx->start; i < ctx->end; i++) {
+        const char *b64 = ctx->b64_inputs[i];
+        size_t b64_len = ctx->b64_lens[i];
+
+        size_t ct_len = 0;
+        uint8_t *ct = b64_decode_local(b64, b64_len, &ct_len);
+        if (!ct || ct_len == 0 || ct_len % 16 != 0) {
+            if (ct) free(ct);
+            ctx->outputs[i] = NULL;
+            ctx->out_lens[i] = 0;
+            continue;
+        }
+
+        size_t pt_len = aes_ecb_decrypt(&actx, ct, ct_len, ct);
+        if (pt_len == (size_t)-1) {
+            free(ct);
+            ctx->outputs[i] = NULL;
+            ctx->out_lens[i] = 0;
+            continue;
+        }
+
+        char *out = (char *)realloc(ct, pt_len + 1);
+        if (!out) {
+            out = (char *)malloc(pt_len + 1);
+            if (!out) {
+                free(ct);
+                ctx->outputs[i] = NULL;
+                ctx->out_lens[i] = 0;
+                continue;
+            }
+            memcpy(out, ct, pt_len);
+            free(ct);
+        }
+        out[pt_len] = '\0';
+        ctx->outputs[i] = out;
+        ctx->out_lens[i] = pt_len;
+    }
+    return NULL;
+}
+
+int aes_decrypt_ecb_batch(const char **b64_inputs, const size_t *b64_lens, size_t count,
+                          const char *key_utf8, size_t key_len,
+                          char ***out_results, size_t **out_lens) {
+    if (count == 0) {
+        *out_results = NULL;
+        *out_lens = NULL;
+        return 0;
+    }
+    if (key_len != 16 && key_len != 24 && key_len != 32) {
+        return -2;
+    }
+
+    *out_results = (char **)calloc(count, sizeof(char *));
+    *out_lens = (size_t *)calloc(count, sizeof(size_t));
+    if (!*out_results || !*out_lens) {
+        free(*out_results);
+        free(*out_lens);
+        *out_results = NULL;
+        *out_lens = NULL;
+        return -1;
+    }
+
+    int nthreads = get_cpu_count();
+    if (nthreads < 1) nthreads = 1;
+    if (nthreads > (int)count) nthreads = (int)count;
+
+    if (nthreads == 1) {
+        aes_ecb_batch_ctx_t ctx = {
+            b64_inputs, b64_lens, key_utf8, key_len,
+            *out_results, *out_lens, 0, count
+        };
+        aes_ecb_batch_worker(&ctx);
+        return 0;
+    }
+
+    thread_t *threads = (thread_t *)malloc(nthreads * sizeof(thread_t));
+    aes_ecb_batch_ctx_t *ctxs = (aes_ecb_batch_ctx_t *)malloc(nthreads * sizeof(aes_ecb_batch_ctx_t));
+    if (!threads || !ctxs) {
+        free(threads);
+        free(ctxs);
+        aes_ecb_batch_ctx_t ctx = {
+            b64_inputs, b64_lens, key_utf8, key_len,
+            *out_results, *out_lens, 0, count
+        };
+        aes_ecb_batch_worker(&ctx);
+        return 0;
+    }
+
+    size_t per = count / nthreads;
+    size_t rem = count % nthreads;
+    size_t pos = 0;
+    int i;
+    int ok = 1;
+
+    for (i = 0; i < nthreads; i++) {
+        ctxs[i].b64_inputs = b64_inputs;
+        ctxs[i].b64_lens = b64_lens;
+        ctxs[i].key_utf8 = key_utf8;
+        ctxs[i].key_len = key_len;
+        ctxs[i].outputs = *out_results;
+        ctxs[i].out_lens = *out_lens;
+        ctxs[i].start = pos;
+        pos += per + (i < (int)rem ? 1 : 0);
+        ctxs[i].end = pos;
+        if (thread_create(&threads[i], aes_ecb_batch_worker, &ctxs[i]) != 0) {
+            aes_ecb_batch_worker(&ctxs[i]);
+            threads[i] = 0;
+            ok = 0;
+        }
+    }
+
+    for (i = 0; i < nthreads; i++) {
+        if (ok && threads[i] != 0) {
+            thread_join(threads[i]);
+        }
+    }
+
+    free(threads);
+    free(ctxs);
+    return 0;
+}

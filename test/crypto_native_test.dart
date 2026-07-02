@@ -131,6 +131,52 @@ void main() {
         expect(decrypted, plaintext, reason: 'AES 加解密不自洽');
       }
     });
+
+    test('AES-CBC 批量解密: aesDecryptFromBase64Batch', () {
+      // 测试批量解密与逐条解密结果一致
+      const testCases = [
+        ('Hello, World!', '1234567890123456', '1234567890123456'),
+        ('你好，世界！', '1234567890123456', '1234567890123456'),
+        ('Batch AES Decrypt Test', '1234567890123456', '1234567890123456'),
+      ];
+
+      // 先加密所有测试数据
+      final cipherList = <String>[];
+      for (final (plaintext, key, iv) in testCases) {
+        final cipherB64 = jsEngine.evaluate(
+          '(function(){ '
+          'var p = _strToU8(${_jsString(plaintext)}); '
+          'var k = _strToU8(${_jsString(key)}); '
+          'var iv = _strToU8(${_jsString(iv)}); '
+          'var c = __nativeCrypto.aesEncryptNative(p, k, iv); '
+          'return _u8ToB64(c); })()'
+        ) as String;
+        cipherList.add(cipherB64);
+      }
+
+      // 构建批量解密的 JS 调用
+      final cipherArrayJs = '[${cipherList.map((c) => _jsString(c)).join(',')}]';
+      final batchResult = jsEngine.evaluate(
+        '(function(){ '
+        'var arr = $cipherArrayJs; '
+        'var key = ${_jsString(testCases.first.$2)}; '
+        'var iv = ${_jsString(testCases.first.$3)}; '
+        'var results = __nativeCrypto.aesDecryptFromBase64Batch(arr, key, iv); '
+        'return JSON.stringify(results); })()'
+      ) as String;
+
+      // 解析批量结果
+      final results = (batchResult.isNotEmpty)
+          ? (jsonDecode(batchResult) as List)
+          : <dynamic>[];
+
+      expect(results.length, testCases.length,
+          reason: '批量解密结果数量不匹配');
+      for (var i = 0; i < testCases.length; i++) {
+        expect(results[i], testCases[i].$1,
+            reason: '批量解密第 $i 项不一致');
+      }
+    });
   });
 }
 

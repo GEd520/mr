@@ -2145,6 +2145,230 @@ static JSValue js_native_aes_decrypt_then_lz_batch(JSContext *ctx, JSValueConst 
     return ret_arr;
 }
 
+// ---------- 批量 AES-CBC-PKCS7 解密（纯解密，无 LZ 解压）----------
+// 对应 aesDecryptFromBase64 的批量版本
+// 输入 (base64Array, keyUtf8, ivUtf8)，返回 JS 字符串数组
+// 1000+ 次逐条调用压缩为 1 次批量调用，消除跨语言通信开销
+static JSValue js_native_aes_decrypt_batch(JSContext *ctx, JSValueConst this_val,
+                                            int argc, JSValueConst *argv) {
+    if (argc < 3 || !JS_IsArray(ctx, argv[0])) {
+        return JS_ThrowTypeError(ctx, "aesDecryptFromBase64Batch requires (array, key, iv)");
+    }
+
+    JSValueConst arr = argv[0];
+    uint32_t count = 0;
+    JSValue len_val = JS_GetPropertyStr(ctx, arr, "length");
+    if (JS_ToUint32(ctx, &count, len_val) != 0) {
+        JS_FreeValue(ctx, len_val);
+        return JS_ThrowTypeError(ctx, "aesDecryptFromBase64Batch: invalid array length");
+    }
+    JS_FreeValue(ctx, len_val);
+
+    const char *key_utf8 = JS_ToCString(ctx, argv[1]);
+    const char *iv_utf8 = JS_ToCString(ctx, argv[2]);
+    if (!key_utf8 || !iv_utf8) {
+        if (key_utf8) JS_FreeCString(ctx, key_utf8);
+        if (iv_utf8) JS_FreeCString(ctx, iv_utf8);
+        return JS_ThrowTypeError(ctx, "aesDecryptFromBase64Batch: key and iv must be strings");
+    }
+    size_t key_len = strlen(key_utf8);
+    if (key_len != 16 && key_len != 24 && key_len != 32) {
+        JS_FreeCString(ctx, key_utf8);
+        JS_FreeCString(ctx, iv_utf8);
+        return JS_ThrowTypeError(ctx, "aesDecryptFromBase64Batch: key length must be 16/24/32, got %d", (int)key_len);
+    }
+    size_t iv_len = strlen(iv_utf8);
+
+    if (count == 0) {
+        JS_FreeCString(ctx, key_utf8);
+        JS_FreeCString(ctx, iv_utf8);
+        return JS_NewArray(ctx);
+    }
+
+    // 收集输入字符串
+    const char **b64_inputs = (const char **)malloc(count * sizeof(char *));
+    size_t *b64_lens = (size_t *)malloc(count * sizeof(size_t));
+    JSValue *js_items = (JSValue *)malloc(count * sizeof(JSValue));
+    if (!b64_inputs || !b64_lens || !js_items) {
+        free(b64_inputs); free(b64_lens); free(js_items);
+        JS_FreeCString(ctx, key_utf8);
+        JS_FreeCString(ctx, iv_utf8);
+        return JS_ThrowTypeError(ctx, "aesDecryptFromBase64Batch: out of memory");
+    }
+
+    uint32_t i;
+    for (i = 0; i < count; i++) {
+        js_items[i] = JS_GetPropertyUint32(ctx, arr, i);
+        if (JS_IsNull(js_items[i]) || JS_IsUndefined(js_items[i])) {
+            b64_inputs[i] = NULL;
+            b64_lens[i] = 0;
+        } else {
+            const char *s = JS_ToCString(ctx, js_items[i]);
+            b64_inputs[i] = s;
+            b64_lens[i] = s ? strlen(s) : 0;
+        }
+    }
+
+    QuickJSBridge *bridge = (QuickJSBridge *)JS_GetContextOpaque(ctx);
+    uint64_t t0 = bridge ? _now_us() : 0;
+
+    char **results = NULL;
+    size_t *out_lens = NULL;
+    int rc = aes_decrypt_cbc_batch(b64_inputs, b64_lens, count,
+                                   key_utf8, key_len, iv_utf8, iv_len,
+                                   &results, &out_lens);
+
+    if (bridge) {
+        uint64_t total_in = 0, total_out = 0;
+        uint32_t j;
+        for (j = 0; j < count; j++) {
+            total_in += b64_lens[j];
+            total_out += out_lens ? out_lens[j] : 0;
+        }
+        _stats_update(&bridge->stats, total_in, total_out, _now_us() - t0);
+    }
+
+    // 释放 JS 字符串
+    for (i = 0; i < count; i++) {
+        if (b64_inputs[i]) JS_FreeCString(ctx, b64_inputs[i]);
+        JS_FreeValue(ctx, js_items[i]);
+    }
+    free(b64_inputs);
+    free(b64_lens);
+    free(js_items);
+    JS_FreeCString(ctx, key_utf8);
+    JS_FreeCString(ctx, iv_utf8);
+
+    if (rc != 0) {
+        if (results) { for (i = 0; i < count; i++) free(results[i]); free(results); }
+        free(out_lens);
+        return JS_ThrowTypeError(ctx, "aesDecryptFromBase64Batch: batch failed (rc=%d)", rc);
+    }
+
+    // 构建结果数组（解密失败的元素返回 null）
+    JSValue ret_arr = JS_NewArray(ctx);
+    for (i = 0; i < count; i++) {
+        JSValue item;
+        if (results[i] == NULL) {
+            item = JS_NULL;
+        } else {
+            item = JS_NewStringLen(ctx, results[i], out_lens[i]);
+            free(results[i]);
+        }
+        JS_SetPropertyUint32(ctx, ret_arr, i, item);
+    }
+
+    free(results);
+    free(out_lens);
+    return ret_arr;
+}
+
+// ---------- 批量 AES-ECB-PKCS7 解密（纯解密，无 LZ 解压）----------
+// 对应 aesDecryptFromBase64ECB 的批量版本
+// 输入 (base64Array, keyUtf8)，返回 JS 字符串数组
+static JSValue js_native_aes_decrypt_batch_ecb(JSContext *ctx, JSValueConst this_val,
+                                                int argc, JSValueConst *argv) {
+    if (argc < 2 || !JS_IsArray(ctx, argv[0])) {
+        return JS_ThrowTypeError(ctx, "aesDecryptFromBase64ECBBatch requires (array, key)");
+    }
+
+    JSValueConst arr = argv[0];
+    uint32_t count = 0;
+    JSValue len_val = JS_GetPropertyStr(ctx, arr, "length");
+    if (JS_ToUint32(ctx, &count, len_val) != 0) {
+        JS_FreeValue(ctx, len_val);
+        return JS_ThrowTypeError(ctx, "aesDecryptFromBase64ECBBatch: invalid array length");
+    }
+    JS_FreeValue(ctx, len_val);
+
+    const char *key_utf8 = JS_ToCString(ctx, argv[1]);
+    if (!key_utf8) {
+        return JS_ThrowTypeError(ctx, "aesDecryptFromBase64ECBBatch: key must be a string");
+    }
+    size_t key_len = strlen(key_utf8);
+    if (key_len != 16 && key_len != 24 && key_len != 32) {
+        JS_FreeCString(ctx, key_utf8);
+        return JS_ThrowTypeError(ctx, "aesDecryptFromBase64ECBBatch: key length must be 16/24/32, got %d", (int)key_len);
+    }
+
+    if (count == 0) {
+        JS_FreeCString(ctx, key_utf8);
+        return JS_NewArray(ctx);
+    }
+
+    const char **b64_inputs = (const char **)malloc(count * sizeof(char *));
+    size_t *b64_lens = (size_t *)malloc(count * sizeof(size_t));
+    JSValue *js_items = (JSValue *)malloc(count * sizeof(JSValue));
+    if (!b64_inputs || !b64_lens || !js_items) {
+        free(b64_inputs); free(b64_lens); free(js_items);
+        JS_FreeCString(ctx, key_utf8);
+        return JS_ThrowTypeError(ctx, "aesDecryptFromBase64ECBBatch: out of memory");
+    }
+
+    uint32_t i;
+    for (i = 0; i < count; i++) {
+        js_items[i] = JS_GetPropertyUint32(ctx, arr, i);
+        if (JS_IsNull(js_items[i]) || JS_IsUndefined(js_items[i])) {
+            b64_inputs[i] = NULL;
+            b64_lens[i] = 0;
+        } else {
+            const char *s = JS_ToCString(ctx, js_items[i]);
+            b64_inputs[i] = s;
+            b64_lens[i] = s ? strlen(s) : 0;
+        }
+    }
+
+    QuickJSBridge *bridge = (QuickJSBridge *)JS_GetContextOpaque(ctx);
+    uint64_t t0 = bridge ? _now_us() : 0;
+
+    char **results = NULL;
+    size_t *out_lens = NULL;
+    int rc = aes_decrypt_ecb_batch(b64_inputs, b64_lens, count,
+                                   key_utf8, key_len,
+                                   &results, &out_lens);
+
+    if (bridge) {
+        uint64_t total_in = 0, total_out = 0;
+        uint32_t j;
+        for (j = 0; j < count; j++) {
+            total_in += b64_lens[j];
+            total_out += out_lens ? out_lens[j] : 0;
+        }
+        _stats_update(&bridge->stats, total_in, total_out, _now_us() - t0);
+    }
+
+    for (i = 0; i < count; i++) {
+        if (b64_inputs[i]) JS_FreeCString(ctx, b64_inputs[i]);
+        JS_FreeValue(ctx, js_items[i]);
+    }
+    free(b64_inputs);
+    free(b64_lens);
+    free(js_items);
+    JS_FreeCString(ctx, key_utf8);
+
+    if (rc != 0) {
+        if (results) { for (i = 0; i < count; i++) free(results[i]); free(results); }
+        free(out_lens);
+        return JS_ThrowTypeError(ctx, "aesDecryptFromBase64ECBBatch: batch failed (rc=%d)", rc);
+    }
+
+    JSValue ret_arr = JS_NewArray(ctx);
+    for (i = 0; i < count; i++) {
+        JSValue item;
+        if (results[i] == NULL) {
+            item = JS_NULL;
+        } else {
+            item = JS_NewStringLen(ctx, results[i], out_lens[i]);
+            free(results[i]);
+        }
+        JS_SetPropertyUint32(ctx, ret_arr, i, item);
+    }
+
+    free(results);
+    free(out_lens);
+    return ret_arr;
+}
+
 // ---------- JS 函数注册 ----------
 // 字符串路径（小数据，< 1KB）
 static JSValue js_crypto_aes_decrypt(JSContext *ctx, JSValueConst this_val,
@@ -2411,6 +2635,12 @@ QuickJSBridge *quickjs_bridge_create_with_config(uint64_t memory_limit, uint64_t
         JS_NewCFunction(bridge->ctx, js_native_aes_encrypt_base64, "aesEncryptFromBase64", 3));
     JS_SetPropertyStr(bridge->ctx, crypto_obj, "aesEncryptFromBase64ECB",
         JS_NewCFunction(bridge->ctx, js_native_aes_encrypt_base64_ecb, "aesEncryptFromBase64ECB", 2));
+    // Phase 6: 批量 AES-CBC 解密（多线程分片，1000+ 次调用压缩为 1 次）
+    JS_SetPropertyStr(bridge->ctx, crypto_obj, "aesDecryptFromBase64Batch",
+        JS_NewCFunction(bridge->ctx, js_native_aes_decrypt_batch, "aesDecryptFromBase64Batch", 3));
+    // Phase 6: 批量 AES-ECB 解密（多线程分片）
+    JS_SetPropertyStr(bridge->ctx, crypto_obj, "aesDecryptFromBase64ECBBatch",
+        JS_NewCFunction(bridge->ctx, js_native_aes_decrypt_batch_ecb, "aesDecryptFromBase64ECBBatch", 2));
 
     JS_SetPropertyStr(bridge->ctx, global_obj, "__nativeCrypto", crypto_obj);
 

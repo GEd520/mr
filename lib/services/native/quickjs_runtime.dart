@@ -672,6 +672,33 @@ typedef _AesDecryptLzBatchDart = int Function(
     Pointer<Utf8>, int,
     Pointer<Pointer<Pointer<Utf8>>>, Pointer<Pointer<IntPtr>>);
 
+// C: int aes_decrypt_cbc_batch(const char **b64_inputs, const size_t *b64_lens,
+//                              size_t count, const char *key_utf8, size_t key_len,
+//                              const char *iv_utf8, size_t iv_len,
+//                              char ***out_results, size_t **out_lens)
+typedef _AesDecryptCbcBatchC = Int32 Function(
+    Pointer<Pointer<Utf8>>, Pointer<IntPtr>, IntPtr,
+    Pointer<Utf8>, IntPtr,
+    Pointer<Utf8>, IntPtr,
+    Pointer<Pointer<Pointer<Utf8>>>, Pointer<Pointer<IntPtr>>);
+typedef _AesDecryptCbcBatchDart = int Function(
+    Pointer<Pointer<Utf8>>, Pointer<IntPtr>, int,
+    Pointer<Utf8>, int,
+    Pointer<Utf8>, int,
+    Pointer<Pointer<Pointer<Utf8>>>, Pointer<Pointer<IntPtr>>);
+
+// C: int aes_decrypt_ecb_batch(const char **b64_inputs, const size_t *b64_lens,
+//                              size_t count, const char *key_utf8, size_t key_len,
+//                              char ***out_results, size_t **out_lens)
+typedef _AesDecryptEcbBatchC = Int32 Function(
+    Pointer<Pointer<Utf8>>, Pointer<IntPtr>, IntPtr,
+    Pointer<Utf8>, IntPtr,
+    Pointer<Pointer<Pointer<Utf8>>>, Pointer<Pointer<IntPtr>>);
+typedef _AesDecryptEcbBatchDart = int Function(
+    Pointer<Pointer<Utf8>>, Pointer<IntPtr>, int,
+    Pointer<Utf8>, int,
+    Pointer<Pointer<Pointer<Utf8>>>, Pointer<Pointer<IntPtr>>);
+
 final _GetCpuCountDart _getCpuCount = _qjsLib
     .lookup<NativeFunction<_GetCpuCountC>>('get_cpu_count')
     .asFunction<_GetCpuCountDart>();
@@ -683,6 +710,14 @@ final _LzDecompressBatchDart _lzDecompressBatch = _qjsLib
 final _AesDecryptLzBatchDart _aesDecryptLzBatch = _qjsLib
     .lookup<NativeFunction<_AesDecryptLzBatchC>>('aes_decrypt_lz_batch')
     .asFunction<_AesDecryptLzBatchDart>();
+
+final _AesDecryptCbcBatchDart _aesDecryptCbcBatch = _qjsLib
+    .lookup<NativeFunction<_AesDecryptCbcBatchC>>('aes_decrypt_cbc_batch')
+    .asFunction<_AesDecryptCbcBatchDart>();
+
+final _AesDecryptEcbBatchDart _aesDecryptEcbBatch = _qjsLib
+    .lookup<NativeFunction<_AesDecryptEcbBatchC>>('aes_decrypt_ecb_batch')
+    .asFunction<_AesDecryptEcbBatchDart>();
 
 /// 获取 CPU 逻辑核心数（来自 C 层，用于面板显示与策略决策）
 int nativeGetCpuCount() => _getCpuCount();
@@ -777,6 +812,149 @@ List<String?> aesDecryptLzBatch(List<String> b64Inputs, String key) {
     keyPtr[keyBytes.length] = 0;
     final rc = _aesDecryptLzBatch(
         inputsPtr, lensPtr, count, keyPtr.cast(), keyBytes.length, outResultsPtr, outLensPtr);
+    if (rc != 0) return List<String?>.filled(count, null);
+    final outResults = outResultsPtr.value;
+    final outLens = outLensPtr.value;
+    final results = <String?>[];
+    for (var i = 0; i < count; i++) {
+      final ptr = outResults[i];
+      if (ptr.address == 0) {
+        results.add(null);
+      } else {
+        final len = outLens[i];
+        if (len == 0) {
+          results.add('');
+        } else {
+          final bytes = ptr.cast<Uint8>().asTypedList(len);
+          results.add(utf8.decode(bytes, allowMalformed: true));
+        }
+        malloc.free(ptr.cast());
+      }
+    }
+    malloc.free(outResults.cast());
+    malloc.free(outLens);
+    return results;
+  } finally {
+    for (var i = 0; i < count; i++) {
+      if (inputsPtr[i].address != 0) malloc.free(inputsPtr[i].cast());
+    }
+    malloc.free(inputsPtr);
+    malloc.free(lensPtr);
+    malloc.free(keyPtr);
+    malloc.free(outResultsPtr);
+    malloc.free(outLensPtr);
+  }
+}
+
+/// 批量 AES-CBC-PKCS7 解密（多线程分片并发，纯解密无 LZ 解压）
+///
+/// 输入 [b64Inputs] base64 密文列表，[key] AES 密钥（16/24/32 字节），[iv] CBC IV
+/// 流程：base64 decode → AES-CBC-PKCS7 decrypt → UTF-8 明文
+/// 返回解密结果列表（null 表示对应输入解密失败）
+///
+/// 对应 JS 侧 __nativeCrypto.aesDecryptFromBase64Batch
+/// 将 1000+ 次逐条 JS↔C 调用压缩为 1 次批量调用
+List<String?> aesDecryptCbcBatch(
+    List<String> b64Inputs, String key, String iv) {
+  if (b64Inputs.isEmpty) return [];
+  final keyBytes = utf8.encode(key);
+  if (keyBytes.length != 16 && keyBytes.length != 24 && keyBytes.length != 32) {
+    throw ArgumentError(
+        'AES key length must be 16/24/32, got ${keyBytes.length}');
+  }
+  final ivBytes = utf8.encode(iv);
+  final count = b64Inputs.length;
+  final inputsPtr = malloc<Pointer<Utf8>>(count);
+  final lensPtr = malloc<IntPtr>(count);
+  final keyPtr = malloc<Uint8>(keyBytes.length + 1);
+  final ivPtr = malloc<Uint8>(ivBytes.length + 1);
+  final outResultsPtr = malloc<Pointer<Pointer<Utf8>>>();
+  final outLensPtr = malloc<Pointer<IntPtr>>();
+  try {
+    for (var i = 0; i < count; i++) {
+      final bytes = utf8.encode(b64Inputs[i]);
+      final ptr = malloc<Uint8>(bytes.length + 1);
+      for (var j = 0; j < bytes.length; j++) ptr[j] = bytes[j];
+      ptr[bytes.length] = 0;
+      inputsPtr[i] = ptr.cast();
+      lensPtr[i] = bytes.length;
+    }
+    for (var i = 0; i < keyBytes.length; i++) keyPtr[i] = keyBytes[i];
+    keyPtr[keyBytes.length] = 0;
+    for (var i = 0; i < ivBytes.length; i++) ivPtr[i] = ivBytes[i];
+    ivPtr[ivBytes.length] = 0;
+    final rc = _aesDecryptCbcBatch(inputsPtr, lensPtr, count,
+        keyPtr.cast(), keyBytes.length, ivPtr.cast(), ivBytes.length,
+        outResultsPtr, outLensPtr);
+    if (rc != 0) return List<String?>.filled(count, null);
+    final outResults = outResultsPtr.value;
+    final outLens = outLensPtr.value;
+    final results = <String?>[];
+    for (var i = 0; i < count; i++) {
+      final ptr = outResults[i];
+      if (ptr.address == 0) {
+        results.add(null);
+      } else {
+        final len = outLens[i];
+        if (len == 0) {
+          results.add('');
+        } else {
+          final bytes = ptr.cast<Uint8>().asTypedList(len);
+          results.add(utf8.decode(bytes, allowMalformed: true));
+        }
+        malloc.free(ptr.cast());
+      }
+    }
+    malloc.free(outResults.cast());
+    malloc.free(outLens);
+    return results;
+  } finally {
+    for (var i = 0; i < count; i++) {
+      if (inputsPtr[i].address != 0) malloc.free(inputsPtr[i].cast());
+    }
+    malloc.free(inputsPtr);
+    malloc.free(lensPtr);
+    malloc.free(keyPtr);
+    malloc.free(ivPtr);
+    malloc.free(outResultsPtr);
+    malloc.free(outLensPtr);
+  }
+}
+
+/// 批量 AES-ECB-PKCS7 解密（多线程分片并发，纯解密无 LZ 解压）
+///
+/// 输入 [b64Inputs] base64 密文列表，[key] AES 密钥（16/24/32 字节）
+/// 流程：base64 decode → AES-ECB-PKCS7 decrypt → UTF-8 明文
+/// 返回解密结果列表（null 表示对应输入解密失败）
+///
+/// 对应 JS 侧 __nativeCrypto.aesDecryptFromBase64ECBBatch
+List<String?> aesDecryptEcbBatch(List<String> b64Inputs, String key) {
+  if (b64Inputs.isEmpty) return [];
+  final keyBytes = utf8.encode(key);
+  if (keyBytes.length != 16 && keyBytes.length != 24 && keyBytes.length != 32) {
+    throw ArgumentError(
+        'AES key length must be 16/24/32, got ${keyBytes.length}');
+  }
+  final count = b64Inputs.length;
+  final inputsPtr = malloc<Pointer<Utf8>>(count);
+  final lensPtr = malloc<IntPtr>(count);
+  final keyPtr = malloc<Uint8>(keyBytes.length + 1);
+  final outResultsPtr = malloc<Pointer<Pointer<Utf8>>>();
+  final outLensPtr = malloc<Pointer<IntPtr>>();
+  try {
+    for (var i = 0; i < count; i++) {
+      final bytes = utf8.encode(b64Inputs[i]);
+      final ptr = malloc<Uint8>(bytes.length + 1);
+      for (var j = 0; j < bytes.length; j++) ptr[j] = bytes[j];
+      ptr[bytes.length] = 0;
+      inputsPtr[i] = ptr.cast();
+      lensPtr[i] = bytes.length;
+    }
+    for (var i = 0; i < keyBytes.length; i++) keyPtr[i] = keyBytes[i];
+    keyPtr[keyBytes.length] = 0;
+    final rc = _aesDecryptEcbBatch(
+        inputsPtr, lensPtr, count, keyPtr.cast(), keyBytes.length,
+        outResultsPtr, outLensPtr);
     if (rc != 0) return List<String?>.filled(count, null);
     final outResults = outResultsPtr.value;
     final outLens = outLensPtr.value;

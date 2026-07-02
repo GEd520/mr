@@ -104,6 +104,15 @@ List<String?> lzDecompressBatch(List<String?> inputs) =>
 List<String?> aesDecryptLzBatch(List<String> b64Inputs, String key) =>
     List<String?>.filled(b64Inputs.length, null);
 
+/// Web stub：批量 AES-CBC 解密直接返回 null 列表
+List<String?> aesDecryptCbcBatch(
+        List<String> b64Inputs, String key, String iv) =>
+    List<String?>.filled(b64Inputs.length, null);
+
+/// Web stub：批量 AES-ECB 解密直接返回 null 列表
+List<String?> aesDecryptEcbBatch(List<String> b64Inputs, String key) =>
+    List<String?>.filled(b64Inputs.length, null);
+
 /// Web stub：清理加密回调结果（无操作）
 void cleanupCryptoResults() {}
 

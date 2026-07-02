@@ -2171,6 +2171,31 @@ class JsEngine {
             return _strToU8(s);
           } catch(e) { return new Uint8Array(0); }
         },
+        // Phase 6: 批量 AES 解密 —— 1000+ 次逐条调用压缩为 1 次 C 原生批量调用
+        // 输入: dataArray (base64 密文字符串数组), key, iv (可选，无 iv 走 ECB)
+        // 输出: 解密后的字符串数组（解密失败的元素为 null）
+        // 书源 JS 规则可用 java.aesDecodeBatch(arr, key, iv) 替代循环 java.aesDecode
+        aesDecodeBatch: function(dataArray, key, iv) {
+          if (!Array.isArray(dataArray) || dataArray.length === 0) return [];
+          try {
+            // 优先走 C 原生批量解密（多线程分片并发）
+            if (typeof __nativeCrypto !== 'undefined') {
+              if (iv && __nativeCrypto.aesDecryptFromBase64Batch) {
+                var results = __nativeCrypto.aesDecryptFromBase64Batch(dataArray, key, iv);
+                // C 层返回的 null 元素转为空串，与 aesDecode 行为一致
+                return results.map(function(r) { return r === null ? '' : r; });
+              }
+              if (!iv && __nativeCrypto.aesDecryptFromBase64ECBBatch) {
+                var results = __nativeCrypto.aesDecryptFromBase64ECBBatch(dataArray, key);
+                return results.map(function(r) { return r === null ? '' : r; });
+              }
+            }
+            // 回退：逐条调用 aesDecode（兼容无 C 批量接口的平台）
+            return dataArray.map(function(data) {
+              return java.aesDecode(data, key, iv);
+            });
+           } catch(e) { _jsLog('AES batch decrypt failed: ' + e, 'error'); return dataArray.map(function() { return ''; }); }
+         },
         md5Encode: function(str) {
           // 优先使用纯 JS _MD5 引擎，fallback 到缓存
           if (typeof _MD5 !== 'undefined') return _MD5(str);
@@ -3083,6 +3108,20 @@ class JsEngine {
               var s = java.aesDecode(data, key, iv);
               return _strToU8(s);
             } catch(e) { return new Uint8Array(0); }
+          },
+          aesDecodeBatch: function(dataArray, key, iv) {
+            if (!Array.isArray(dataArray) || dataArray.length === 0) return [];
+            try {
+              if (typeof __nativeCrypto !== 'undefined') {
+                if (iv && __nativeCrypto.aesDecryptFromBase64Batch) {
+                  return __nativeCrypto.aesDecryptFromBase64Batch(dataArray, key, iv).map(function(r) { return r === null ? '' : r; });
+                }
+                if (!iv && __nativeCrypto.aesDecryptFromBase64ECBBatch) {
+                  return __nativeCrypto.aesDecryptFromBase64ECBBatch(dataArray, key).map(function(r) { return r === null ? '' : r; });
+                }
+              }
+              return dataArray.map(function(data) { return java.aesDecode(data, key, iv); });
+            } catch(e) { return dataArray.map(function() { return ''; }); }
           },
           md5Encode: function(str) { var k = 'md5:' + str; if (_javaCache[k] !== undefined) return _javaCache[k]; return ''; },
           base64Encode: function(str) { try { return btoa(unescape(encodeURIComponent(str))); } catch(e) { return ''; } },

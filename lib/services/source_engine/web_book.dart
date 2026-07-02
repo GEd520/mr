@@ -1545,6 +1545,28 @@ class WebBook {
       final useCssVip = batchCssVips != null;
       final useCssPay = batchCssPays != null;
 
+      // [TOC_DEBUG] web_book 字段路由诊断
+      debugPrint('[TOC_DEBUG] web_book: elements=${elements.length} '
+          'nameRule="${nameRule.length > 60 ? '${nameRule.substring(0, 60)}...' : nameRule}" '
+          'urlRule="${urlRule.length > 60 ? '${urlRule.substring(0, 60)}...' : urlRule}" '
+          'isNameJs=$isNameJs isUrlJs=$isUrlJs '
+          'useCssName=$useCssName useCssUrl=$useCssUrl');
+      if (isNameJs && batchNames.isNotEmpty) {
+        final nonNull = batchNames.where((e) => e != null && e.isNotEmpty).length;
+        debugPrint('[TOC_DEBUG] batchNames(JS): len=${batchNames.length} nonNull=$nonNull '
+            'sample0=${batchNames[0]}');
+      }
+      if (useCssName && batchCssNames!.isNotEmpty) {
+        final nonNull = batchCssNames.where((e) => e != null && e.isNotEmpty).length;
+        debugPrint('[TOC_DEBUG] batchCssNames: len=${batchCssNames.length} nonNull=$nonNull '
+            'sample0=${batchCssNames[0]}');
+      }
+      if (useCssUrl && batchCssUrls!.isNotEmpty) {
+        final nonNull = batchCssUrls.where((e) => e != null && e.isNotEmpty).length;
+        debugPrint('[TOC_DEBUG] batchCssUrls: len=${batchCssUrls.length} nonNull=$nonNull '
+            'sample0=${batchCssUrls[0]}');
+      }
+
       final allResults = await Future.wait(
         List.generate(elements.length, (idx) async {
           // CSS batch 命中的字段无需创建 itemAnalyzer，零对象/零 getStringAsync 开销
@@ -1640,6 +1662,12 @@ class WebBook {
 
           // legado: if (bookChapter.title.isNotEmpty)
           final finalTitle = title;
+          // [TOC_DEBUG] 前 3 个元素的字段值
+          if (idx < 3) {
+            debugPrint('[TOC_DEBUG] idx=$idx title="${title.length > 50 ? '${title.substring(0, 50)}...' : title}" '
+                'url="${url.length > 60 ? '${url.substring(0, 60)}...' : url}" '
+                'finalTitleEmpty=${finalTitle.isEmpty}');
+          }
           if (finalTitle.isNotEmpty) {
             return Chapter(
               id: '${baseUrl}_$idx',
