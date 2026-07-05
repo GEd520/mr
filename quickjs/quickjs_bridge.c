@@ -2518,7 +2518,13 @@ QuickJSBridge *quickjs_bridge_create(void) {
 
 QuickJSBridge *quickjs_bridge_create_with_config(uint64_t memory_limit, uint64_t stack_size) {
     _ensure_globals();
-    QuickJSBridge *bridge = (QuickJSBridge *)malloc(sizeof(QuickJSBridge));
+    // [iOS 崩溃修复] 使用 calloc 清零整个 bridge，避免 bytecode_cache/aes_key_cache
+    // 数组的 in_use/script/bytecode 等字段为垃圾值。
+    // 之前用 malloc 不清零，iOS 上 malloc 复用已释放内存含垃圾数据，
+    // 导致 _bytecode_cache_store 首次执行时 free(野指针) 触发
+    // POINTER_BEING_FREED_WAS_NOT_ALLOCATED 崩溃。
+    // Android 因 malloc 大块分配返回零页（mmap）而未暴露此问题。
+    QuickJSBridge *bridge = (QuickJSBridge *)calloc(1, sizeof(QuickJSBridge));
     if (!bridge) {
         memory_tracker_record_failure();
         return NULL;

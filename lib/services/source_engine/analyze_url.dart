@@ -120,11 +120,17 @@ class AnalyzeUrl {
     // 支持 @js:xxx 和 <js>xxx</js> 格式
     urlPart = _analyzeJs(urlPart, keyword: keyword, page: page);
 
-    // 2. 解析 URL 和选项
+    // [修复 URL 截断 Bug] 2. 替换变量（包括 {{js表达式}}）——必须在分离 URL/选项之前
+    // 对齐 legado initUrl 顺序：analyzeJs → replaceKeyPageJs → analyzeUrl
+    // 之前顺序反了：先分离再替换，导致 JSON 配置含 {{...}} 时 jsonDecode 失败
+    // → 选项丢失、URL 被拦腰截断
+    urlPart = replaceVariables(urlPart, keyword: keyword, page: page);
+
+    // 3. 解析 URL 和选项
     String? extractedUrl;
     UrlOption? option;
 
-    // 2a. 尝试纯 JSON 对象格式：{url: "/path", body: "...", method: "POST"}
+    // 3a. 尝试纯 JSON 对象格式：{url: "/path", body: "...", method: "POST"}
     if (urlPart.startsWith('{')) {
       try {
         final decoded = jsonDecode(urlPart);
@@ -140,7 +146,7 @@ class AnalyzeUrl {
       }
     }
 
-    // 2b. 原始 legado 格式：URL,{options}
+    // 3b. 原始 legado 格式：URL,{options}
     if (extractedUrl == null && option == null) {
       final optionMatch = _optionStart.firstMatch(urlPart);
       extractedUrl = optionMatch == null
@@ -148,10 +154,6 @@ class AnalyzeUrl {
           : urlPart.substring(0, optionMatch.start).trim();
 
       if (optionMatch != null) {
-        // 注意：必须用 urlPart（JS 执行后的结果），不能用 ruleUrl
-        // 因为 optionMatch 是在 urlPart 上匹配的，位置对应 urlPart 而非 ruleUrl
-        // 之前用 ruleUrl.substring(optionMatch.end) 会导致位置错位，
-        // 把 JS 代码尾部的字符（如 ';）混入选项文本，引发 FormatException
         final optionText = urlPart.substring(optionMatch.end).trim();
         try {
           final decoded = jsonDecode(optionText);
@@ -166,10 +168,6 @@ class AnalyzeUrl {
     }
 
     urlPart = extractedUrl ?? urlPart;
-
-    // 3. 替换变量（包括 {{js表达式}}）
-    urlPart = replaceVariables(urlPart, keyword: keyword, page: page);
-    option = option?.replaceVariables(keyword: keyword, page: page);
 
     // 4. 合并外部 body
     if (body != null && body.isNotEmpty) {
@@ -299,6 +297,13 @@ class AnalyzeUrl {
       // 判断是否为固定变量（不需要 JS 执行）
       if (expr == 'key' || expr == 'searchKey' || expr == 'page' || expr == 'searchPage') {
         return '{{$expr}}'; // 保留给后续替换
+      }
+
+      // [修复] JSONPath 表达式：AnalyzeUrl 无 content 上下文，保留原样不替换
+      // 交给上游 AnalyzeRule._replaceTemplatesAsync 在有 content 的上下文中处理
+      // 之前直接当 JS 执行 → 语法错误 → 返回空字符串 → 破坏 JSON 结构
+      if (expr.startsWith(r'$.') || expr.startsWith(r'$[')) {
+        return '{{$expr}}';
       }
 
       // 执行 JS 表达式

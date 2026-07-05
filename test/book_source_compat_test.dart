@@ -21,6 +21,36 @@ void main() {
       expect(parsed.option?.method, 'POST');
       expect(parsed.option?.body, '{"page":"4"}');
     });
+
+    test('preserves JSON option with JS expression in body (QQ reading style)',
+        () {
+      final parsed = AnalyzeUrl.parse(
+        'https://novel.html5.qq.com/be-api/content/ads-read,{'
+        '"method":"POST",'
+        '"body":{"Scene":"chapter","ContentAnchorBatch":[{"BookID":"{{page+1}}","ChapterSeqNo":[{{page}}]}]},'
+        '"headers":{"QG-UID":"test"}}',
+        page: 5,
+      );
+
+      // 验证 JSON 配置选项没有被截断/丢失
+      expect(parsed.url, 'https://novel.html5.qq.com/be-api/content/ads-read');
+      expect(parsed.option?.method, 'POST');
+      expect(parsed.option?.body, isNotNull);
+      // {{page}} 是固定变量，不需要 JsEngine，应被替换为 5
+      expect(parsed.option!.body!, contains('"ChapterSeqNo":[5]'));
+      expect(parsed.option?.headers?['QG-UID'], 'test');
+    });
+
+    test('preserves {{\$.jsonPath}} expressions without replacing them', () {
+      // 直接测试 replaceVariables，不经过 parse（避免 jsonDecode 失败）
+      // 因为 {{$.serialID}} 保留后不是合法 JSON 值，jsonDecode 会失败
+      // 这是预期行为：{{$.xxx}} 应由上游 AnalyzeRule 在有 content 上下文时替换
+      const input = r'{"body":{"id":{{$.serialID}}}}';
+      final result = AnalyzeUrl.replaceVariables(input);
+
+      // JSONPath 表达式应保留原样，不被当 JS 执行替换为空
+      expect(result, contains(r'{{$.serialID}}'));
+    });
   });
 
   group('BookSource import compatibility', () {
