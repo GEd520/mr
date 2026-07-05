@@ -6002,16 +6002,9 @@ class JsEngine {
   }
 
   /// 解析相对URL
+  /// 不能用 Uri.resolve，它会对 % 进行二次编码，破坏已编码的 URL 参数
   String _resolveUrl(String url, String baseUrl) {
-    if (url.startsWith('http://') || url.startsWith('https://')) {
-      return url;
-    }
-    if (baseUrl.isEmpty) return url;
-    try {
-      return Uri.parse(baseUrl).resolve(url).toString();
-    } catch (_) {
-      return url;
-    }
+    return legado_url.AnalyzeUrl.resolve(baseUrl, url);
   }
 
   /// [legado URL 选项兼容] 反转义 JS 字符串字面量

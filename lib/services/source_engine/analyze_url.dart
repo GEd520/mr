@@ -421,12 +421,50 @@ class AnalyzeUrl {
     return url;
   }
 
+  /// 拼接相对 URL 为绝对 URL（对齐 legado NetworkUtils.getAbsoluteURL）
+  ///
+  /// 关键：不能用 Dart 的 `Uri.resolve`，因为它遵循 RFC 3986 会对 `%` 进行二次编码，
+  /// 导致已 URL 编码的参数（如 `b=T%3mrlpPFa`）被错误转成 `b=T%253mrlpPFa`，
+  /// 服务器解码后得到 `T%3mrlpPFa` 而非原始值，解密失败。
+  /// legado 用 `java.net.URL(URL, String)` 构造函数，不会执行任何百分号编码。
+  /// 这里手动实现等价逻辑，保留原始字符不二次编码。
   static String resolve(String? baseUrl, String value) {
     if (value.isEmpty || baseUrl == null || baseUrl.isEmpty) return value;
-    try {
-      return Uri.parse(baseUrl).resolve(value).toString();
-    } catch (_) {
-      return value;
+
+    final trimmed = value.trim();
+    final lower = trimmed.toLowerCase();
+
+    // 已是绝对 URL，直接返回
+    if (lower.startsWith('http://') || lower.startsWith('https://')) {
+      return trimmed;
     }
+    // data: URL 直接返回
+    if (lower.startsWith('data:')) return trimmed;
+    // javascript: 前缀返回空（对齐 legado）
+    if (lower.startsWith('javascript')) return '';
+
+    // 解析 baseUrl
+    final baseUri = Uri.tryParse(baseUrl);
+    if (baseUri == null) return trimmed;
+
+    final scheme = baseUri.scheme;
+    final host = baseUri.host;
+    final port = baseUri.hasPort ? ':${baseUri.port}' : '';
+
+    // 以 // 开头，补上协议
+    if (trimmed.startsWith('//')) {
+      return '$scheme:$trimmed';
+    }
+
+    // 以 / 开头（绝对路径），拼接 scheme://host:port + path
+    if (trimmed.startsWith('/')) {
+      return '$scheme://$host$port$trimmed';
+    }
+
+    // 相对路径，拼接 baseUrl 的父目录
+    final basePath = baseUri.path;
+    final lastSlash = basePath.lastIndexOf('/');
+    final dir = lastSlash >= 0 ? basePath.substring(0, lastSlash + 1) : '/';
+    return '$scheme://$host$port$dir$trimmed';
   }
 }

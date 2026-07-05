@@ -65,8 +65,11 @@ void main() {
       );
 
       // URL 部分应分离出来，不含 ,{...}
+      // 关键：AnalyzeUrl.resolve 不对 % 进行二次编码（对齐 legado 的 java.net.URL 行为）
+      // keywords=我的 保持原样（Dio 发送时会自动 URL 编码非 ASCII 字符）
+      // b=y%25NPr1IPyc 保持原样（不被二次编码成 y%2525NPr1IPyc）
       expect(parsed.url,
-          'https://www.quanben5.com/?c=book&a=search.json&callback=search&t=1783250564438&keywords=%E6%88%91%E7%9A%84&b=y%25NPr1IPyc');
+          'https://www.quanben5.com/?c=book&a=search.json&callback=search&t=1783250564438&keywords=我的&b=y%25NPr1IPyc');
       // option.headers 应被正确解析
       expect(parsed.option, isNotNull);
       expect(parsed.option!.headers, isNotNull);

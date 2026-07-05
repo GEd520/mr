@@ -2654,18 +2654,37 @@ class AnalyzeRule {
 
   String _getAbsoluteUrl(String value) {
     if (value.isEmpty) return '';
-    if (value.startsWith('http://') || value.startsWith('https://')) {
+    final lower = value.toLowerCase();
+    if (lower.startsWith('http://') || lower.startsWith('https://')) {
       return value;
     }
 
     final base = _redirectUrl ?? _baseUrl;
     if (base == null || base.isEmpty) return value;
 
-    try {
-      return Uri.parse(base).resolve(value).toString();
-    } catch (_) {
-      return value;
+    // 不能用 Uri.resolve，它会对 % 进行二次编码，破坏已编码的 URL 参数
+    final baseUri = Uri.tryParse(base);
+    if (baseUri == null) return value;
+
+    final trimmed = value.trim();
+    final valueLower = trimmed.toLowerCase();
+    if (valueLower.startsWith('data:')) return trimmed;
+    if (valueLower.startsWith('javascript')) return '';
+
+    final scheme = baseUri.scheme;
+    final host = baseUri.host;
+    final port = baseUri.hasPort ? ':${baseUri.port}' : '';
+
+    if (trimmed.startsWith('//')) {
+      return '$scheme:$trimmed';
     }
+    if (trimmed.startsWith('/')) {
+      return '$scheme://$host$port$trimmed';
+    }
+    final basePath = baseUri.path;
+    final lastSlash = basePath.lastIndexOf('/');
+    final dir = lastSlash >= 0 ? basePath.substring(0, lastSlash + 1) : '/';
+    return '$scheme://$host$port$dir$trimmed';
   }
 
   /// HTML 实体解码（单次正则替换，避免链式 replaceAll 创建多个中间字符串）

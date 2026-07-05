@@ -361,36 +361,12 @@ class WebBook {
 
   /// 将相对链接拼接成绝对链接
   /// 对齐 legado NetworkUtils.getAbsoluteURL
+  ///
+  /// 关键：不能用 Dart 的 `Uri.resolve`，它会对 `%` 进行二次编码，
+  /// 导致已 URL 编码的参数被破坏。详见 AnalyzeUrl.resolve 的注释。
   static String resolveUrl(String? url, String baseUrl) {
     if (url == null || url.trim().isEmpty) return '';
-    url = url.trim();
-
-    // 对齐 legado isAbsUrl(): 大小写不敏感
-    final lower = url.toLowerCase();
-    if (lower.startsWith('http://') || lower.startsWith('https://')) {
-      return url;
-    }
-    // 对齐 legado isDataUrl()
-    if (lower.startsWith('data:')) return url;
-    // 对齐 legado: javascript 前缀返回空
-    if (lower.startsWith('javascript')) return '';
-
-    // 以 // 开头，补上协议
-    if (url.startsWith('//')) {
-      final baseUri = Uri.tryParse(baseUrl);
-      return '${baseUri?.scheme ?? 'https'}:$url';
-    }
-
-    // 解析 baseUrl
-    final baseUri = Uri.tryParse(baseUrl);
-    if (baseUri == null) return url;
-
-    // 对齐 legado: 直接用 Uri.resolve 拼接（等价于 Java 的 URL(base, relative)）
-    try {
-      return baseUri.resolve(url).toString();
-    } catch (_) {
-      return url;
-    }
+    return legado_url.AnalyzeUrl.resolve(baseUrl, url.trim());
   }
 
   /// 解析可能包含 JS 的请求头
@@ -598,9 +574,6 @@ class WebBook {
           await _executeJs(urlJs, result: requestUrl, baseUrl: requestUrl) ??
               requestUrl;
     }
-    // 打印最终发送的请求信息，确认 headers 是否真正传到 Dio 层
-    AppLogger.instance.info(LogCategory.network,
-        '发送请求: $requestUrl method=$method headers=$headers');
     StrResponse response = await _client.execute(
       requestUrl,
       method: method,
@@ -2437,18 +2410,9 @@ class JsoupElement {
   String? absUrl([String attrName = 'href']) {
     final value = _element.attributes[attrName];
     if (value == null) return null;
-
-    // 处理相对 URL
-    if (value.startsWith('http://') || value.startsWith('https://')) {
-      return value;
-    }
-
-    if (baseUrl != null) {
-      final base = Uri.parse(baseUrl!);
-      return base.resolve(value).toString();
-    }
-
-    return value;
+    if (baseUrl == null) return value;
+    // 不能用 Uri.resolve，它会对 % 进行二次编码，破坏已编码的 URL 参数
+    return WebBook.resolveUrl(value, baseUrl!);
   }
 
   /// 选择子元素（支持多步骤规则）
@@ -2692,19 +2656,9 @@ class JsoupElement {
   String _getAbsUrl(dom.Element element, String attrName) {
     final value = element.attributes[attrName];
     if (value == null) return '';
-
-    if (value.startsWith('http://') || value.startsWith('https://')) {
-      return value;
-    }
-
-    if (baseUrl != null) {
-      try {
-        final base = Uri.parse(baseUrl!);
-        return base.resolve(value).toString();
-      } catch (_) {}
-    }
-
-    return value;
+    if (baseUrl == null) return value;
+    // 不能用 Uri.resolve，它会对 % 进行二次编码，破坏已编码的 URL 参数
+    return WebBook.resolveUrl(value, baseUrl!);
   }
 
   /// 转换为 Element
