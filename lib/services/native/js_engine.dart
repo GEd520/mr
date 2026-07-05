@@ -2027,17 +2027,20 @@ class JsEngine {
           if (typeof body === 'object') return JSON.stringify(body);
           return String(body);
         },
-        // [legado URL 选项兼容] 合并 headers：option.headers 优先于参数 headers
+        // [legado URL 选项兼容] 合并 headers：参数 headers 优先于 option.headers
+        // 调用方明确指定的 headers（paramHeaders）应覆盖 URL 选项中的 headers（optHeaders）
+        // paramHeaders 支持 object 和 JSON 字符串两种形式，统一高优先级覆盖 optHeaders
         _mergeHeaders: function(optHeaders, paramHeaders) {
           var result = {};
-          if (paramHeaders && typeof paramHeaders === 'object') {
-            for (var k in paramHeaders) { if (Object.prototype.hasOwnProperty.call(paramHeaders, k)) result[k] = paramHeaders[k]; }
-          }
+          // 1. 先合并 optHeaders（低优先级默认）
           if (optHeaders && typeof optHeaders === 'object') {
             for (var k in optHeaders) { if (Object.prototype.hasOwnProperty.call(optHeaders, k)) result[k] = optHeaders[k]; }
           }
-          // headers 为 JSON 字符串时解析
-          if (typeof paramHeaders === 'string') {
+          // 2. 再合并 paramHeaders（高优先级，覆盖 optHeaders 同名 key）
+          //    paramHeaders 可以是 object 或 JSON 字符串，两种形式等价
+          if (paramHeaders && typeof paramHeaders === 'object') {
+            for (var k in paramHeaders) { if (Object.prototype.hasOwnProperty.call(paramHeaders, k)) result[k] = paramHeaders[k]; }
+          } else if (typeof paramHeaders === 'string') {
             try {
               var parsed = JSON.parse(paramHeaders);
               for (var k in parsed) { if (Object.prototype.hasOwnProperty.call(parsed, k)) result[k] = parsed[k]; }
