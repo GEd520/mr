@@ -51,6 +51,28 @@ void main() {
       // JSONPath 表达式应保留原样，不被当 JS 执行替换为空
       expect(result, contains(r'{{$.serialID}}'));
     });
+
+    // [回归测试] 验证 JS 输出的 url,{headers} 格式被正确解析
+    // 场景：全本小说书源 JS 返回 /?c=book&...,{\"headers\":{\"Referer\":\"...\"}}
+    test('parses JS output url with headers option (quanben style)', () {
+      final jsOutput =
+          '/?c=book&a=search.json&callback=search&t=1783250564438'
+          '&keywords=我的&b=y%25NPr1IPyc,'
+          '{"headers":{"Referer":"https://quanben-xiaoshuo.com/search.html"}}';
+      final parsed = AnalyzeUrl.parse(
+        jsOutput,
+        baseUrl: 'https://www.quanben5.com',
+      );
+
+      // URL 部分应分离出来，不含 ,{...}
+      expect(parsed.url,
+          'https://www.quanben5.com/?c=book&a=search.json&callback=search&t=1783250564438&keywords=%E6%88%91%E7%9A%84&b=y%25NPr1IPyc');
+      // option.headers 应被正确解析
+      expect(parsed.option, isNotNull);
+      expect(parsed.option!.headers, isNotNull);
+      expect(parsed.option!.headers!['Referer'],
+          'https://quanben-xiaoshuo.com/search.html');
+    });
   });
 
   group('BookSource import compatibility', () {
