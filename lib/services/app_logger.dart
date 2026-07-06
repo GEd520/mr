@@ -100,8 +100,10 @@ class AppLogger {
   static final AppLogger instance = AppLogger._();
 
   // ===== debugPrint 拦截 =====
-  /// 原始 debugPrint 函数（拦截前保存）
-  static final _originalDebugPrint = debugPrint;
+  /// 原始 debugPrint 函数（在替换前保存）
+  /// 注意：不能用 static final 懒加载，否则首次访问时 debugPrint 已被替换为
+  /// _capturedDebugPrint，导致 _originalDebugPrint 捕获到自身 → 无限递归 → Stack Overflow
+  static DebugPrintCallback? _originalDebugPrint;
   /// 是否正在拦截（防止递归）
   static bool _isCapturing = false;
   /// 是否已启用 debugPrint 拦截
@@ -112,13 +114,15 @@ class AppLogger {
   static void enableDebugPrintCapture() {
     if (_captureEnabled) return;
     _captureEnabled = true;
+    // 必须在替换之前保存原始函数，否则懒加载会捕获到已被替换的 _capturedDebugPrint
+    _originalDebugPrint = debugPrint;
     debugPrint = _capturedDebugPrint;
   }
 
   /// 拦截后的 debugPrint 实现
   static void _capturedDebugPrint(String? message, {int? wrapWidth}) {
     // 先输出到控制台（保持原有行为）
-    _originalDebugPrint(message, wrapWidth: wrapWidth);
+    _originalDebugPrint?.call(message, wrapWidth: wrapWidth);
 
     // 防止递归：AppLogger 内部的 debugPrint 不再次捕获
     if (_isCapturing) return;
