@@ -4663,17 +4663,19 @@ class JsEngine {
         final level = log['level'] as String? ?? 'log';
         final msg = log['msg']?.toString() ?? '';
         if (msg.isEmpty) continue;
+        // 加 [JS] 前缀标记，调试页面可据此将 JS 打印指令注入调试 tab
+        final taggedMsg = '[JS] $msg';
         switch (level) {
           case 'error':
-            AppLogger.instance.error(LogCategory.js, msg);
+            AppLogger.instance.error(LogCategory.js, taggedMsg);
           case 'warn':
-            AppLogger.instance.warn(LogCategory.js, msg);
+            AppLogger.instance.warn(LogCategory.js, taggedMsg);
           case 'info':
-            AppLogger.instance.info(LogCategory.js, msg);
+            AppLogger.instance.info(LogCategory.js, taggedMsg);
           case 'debug':
-            AppLogger.instance.debug(LogCategory.js, msg);
+            AppLogger.instance.debug(LogCategory.js, taggedMsg);
           default:
-            AppLogger.instance.info(LogCategory.js, msg);
+            AppLogger.instance.info(LogCategory.js, taggedMsg);
         }
       }
     } catch (_) {} finally {

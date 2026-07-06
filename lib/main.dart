@@ -41,6 +41,9 @@ void main() async {
     // 初始化应用日志文件系统（启动即记录所有操作日志）
     try {
       AppLogger.instance.initFileLogging();
+      // 启用 debugPrint 全局拦截：所有 debugPrint 输出重定向到日志系统，
+      // 调试页面和日志页面均可查看，同时仍保持控制台输出
+      AppLogger.enableDebugPrintCapture();
     } catch (e) {
       debugPrint('AppLogger init error: $e');
     }

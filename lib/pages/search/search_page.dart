@@ -8,6 +8,7 @@ import '../../models/book.dart';
 import '../../models/book_source.dart';
 import '../../routes/app_routes.dart';
 import '../../services/cover_config_service.dart';
+import '../../services/app_logger.dart';
 import '../../utils/design_tokens.dart';
 
 class SearchPage extends StatefulWidget {
@@ -1067,15 +1068,76 @@ class _SearchPageState extends State<SearchPage> {
   }
 
   void _showLogDialog() {
+    // 从 AppLogger 获取最近的日志（含 debugPrint 捕获的日志）
+    final logs = AppLogger.instance.getLogs(minLevel: LogLevel.warning);
+
     showDialog(
       context: context,
       builder: (context) {
         return AlertDialog(
-          title: const Text('搜索日志'),
-          content: const SizedBox(
+          title: Row(
+            children: [
+              const Text('搜索日志'),
+              const Spacer(),
+              Text(
+                '${logs.length} 条',
+                style: TextStyle(
+                  fontSize: DesignTokens.fontCaption,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+          content: SizedBox(
             width: double.maxFinite,
-            height: 300,
-            child: Center(child: Text('暂无日志')),
+            height: 400,
+            child: logs.isEmpty
+                ? const Center(child: Text('暂无日志'))
+                : ListView.builder(
+                    itemCount: logs.length,
+                    itemBuilder: (context, index) {
+                      final entry = logs[logs.length - 1 - index];
+                      final timeStr =
+                          '${entry.time.hour.toString().padLeft(2, '0')}:'
+                          '${entry.time.minute.toString().padLeft(2, '0')}:'
+                          '${entry.time.second.toString().padLeft(2, '0')}';
+                      final levelIcon = entry.level == LogLevel.error
+                          ? '🔴'
+                          : entry.level == LogLevel.warning
+                              ? '🟡'
+                              : '🔵';
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 4),
+                        child: RichText(
+                          maxLines: 3,
+                          overflow: TextOverflow.ellipsis,
+                          text: TextSpan(
+                            style: DefaultTextStyle.of(context).style.copyWith(
+                                  fontSize: DesignTokens.fontCaption,
+                                ),
+                            children: [
+                              TextSpan(
+                                text: '$timeStr $levelIcon ',
+                                style: TextStyle(
+                                  fontFamily: 'monospace',
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .onSurfaceVariant,
+                                ),
+                              ),
+                              TextSpan(
+                                text: '[${entry.category.label}] ',
+                                style: TextStyle(
+                                  color: Theme.of(context).colorScheme.primary,
+                                ),
+                              ),
+                              TextSpan(text: entry.message),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
           ),
           actions: [
             TextButton(

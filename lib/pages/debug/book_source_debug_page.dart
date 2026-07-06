@@ -86,12 +86,43 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
     // 订阅 AppLogger 日志流
     // 注意：不在此处直接 setState，而是标记后由 _scheduleFlush 节流合并刷新，
     // 否则调试期间每条 AppLogger 日志（JS 执行/网络/解析，数百条/秒）都会触发全量重建。
+    // 将以下日志注入调试 tab，方便在调试过程中直接看到：
+    // 1. error/warning 级别日志（所有分类的错误和警告）
+    // 2. info 级别的关键日志（网络请求/响应、解析结果、JS console 打印等）
+    // 3. debug 级别的 JS console 打印指令（带 [JS] 前缀标记）
     _logSubscription = AppLogger.instance.stream.listen((entry) {
       if (!mounted) return;
       _appLogs.add(entry);
       // 日志流节流：只保留最新 500 条，避免 O(n) 内存膨胀
       if (_appLogs.length > 500) {
         _appLogs.removeRange(0, _appLogs.length - 500);
+      }
+      // 判断是否需要注入调试 tab
+      // error/warning：全部注入
+      // info：注入网络、解析、JS 分类（关键操作信息）
+      // debug：仅注入 JS console 打印指令（[JS] 前缀）
+      final shouldInject = entry.level == LogLevel.error ||
+          entry.level == LogLevel.warning ||
+          (entry.level == LogLevel.info &&
+              (entry.category == LogCategory.network ||
+                  entry.category == LogCategory.parse ||
+                  entry.category == LogCategory.js ||
+                  entry.category == LogCategory.engine)) ||
+          (entry.level == LogLevel.debug &&
+              entry.category == LogCategory.js &&
+              entry.message.startsWith('[JS]'));
+      if (shouldInject) {
+        final prefix = switch (entry.level) {
+          LogLevel.error => '🔴',
+          LogLevel.warning => '🟡',
+          LogLevel.info => '🟢',
+          _ => '🔵',
+        };
+        final catLabel = entry.category == LogCategory.js &&
+                entry.message.startsWith('[JS]')
+            ? ''
+            : '[${entry.category.label}] ';
+        _pendingDebugLogs.add('$prefix$catLabel${entry.message}');
       }
       _appLogsDirty = true;
       _scheduleFlush();
