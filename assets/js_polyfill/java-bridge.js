@@ -159,8 +159,14 @@ function atob(str) {
 }
 
 // ===== Uint8Array → 字符串（C 原生）=====
+// 兼容 number[] 入参：C 层 __nativeBase64.uint8ToStr 只认 ArrayBuffer/Uint8Array，
+// 直接传 number[] 会返回空串导致后续链路断掉，此处统一转 Uint8Array 再走 C 层。
 function _u8ToStr(u8) {
-  if (typeof __nativeBase64 !== 'undefined' && __nativeBase64.uint8ToStr) return __nativeBase64.uint8ToStr(u8);
+  if (Array.isArray(u8)) u8 = new Uint8Array(u8);
+  if (typeof __nativeBase64 !== 'undefined' && __nativeBase64.uint8ToStr && u8 instanceof Uint8Array) {
+    var r = __nativeBase64.uint8ToStr(u8);
+    if (r) return r;  // C 层失败返回空串时走 fallback
+  }
   var s = '';
   for (var i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
   try { return decodeURIComponent(escape(s)); } catch(e) { return s; }
@@ -285,45 +291,65 @@ var CryptoJS = {
   },
   AES: {
     encrypt: function(data, key, cfg) {
-      var keyStr = _u8ToStr(key);
-      var iv = cfg && cfg.iv ? _u8ToStr(cfg.iv) : '';
+      // 统一 key 为 Uint8Array（key 通常来自 enc.Utf8.parse → _strToU8 → Uint8Array）
+      var keyU8 = key instanceof Uint8Array ? key : (Array.isArray(key) ? new Uint8Array(key) : _strToU8(String(key)));
+      // 统一 iv 为 Uint8Array（书源可能传 number[] / Uint8Array / string）
+      var ivU8 = null;
+      if (cfg && cfg.iv) {
+        var iv = cfg.iv;
+        ivU8 = iv instanceof Uint8Array ? iv : (Array.isArray(iv) ? new Uint8Array(iv) : (typeof iv === 'string' ? _strToU8(iv) : null));
+      }
+      // 统一 data 为 Uint8Array（书源可能传字符串或 CryptoJS.enc.Utf8.parse(plain) → Uint8Array）
+      var dataU8 = data instanceof Uint8Array ? data : (Array.isArray(data) ? new Uint8Array(data) : _strToU8(String(data)));
       var result;
       if (typeof __nativeCrypto !== 'undefined') {
-        if (iv && __nativeCrypto.aesEncryptFromBase64) {
-          result = __nativeCrypto.aesEncryptFromBase64(btoa(data), keyStr, iv);
-        } else if (!iv && __nativeCrypto.aesEncryptFromBase64ECB) {
-          result = __nativeCrypto.aesEncryptFromBase64ECB(btoa(data), keyStr);
-        } else if (__nativeCrypto.aesEncryptNative) {
-          var cipherU8 = __nativeCrypto.aesEncryptNative(_strToU8(data), _strToU8(keyStr), iv ? _strToU8(iv) : new Uint8Array(0));
-          result = btoa(_u8ToStr(cipherU8));
+        if (ivU8 && ivU8.length > 0 && __nativeCrypto.aesEncryptNative) {
+          // CBC 模式：直接走原生 ArrayBuffer 路径，零 base64 开销
+          var cipherU8 = __nativeCrypto.aesEncryptNative(dataU8, keyU8, ivU8);
+          if (cipherU8 && cipherU8.byteLength > 0) result = btoa(_u8ToStr(cipherU8));
+        } else if ((!ivU8 || ivU8.length === 0) && __nativeCrypto.aesEncryptNativeECB) {
+          // ECB 模式：原生 ArrayBuffer 路径
+          var cipherU8Ecb = __nativeCrypto.aesEncryptNativeECB(dataU8, keyU8);
+          if (cipherU8Ecb && cipherU8Ecb.byteLength > 0) result = btoa(_u8ToStr(cipherU8Ecb));
+        } else if (ivU8 && ivU8.length > 0 && __nativeCrypto.aesEncryptFromBase64) {
+          // 兜底：base64 字符串路径
+          result = __nativeCrypto.aesEncryptFromBase64(btoa(_u8ToStr(dataU8)), _u8ToStr(keyU8), _u8ToStr(ivU8));
+        } else if ((!ivU8 || ivU8.length === 0) && __nativeCrypto.aesEncryptFromBase64ECB) {
+          result = __nativeCrypto.aesEncryptFromBase64ECB(btoa(_u8ToStr(dataU8)), _u8ToStr(keyU8));
         }
       }
       return { toString: function() { return result || ''; } };
     },
     decrypt: function(ciphertext, key, cfg) {
       // 统一 key 为 Uint8Array（key 通常来自 enc.Utf8.parse → _strToU8 → Uint8Array）
-      var keyU8 = key instanceof Uint8Array ? key : _strToU8(_u8ToStr(key));
+      var keyU8 = key instanceof Uint8Array ? key : (Array.isArray(key) ? new Uint8Array(key) : _strToU8(String(key)));
       // 统一 iv 为 Uint8Array（书源可能传 number[] / Uint8Array / string）
       var ivU8 = null;
       if (cfg && cfg.iv) {
         var iv = cfg.iv;
-        ivU8 = iv instanceof Uint8Array ? iv : (typeof iv === 'string' ? _strToU8(iv) : new Uint8Array(iv));
+        ivU8 = iv instanceof Uint8Array ? iv : (Array.isArray(iv) ? new Uint8Array(iv) : (typeof iv === 'string' ? _strToU8(iv) : null));
       }
+      var hasIv = ivU8 && ivU8.length > 0;
       var result;
       if (typeof __nativeCrypto !== 'undefined') {
         // cipher 为字节序列（number[] / Uint8Array）时优先走 aesDecryptNative，零 base64 开销。
         // 兼容书源常见写法：atob(result) 取字节 → number[] 直接传入 CryptoJS.AES.decrypt。
         var isBytes = (ciphertext instanceof Uint8Array) || Array.isArray(ciphertext);
-        if (isBytes && ivU8 && __nativeCrypto.aesDecryptNative) {
+        if (isBytes && hasIv && __nativeCrypto.aesDecryptNative) {
           var ctU8 = ciphertext instanceof Uint8Array ? ciphertext : new Uint8Array(ciphertext);
           var plainU8 = __nativeCrypto.aesDecryptNative(ctU8, keyU8, ivU8);
           if (plainU8 && plainU8.byteLength > 0) result = _u8ToStr(plainU8);
-        } else if (ivU8 && __nativeCrypto.aesDecryptFromBase64) {
+        } else if (isBytes && !hasIv && __nativeCrypto.aesDecryptNativeECB) {
+          // ECB 模式：字节数组直接走原生
+          var ctU8Ecb = ciphertext instanceof Uint8Array ? ciphertext : new Uint8Array(ciphertext);
+          var plainU8Ecb = __nativeCrypto.aesDecryptNativeECB(ctU8Ecb, keyU8);
+          if (plainU8Ecb && plainU8Ecb.byteLength > 0) result = _u8ToStr(plainU8Ecb);
+        } else if (hasIv && __nativeCrypto.aesDecryptFromBase64) {
           // cipher 为 base64 字符串（标准 CryptoJS 路径）；数组则先转 base64
           var ctStr = typeof ciphertext === 'string' ? ciphertext : btoa(_u8ToStr(new Uint8Array(ciphertext)));
           var plainU8b = __nativeCrypto.aesDecryptFromBase64(ctStr, _u8ToStr(keyU8), _u8ToStr(ivU8));
           if (plainU8b && plainU8b.byteLength > 0) result = _u8ToStr(plainU8b);
-        } else if (!ivU8 && __nativeCrypto.aesDecryptFromBase64ECB) {
+        } else if (!hasIv && __nativeCrypto.aesDecryptFromBase64ECB) {
           var ctStr2 = typeof ciphertext === 'string' ? ciphertext : btoa(_u8ToStr(new Uint8Array(ciphertext)));
           var plainU8c = __nativeCrypto.aesDecryptFromBase64ECB(ctStr2, _u8ToStr(keyU8));
           if (plainU8c && plainU8c.byteLength > 0) result = _u8ToStr(plainU8c);

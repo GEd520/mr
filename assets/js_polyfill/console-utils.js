@@ -27,8 +27,15 @@ function __flushConsoleLogs() {
 }
 
 // ===== 重新注入 console（被用户代码覆盖后恢复）=====
+// 关键：直接复用全局 __consoleLogs（由 java-bridge.js 顶层 var __consoleLogs = [] 声明），
+// 不创建局部变量。原因：
+//   1. __flushConsoleLogs 优先检查全局 __consoleLogs，若 reinject 用局部变量遮蔽，
+//      则 reinject 后新 console.log 写入局部数组，但 flush 仍读全局旧数组，
+//      导致 reinject 后的日志要等 reinject 前的旧日志被 flush 清空后才能被取出（多一次延迟）。
+//   2. 若 reinject 前全局 __consoleLogs 还有未提取日志，复用全局可保留这些日志不丢失。
 function __reinjectConsole() {
-  var __consoleLogs = [];
+  if (typeof __consoleLogs === 'undefined') globalThis.__consoleLogs = [];
+  else __consoleLogs.length = 0;  // 清空旧日志（被覆盖前的 console.log 输出已无法恢复，避免与新日志混合）
   globalThis.console = {
     log: function() { var msg = Array.from(arguments).join(' '); __consoleLogs.push({level: 'log', msg: msg}); },
     warn: function() { var msg = Array.from(arguments).join(' '); __consoleLogs.push({level: 'warn', msg: msg}); },
