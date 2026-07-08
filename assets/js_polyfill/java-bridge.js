@@ -863,6 +863,19 @@ var java = {
   },
 };
 
+// ===== 将 java 桥接方法暴露为全局函数（兼容 Legado 书源裸调用）=====
+// 原版 Legado 通过 @JavascriptInterface 将 JsExtensions 方法同时绑定为 java.xxx() 与顶层 xxx()，
+// jsHelp.md 中文件操作类（downloadFile/readTxtFile/deleteFile 等）官方即采用裸调用写法。
+// MR 用纯 JS polyfill 模拟，需手动将 java 上的成员别名到 globalThis；不覆盖已存在的全局。
+(function() {
+  for (var k in java) {
+    if (k.charAt(0) === '_') continue;            // 跳过 _buildResponse / _parseUrlOptions 等内部辅助
+    if (globalThis[k] === undefined) {            // 不覆盖原生全局（如 encodeURI）与已绑定的 polyfill
+      globalThis[k] = java[k];
+    }
+  }
+})();
+
 // ===== _jsLog 辅助 =====
 function _jsLog(msg, level) {
   if (level === 'error') console.error(msg);
