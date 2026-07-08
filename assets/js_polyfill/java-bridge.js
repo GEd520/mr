@@ -159,10 +159,12 @@ function atob(str) {
 }
 
 // ===== Uint8Array → 字符串（C 原生）=====
-// 兼容 number[] 入参：C 层 __nativeBase64.uint8ToStr 只认 ArrayBuffer/Uint8Array，
-// 直接传 number[] 会返回空串导致后续链路断掉，此处统一转 Uint8Array 再走 C 层。
+// 兼容 number[]/ArrayBuffer 入参：C 层 __nativeBase64.uint8ToStr 只认 ArrayBuffer/Uint8Array，
+// 且 C 层 aesDecryptNative 等返回 ArrayBuffer（无 .length 属性，只有 .byteLength），
+// 此处统一转 Uint8Array 再走 C 层，避免循环取字节时 u8.length 为 undefined 导致空串。
 function _u8ToStr(u8) {
   if (Array.isArray(u8)) u8 = new Uint8Array(u8);
+  else if (u8 instanceof ArrayBuffer) u8 = new Uint8Array(u8);
   if (typeof __nativeBase64 !== 'undefined' && __nativeBase64.uint8ToStr && u8 instanceof Uint8Array) {
     var r = __nativeBase64.uint8ToStr(u8);
     if (r) return r;  // C 层失败返回空串时走 fallback
@@ -273,6 +275,59 @@ var console = {
   _clearLogs: function() { __consoleLogs.length = 0; },
 };
 
+// ===== __nativeCrypto 字节方法防护包装 =====
+// C 层 get_ab 只接受 ArrayBuffer/Uint8Array，对 number[]/string 直接抛 TypeError。
+// 书源可能直接调用 __nativeCrypto.aesDecryptNative() 传入 number[] 或字符串，
+// 此处统一包装，自动转换为 Uint8Array，避免 C 层拒绝导致整条链路崩溃。
+function _toU8(v) {
+  if (v instanceof Uint8Array) return v;
+  if (v instanceof ArrayBuffer) return new Uint8Array(v);
+  if (Array.isArray(v)) return new Uint8Array(v);
+  if (typeof v === 'string') return _strToU8(v);
+  // 未知类型返回空 Uint8Array，C 层会因长度校验失败而抛出更有意义的错误
+  return new Uint8Array(0);
+}
+if (typeof __nativeCrypto !== 'undefined') {
+  // AES-CBC 解密（字节路径）
+  var _origAesDecryptNative = __nativeCrypto.aesDecryptNative;
+  if (typeof _origAesDecryptNative === 'function') {
+    __nativeCrypto.aesDecryptNative = function(ct, key, iv) {
+      return _origAesDecryptNative(_toU8(ct), _toU8(key), _toU8(iv));
+    };
+  }
+  // AES-CBC 加密（字节路径）
+  var _origAesEncryptNative = __nativeCrypto.aesEncryptNative;
+  if (typeof _origAesEncryptNative === 'function') {
+    __nativeCrypto.aesEncryptNative = function(pt, key, iv) {
+      return _origAesEncryptNative(_toU8(pt), _toU8(key), _toU8(iv));
+    };
+  }
+  // AES-ECB 加密（字节路径）
+  var _origAesEncryptNativeECB = __nativeCrypto.aesEncryptNativeECB;
+  if (typeof _origAesEncryptNativeECB === 'function') {
+    __nativeCrypto.aesEncryptNativeECB = function(pt, key) {
+      return _origAesEncryptNativeECB(_toU8(pt), _toU8(key));
+    };
+  }
+  // 哈希函数（字节路径）
+  var _origMd5Native = __nativeCrypto.md5Native;
+  if (typeof _origMd5Native === 'function') {
+    __nativeCrypto.md5Native = function(data) { return _origMd5Native(_toU8(data)); };
+  }
+  var _origSha1Native = __nativeCrypto.sha1Native;
+  if (typeof _origSha1Native === 'function') {
+    __nativeCrypto.sha1Native = function(data) { return _origSha1Native(_toU8(data)); };
+  }
+  var _origSha256Native = __nativeCrypto.sha256Native;
+  if (typeof _origSha256Native === 'function') {
+    __nativeCrypto.sha256Native = function(data) { return _origSha256Native(_toU8(data)); };
+  }
+  var _origHmacSHA256Native = __nativeCrypto.hmacSHA256Native;
+  if (typeof _origHmacSHA256Native === 'function') {
+    __nativeCrypto.hmacSHA256Native = function(data, key) { return _origHmacSHA256Native(_toU8(data), _toU8(key)); };
+  }
+}
+
 // ===== CryptoJS 兼容层 → __nativeCrypto =====
 var CryptoJS = {
   enc: {
@@ -356,10 +411,11 @@ var CryptoJS = {
           var ctU8 = ciphertext instanceof Uint8Array ? ciphertext : new Uint8Array(ciphertext);
           var plainU8 = __nativeCrypto.aesDecryptNative(ctU8, keyU8, ivU8);
           if (plainU8 && plainU8.byteLength > 0) result = _u8ToStr(plainU8);
-        } else if (isBytes && !hasIv && __nativeCrypto.aesDecryptNativeECB) {
-          // ECB 模式：字节数组直接走原生
+        } else if (isBytes && !hasIv && __nativeCrypto.aesDecryptFromBase64ECB) {
+          // ECB 模式：C 层 aesDecryptNativeECB 实为 base64 版本（js_native_aes_decrypt_base64_ecb），
+          // 不接受 Uint8Array，需转 base64 字符串后走 aesDecryptFromBase64ECB（同一 C 函数）。
           var ctU8Ecb = ciphertext instanceof Uint8Array ? ciphertext : new Uint8Array(ciphertext);
-          var plainU8Ecb = __nativeCrypto.aesDecryptNativeECB(ctU8Ecb, keyU8);
+          var plainU8Ecb = __nativeCrypto.aesDecryptFromBase64ECB(btoa(_u8ToStr(ctU8Ecb)), _u8ToStr(keyU8));
           if (plainU8Ecb && plainU8Ecb.byteLength > 0) result = _u8ToStr(plainU8Ecb);
         } else if (hasIv && __nativeCrypto.aesDecryptFromBase64) {
           // cipher 为 base64 字符串（标准 CryptoJS 路径）；数组则先转 base64
