@@ -51,7 +51,6 @@ static void _ensure_globals(void) {
 #define MAX_HTML_SIZE      (10ULL * 1024 * 1024)   // HTML 输入：10MB
 #define MAX_CRYPTO_SIZE    (10ULL * 1024 * 1024)   // 加解密输入：10MB
 #define MAX_BASE64_SIZE    (10ULL * 1024 * 1024)   // Base64 输入：10MB
-#define MAX_HTTP_BODY_SIZE (50ULL * 1024 * 1024)   // HTTP 响应体：50MB
 
 // ---------- AES Key Schedule 缓存 ----------
 // 同 key 复用轮密钥，避免每次 JS 调用都重新 aes_init
@@ -826,6 +825,92 @@ const char *quickjs_bridge_html_query_extract(
     html_node_free(root);
 
     return result_buf;
+}
+
+// ---------- JS 可调用 HTML 解析函数（注册为 __nativeHtml 全局对象）----------
+// 包装 quickjs_bridge_html_query_extract，使其可从 JS 侧直接调用
+// 替代纯 JS _JsoupLite，消除 JS 解释器开销
+
+// __nativeHtml.select(html, selector, attr) → 第一个匹配的字符串
+static JSValue js_native_html_select(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv) {
+    if (argc < 3) return JS_ThrowTypeError(ctx, "select requires 3 arguments: html, selector, attr");
+    const char *html = JS_ToCString(ctx, argv[0]);
+    if (!html) return JS_ThrowTypeError(ctx, "html must be a string");
+    const char *selector = JS_ToCString(ctx, argv[1]);
+    if (!selector) { JS_FreeCString(ctx, html); return JS_ThrowTypeError(ctx, "selector must be a string"); }
+    const char *attr = JS_ToCString(ctx, argv[2]);
+    if (!attr) { JS_FreeCString(ctx, html); JS_FreeCString(ctx, selector); return JS_ThrowTypeError(ctx, "attr must be a string"); }
+
+    size_t html_len = strlen(html);
+    int is_error = 0;
+    const char *result = quickjs_bridge_html_query_extract(html, html_len, selector, attr, 0, &is_error);
+    JS_FreeCString(ctx, html);
+    JS_FreeCString(ctx, selector);
+    JS_FreeCString(ctx, attr);
+
+    if (!result || is_error) {
+        if (result) free((void*)result);
+        return JS_NewString(ctx, "");
+    }
+    JSValue ret = JS_NewString(ctx, result);
+    free((void*)result);
+    return ret;
+}
+
+// __nativeHtml.selectAll(html, selector, attr) → JSON 数组字符串
+static JSValue js_native_html_select_all(JSContext *ctx, JSValueConst this_val,
+                                         int argc, JSValueConst *argv) {
+    if (argc < 3) return JS_ThrowTypeError(ctx, "selectAll requires 3 arguments: html, selector, attr");
+    const char *html = JS_ToCString(ctx, argv[0]);
+    if (!html) return JS_ThrowTypeError(ctx, "html must be a string");
+    const char *selector = JS_ToCString(ctx, argv[1]);
+    if (!selector) { JS_FreeCString(ctx, html); return JS_ThrowTypeError(ctx, "selector must be a string"); }
+    const char *attr = JS_ToCString(ctx, argv[2]);
+    if (!attr) { JS_FreeCString(ctx, html); JS_FreeCString(ctx, selector); return JS_ThrowTypeError(ctx, "attr must be a string"); }
+
+    size_t html_len = strlen(html);
+    int is_error = 0;
+    const char *result = quickjs_bridge_html_query_extract(html, html_len, selector, attr, 1, &is_error);
+    JS_FreeCString(ctx, html);
+    JS_FreeCString(ctx, selector);
+    JS_FreeCString(ctx, attr);
+
+    if (!result || is_error) {
+        if (result) free((void*)result);
+        return JS_NewString(ctx, "[]");
+    }
+    JSValue ret = JS_NewString(ctx, result);
+    free((void*)result);
+    return ret;
+}
+
+// __nativeHtml.getAttr(html, selector, attr) → 第一个匹配元素的指定属性值
+// 等价于 select(html, selector, attr)，但语义更清晰（专用于属性提取）
+static JSValue js_native_html_get_attr(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv) {
+    if (argc < 3) return JS_ThrowTypeError(ctx, "getAttr requires 3 arguments: html, selector, attr");
+    const char *html = JS_ToCString(ctx, argv[0]);
+    if (!html) return JS_ThrowTypeError(ctx, "html must be a string");
+    const char *selector = JS_ToCString(ctx, argv[1]);
+    if (!selector) { JS_FreeCString(ctx, html); return JS_ThrowTypeError(ctx, "selector must be a string"); }
+    const char *attr = JS_ToCString(ctx, argv[2]);
+    if (!attr) { JS_FreeCString(ctx, html); JS_FreeCString(ctx, selector); return JS_ThrowTypeError(ctx, "attr must be a string"); }
+
+    size_t html_len = strlen(html);
+    int is_error = 0;
+    const char *result = quickjs_bridge_html_query_extract(html, html_len, selector, attr, 0, &is_error);
+    JS_FreeCString(ctx, html);
+    JS_FreeCString(ctx, selector);
+    JS_FreeCString(ctx, attr);
+
+    if (!result || is_error) {
+        if (result) free((void*)result);
+        return JS_NewString(ctx, "");
+    }
+    JSValue ret = JS_NewString(ctx, result);
+    free((void*)result);
+    return ret;
 }
 
 // ---------- 全局回调（向后兼容，作为默认值）----------
@@ -2692,6 +2777,18 @@ QuickJSBridge *quickjs_bridge_create_with_config(uint64_t memory_limit, uint64_t
     JS_SetPropertyStr(bridge->ctx, conv_obj, "charsetDecode",
         JS_NewCFunction(bridge->ctx, js_conv_charset_decode, "charsetDecode", 2));
     JS_SetPropertyStr(bridge->ctx, global_obj, "__nativeConv", conv_obj);
+
+    // 注册 HTML 解析原生全局对象 __nativeHtml
+    // 替代纯 JS _JsoupLite，提供 C 原生 HTML 解析 + CSS 选择器
+    // JS 侧通过 __nativeHtml.select(html, selector, attr) / selectAll(html, selector, attr) 调用
+    JSValue html_obj = JS_NewObject(bridge->ctx);
+    JS_SetPropertyStr(bridge->ctx, html_obj, "select",
+        JS_NewCFunction(bridge->ctx, js_native_html_select, "select", 3));
+    JS_SetPropertyStr(bridge->ctx, html_obj, "selectAll",
+        JS_NewCFunction(bridge->ctx, js_native_html_select_all, "selectAll", 3));
+    JS_SetPropertyStr(bridge->ctx, html_obj, "getAttr",
+        JS_NewCFunction(bridge->ctx, js_native_html_get_attr, "getAttr", 3));
+    JS_SetPropertyStr(bridge->ctx, global_obj, "__nativeHtml", html_obj);
 
     JS_FreeValue(bridge->ctx, global_obj);
 

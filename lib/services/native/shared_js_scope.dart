@@ -4,7 +4,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:crypto/crypto.dart';
 import 'dart:io';
 import '../app_logger.dart';
-import 'quickjs_runtime.dart' show nativeHttpGet;
+import 'platform_bridge.dart';
 
 /// 共享 JS 作用域管理器
 /// 借鉴 legado 的 SharedJsScope 设计，为每个书源创建隔离的 JS scope
@@ -136,9 +136,8 @@ class SharedJsScope {
 
       // 下载 JS 文件
       String? jsCode;
-      if (!kIsWeb && url.startsWith('http://')) {
-        final r = nativeHttpGet(url, timeoutMs: 15000);
-        jsCode = r?['body'] as String?;
+      if (!kIsWeb) {
+        jsCode = await PlatformBridge.instance.httpGet(url, timeoutMs: 15000);
       }
 
       if (jsCode == null) {

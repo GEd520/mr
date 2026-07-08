@@ -8,6 +8,9 @@ set(QUICKJS_SRC_DIR ${PROJECT_ROOT_DIR}/quickjs)
 
 # QuickJS 源码文件
 # 不编译 quickjs-libc.c（Android 上不需要标准库辅助函数，且部分 POSIX 调用不兼容）
+# native_core 模块（桥接初始化与扩展入口）
+set(NATIVE_CORE_DIR ${PROJECT_ROOT_DIR}/native_core)
+
 set(QUICKJS_SOURCES
     ${QUICKJS_SRC_DIR}/quickjs.c
     ${QUICKJS_SRC_DIR}/cutils.c
@@ -24,9 +27,9 @@ set(QUICKJS_SOURCES
     ${QUICKJS_SRC_DIR}/crypto/sha256.c
     ${QUICKJS_SRC_DIR}/crypto/hmac_sha256.c
     ${QUICKJS_SRC_DIR}/crypto/aes.c
-    ${QUICKJS_SRC_DIR}/http_client.c
     ${QUICKJS_SRC_DIR}/handle_table.c
     ${QUICKJS_SRC_DIR}/memory_tracker.c
+    ${NATIVE_CORE_DIR}/bridge_init.c
 )
 
 # 编译为共享库 libquickjs_c_bridge.so
@@ -80,9 +83,9 @@ set_source_files_properties(
     ${QUICKJS_SRC_DIR}/crypto/sha256.c
     ${QUICKJS_SRC_DIR}/crypto/hmac_sha256.c
     ${QUICKJS_SRC_DIR}/crypto/aes.c
-    ${QUICKJS_SRC_DIR}/http_client.c
     ${QUICKJS_SRC_DIR}/handle_table.c
     ${QUICKJS_SRC_DIR}/memory_tracker.c
+    ${NATIVE_CORE_DIR}/bridge_init.c
     PROPERTIES COMPILE_FLAGS "-flto"
 )
 

@@ -355,95 +355,10 @@ String nativeBase64Encode(String input) =>
 String nativeBase64Decode(String input) =>
     _callNativeStringOp(input, _nativeB64Decode);
 
-// ---------- Batch 2: C 原生 HTTP 客户端（HTTP-only）----------
-// HTTP/1.1 GET/POST via C socket，零 MethodChannel。
-// 仅支持 http://；https:// 返回 null，上层降级到 Dio。
-// C: http_response_t* http_get(url, headers, timeout_ms)
-// C: http_response_t* http_post(url, headers, body, body_len, timeout_ms)
-// C: void http_response_free(http_response_t*)
-
-final class HttpResponseNative extends Struct {
-  @Int32()
-  external int statusCode;
-  external Pointer<Utf8> body;
-  @IntPtr()
-  external int bodyLen;
-  external Pointer<Utf8> headersRaw;
-  @Int32()
-  external int isHttps;
-  @Array(256)
-  external Array<Int8> errorMsg;
-}
-
-typedef _HttpGetC = Pointer<HttpResponseNative> Function(
-    Pointer<Utf8>, Pointer<Utf8>, Int32);
-typedef _HttpGetDart = Pointer<HttpResponseNative> Function(
-    Pointer<Utf8>, Pointer<Utf8>, int);
-final _HttpGetDart _nativeHttpGet = _qjsLib
-    .lookup<NativeFunction<_HttpGetC>>('http_get')
-    .asFunction<_HttpGetDart>();
-
-typedef _HttpPostC = Pointer<HttpResponseNative> Function(
-    Pointer<Utf8>, Pointer<Utf8>, Pointer<Uint8>, IntPtr, Int32);
-typedef _HttpPostDart = Pointer<HttpResponseNative> Function(
-    Pointer<Utf8>, Pointer<Utf8>, Pointer<Uint8>, int, int);
-final _HttpPostDart _nativeHttpPost = _qjsLib
-    .lookup<NativeFunction<_HttpPostC>>('http_post')
-    .asFunction<_HttpPostDart>();
-
-typedef _HttpResponseFreeC = Void Function(Pointer<HttpResponseNative>);
-typedef _HttpResponseFreeDart = void Function(Pointer<HttpResponseNative>);
-final _HttpResponseFreeDart _nativeHttpResponseFree = _qjsLib
-    .lookup<NativeFunction<_HttpResponseFreeC>>('http_response_free')
-    .asFunction<_HttpResponseFreeDart>();
-
-/// C 原生 HTTP GET
-/// 仅支持 http://，返回 {statusCode, body, headersRaw} 或 null
-Map<String, dynamic>? nativeHttpGet(String url, {String? headers, int timeoutMs = 15000}) {
-  if (!url.startsWith('http://')) return null;
-  final urlPtr = url.toNativeUtf8();
-  final hdrPtr = headers?.toNativeUtf8();
-  try {
-    final respPtr = _nativeHttpGet(urlPtr, hdrPtr ?? nullptr, timeoutMs);
-    if (respPtr == nullptr) return null;
-    final r = respPtr.ref;
-    final result = <String, dynamic>{'statusCode': r.statusCode, 'bodyLen': r.bodyLen};
-    if (r.body != nullptr) result['body'] = r.body.toDartString();
-    if (r.headersRaw != nullptr) result['headersRaw'] = r.headersRaw.toDartString();
-    _nativeHttpResponseFree(respPtr);
-    return result;
-  } catch (_) { return null; }
-  finally {
-    malloc.free(urlPtr);
-    if (hdrPtr != null) malloc.free(hdrPtr);
-  }
-}
-
-/// C 原生 HTTP POST
-Map<String, dynamic>? nativeHttpPost(String url, String body,
-    {String? headers, int timeoutMs = 15000}) {
-  if (!url.startsWith('http://')) return null;
-  final urlPtr = url.toNativeUtf8();
-  final hdrPtr = headers?.toNativeUtf8();
-  final bodyBytes = utf8.encode(body);
-  final bodyPtr = malloc<Uint8>(bodyBytes.length);
-  for (var i = 0; i < bodyBytes.length; i++) bodyPtr[i] = bodyBytes[i];
-  try {
-    final respPtr = _nativeHttpPost(urlPtr, hdrPtr ?? nullptr, bodyPtr, bodyBytes.length, timeoutMs);
-    if (respPtr == nullptr) return null;
-    final r = respPtr.ref;
-    final result = <String, dynamic>{'statusCode': r.statusCode, 'bodyLen': r.bodyLen};
-    if (r.body != nullptr) result['body'] = r.body.toDartString();
-    if (r.headersRaw != nullptr) result['headersRaw'] = r.headersRaw.toDartString();
-    _nativeHttpResponseFree(respPtr);
-    return result;
-  } catch (_) { return null; }
-  finally {
-    malloc.free(urlPtr);
-    if (hdrPtr != null) malloc.free(hdrPtr);
-    malloc.free(bodyPtr);
-  }
-}
+// ---------- HTTP 客户端已迁移至 Dart Dio ----------
+// 原 C 层 http_client.c/h 已删除，所有 HTTP 请求统一由 PlatformBridge (Dio) 处理。
+// 网络请求不再经过 C FFI 或 MethodChannel，减少跨语言调用开销。
+// 参见: lib/services/native/platform_bridge.dart
 
 // ---------- C 原生 HTML 解析 + CSS 选择器引擎 ----------
 // 解析加速：原子调用 HTML 解析 + CSS 查询 + 属性提取

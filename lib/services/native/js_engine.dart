@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'quickjs_runtime_stub.dart'
     if (dart.library.io) 'quickjs_runtime.dart';
 import 'package:html/parser.dart' as html_parser;
@@ -14,6 +15,7 @@ import '../app_logger.dart';
 import '../crash_log_service.dart';
 import '../source_engine/analyze_url.dart' as legado_url;
 import 'platform_channel.dart';
+import 'platform_bridge.dart';
 import 'shared_js_scope.dart';
 
 // ===== 分流引擎架构 =====
@@ -393,18 +395,19 @@ class JsEngine {
       _jsRuntime = getJavascriptRuntime();
       // P2: 设置默认 JS 执行超时 5 秒，防止死循环卡死 App
       _jsRuntime!.setEvalTimeout(5000);
-      // 先标记运行时可用，再注入 polyfills
-      // 注意：_initialized 在所有注入完成后才设为 true
-      await _injectNodePolyfills();
-      _injectJavaBridge();
+      // 加载 java-bridge.js（纯路由脚本，替代内联 polyfill）
+      // 包含：Node 兼容层、URL/Buffer、btoa/atob→__nativeBase64、
+      //       CryptoJS→__nativeCrypto、_JsoupLite→__nativeHtml、
+      //       java 桥接对象（网络标记协议）
+      await _loadJavaBridge();
       await _loadInstalledPackages();
 
       // 验证注入是否成功
-      final verifyResult = evaluate('typeof java !== "undefined" && typeof CryptoJS !== "undefined" && typeof _javaCache !== "undefined" && typeof _AES !== "undefined"');
+      final verifyResult = evaluate('typeof java !== "undefined" && typeof CryptoJS !== "undefined" && typeof _javaCache !== "undefined"');
       if (verifyResult != 'true') {
-        // 尝试重新注入
-        _injectJavaBridge();
-        final retryResult = evaluate('typeof java !== "undefined" && typeof _AES !== "undefined"');
+        // 尝试重新加载
+        await _loadJavaBridge();
+        final retryResult = evaluate('typeof java !== "undefined"');
         if (retryResult != 'true') {
           // [状态一致性修复] 验证失败时 dispose runtime，避免下次 init() 创建新 runtime
           // 导致旧 runtime 的 Finalizer 在不确定时机释放 C 侧 bridge
@@ -430,6 +433,33 @@ class JsEngine {
         _jsRuntime = null;
       }
       return false;
+    }
+  }
+
+  /// 加载 java-bridge.js 桥接脚本
+  ///
+  /// 从 assets/js_polyfill/java-bridge.js 加载纯路由脚本，替代内联 JS polyfill。
+  /// 脚本包含：
+  /// - Node.js 最小兼容层（process, Buffer, URL, URLSearchParams）
+  /// - btoa/atob → __nativeBase64（C 原生）
+  /// - LZString → __nativeLz（C 原生）
+  /// - CryptoJS 兼容层 → __nativeCrypto（C 原生）
+  /// - _JsoupLite → __nativeHtml（C 原生）
+  /// - java 桥接对象（网络标记协议，HTTP 请求由 Dart Dio 处理）
+  /// - console 增强（日志缓存）
+  Future<void> _loadJavaBridge() async {
+    if (_jsRuntime == null) return;
+    try {
+      final script = await rootBundle.loadString('assets/js_polyfill/java-bridge.js');
+      _jsRuntime!.evaluate(script);
+      // 预编译脚本到字节码缓存（加速后续 evaluate）
+      _jsRuntime!.precompile(script);
+    } catch (e, st) {
+      debugPrint('JsEngine: 加载 java-bridge.js 失败: $e\n$st');
+      // 回退：注入最小变量，避免后续 evaluate 崩溃
+      try {
+        _jsRuntime!.evaluate('var _javaCache = {}; var java = {}; var CryptoJS = {}; var console = { log: function(){}, warn: function(){}, error: function(){} };');
+      } catch (_) {}
     }
   }
 
@@ -4250,12 +4280,9 @@ class JsEngine {
     // 否则用 content（String 类型，会被 jsonEncode 加引号）
     final actualResult = dynamicContent ?? content;
 
-    // 借鉴 legado 的 preCache 机制：在执行 JS 前，预缓存 java.ajax/get/post 的结果
-    try {
-      await _preCacheBridgeCalls(resolved.code, env: mergedEnv);
-    } catch (e) {
-      AppLogger.instance.warn(LogCategory.js, '预缓存桥接调用失败，继续执行JS', detail: e.toString());
-    }
+    // 网络标记协议：不再预缓存，JS 执行时遇到 java.get/post 会抛出 __NEED_NETWORK__ 标记，
+    // 由 _executeQuickJSRule 内部捕获并用 Dio 发起请求，结果写入 _javaCache 后重新执行。
+    // 优势：支持动态 URL（运行时构造），无需正则扫描，代码量减少 ~1500 行。
 
     // 输出 processJsRule 入参信息（info 级别，Release 模式可见）
     AppLogger.instance.logJsInput('QuickJS',
@@ -4558,48 +4585,121 @@ class JsEngine {
       if (wrappedScript.length > 5000) {
         await Future(() {});
       }
-      final evalResult = _jsRuntime!.evaluate(wrappedScript);
 
-      // 提取 console 缓存的日志，同步到 AppLogger（借鉴 legado 的调试输出机制）
-      _flushConsoleLogs();
+      // ===== 网络标记协议 =====
+      // JS 侧 java.get/post 在 _javaCache 未命中时抛出 __NEED_NETWORK__:{JSON} 标记，
+      // Dart 侧捕获后用 Dio 发起请求，结果写入 _javaCache，然后重新执行 JS。
+      // 最多重试 10 次，防止无限循环。
+      const maxNetworkRetries = 10;
+      String? strResult;
+      bool isNetworkError = false;
 
-      // 断点3：记录执行结果
-      final evalResultStr = evalResult.stringResult;
-      final resultShort = evalResultStr;
-      // 异步执行完成日志（info 级别，Release 模式可见）
-      AppLogger.instance.logJsStep('QuickJS', '[QuickJS] 异步执行完成',
-        detail: 'isError=${evalResult.isError}, result=$resultShort');
+      for (int retry = 0; retry <= maxNetworkRetries; retry++) {
+        final evalResult = _jsRuntime!.evaluate(wrappedScript);
+        _flushConsoleLogs();
 
-      if (evalResult.isError) {
-        AppLogger.instance.logJsError('QuickJS', evalResult.stringResult);
-        // 追踪树：记录错误
+        final evalResultStr = evalResult.stringResult;
+        AppLogger.instance.logJsStep('QuickJS', '[QuickJS] 执行完成 (retry=$retry)',
+          detail: 'isError=${evalResult.isError}, resultLen=${evalResultStr.length}');
+
+        // 检查是否是网络标记
+        if (evalResult.isError && evalResultStr.startsWith('__NEED_NETWORK__:')) {
+          isNetworkError = true;
+          try {
+            final jsonStr = evalResultStr.substring('__NEED_NETWORK__:'.length);
+            final request = jsonDecode(jsonStr) as Map<String, dynamic>;
+            final method = request['method'] as String? ?? 'GET';
+            final url = request['url'] as String? ?? '';
+            final body = request['body'] as String? ?? '';
+            final cacheKey = request['cacheKey'] as String? ?? '';
+            final headers = <String, String>{};
+            if (request['headers'] is Map) {
+              (request['headers'] as Map).forEach((k, v) {
+                headers[k.toString()] = v.toString();
+              });
+            }
+
+            AppLogger.instance.logJsStep('QuickJS', '[网络标记] 捕获网络请求',
+              detail: 'method=$method, url=$url, retry=$retry');
+
+            // 使用 PlatformBridge (Dio) 发起 HTTP 请求
+            String? responseBody;
+            if (method == 'GET') {
+              responseBody = await PlatformBridge.instance.httpGet(url, headers: headers.isNotEmpty ? headers : null);
+            } else if (method == 'POST') {
+              responseBody = await PlatformBridge.instance.httpPost(url, body: body, headers: headers.isNotEmpty ? headers : null);
+            } else if (method == 'HEAD') {
+              final headResult = await PlatformBridge.instance.httpHead(url, headers: headers.isNotEmpty ? headers : null);
+              responseBody = headResult != null ? jsonEncode(headResult) : '';
+            }
+
+            if (responseBody != null && cacheKey.isNotEmpty) {
+              // 将结果写入 _javaCache，JS 重新执行时可直接获取
+              final injectScript = '_javaCache[${jsonEncode(cacheKey)}] = ${jsonEncode(responseBody)};';
+              _jsRuntime!.evaluate(injectScript);
+              AppLogger.instance.logJsStep('QuickJS', '[网络标记] 结果已注入 _javaCache',
+                detail: 'cacheKey=$cacheKey, bodyLen=${responseBody.length}');
+            }
+            // 继续循环，重新执行 JS
+            if (wrappedScript.length > 5000) {
+              await Future(() {});
+            }
+            continue;
+          } catch (e) {
+            AppLogger.instance.logJsError('QuickJS', '[网络标记] 处理失败: $e');
+            // 网络标记处理失败，注入空响应避免卡死
+            final cacheKey = evalResultStr;
+            try {
+              final jsonStr = evalResultStr.substring('__NEED_NETWORK__:'.length);
+              final request = jsonDecode(jsonStr) as Map<String, dynamic>;
+              final ck = request['cacheKey'] as String? ?? '';
+              if (ck.isNotEmpty) {
+                _jsRuntime!.evaluate('_javaCache[${jsonEncode(ck)}] = "";');
+              }
+            } catch (_) {}
+            continue;
+          }
+        }
+
+        // 非网络标记的正常结果或错误
+        if (evalResult.isError) {
+          AppLogger.instance.logJsError('QuickJS', evalResult.stringResult);
+          if (traceNode != null) {
+            JsTracer.instance.pop(
+              outputPreview: evalResultStr,
+              outputType: 'error',
+              error: evalResultStr,
+            );
+          }
+          _logCurrentTraceTree();
+          return null;
+        }
+
+        strResult = evalResult.stringResult;
         if (traceNode != null) {
           JsTracer.instance.pop(
-            outputPreview: resultShort,
-            outputType: 'error',
-            error: resultShort,
+            outputPreview: strResult,
+            outputType: 'String',
           );
         }
-        // 输出执行树到日志（info 级别）
+        AppLogger.instance.logJsOutput('QuickJS', strResult, outputType: 'String', tag: 'async');
         _logCurrentTraceTree();
-        return null;
+        if (strResult == 'undefined') return '';
+        if (strResult == 'null') return null;
+        return strResult;
       }
-      final strResult = evalResult.stringResult;
-      // 追踪树：记录成功输出
+
+      // 达到最大重试次数
+      AppLogger.instance.warn(LogCategory.js, '网络标记协议达到最大重试次数 ($maxNetworkRetries)',
+          detail: '可能存在循环网络请求');
       if (traceNode != null) {
         JsTracer.instance.pop(
-          outputPreview: strResult,
-          outputType: 'String',
+          outputPreview: strResult ?? '',
+          outputType: isNetworkError ? 'network_limit' : 'String',
+          error: isNetworkError ? 'max_network_retries' : null,
         );
       }
-      // 输出完整执行结果到日志链路（info 级别）
-      AppLogger.instance.logJsOutput('QuickJS', strResult, outputType: 'String', tag: 'async');
-      // 输出执行树到日志（info 级别）
       _logCurrentTraceTree();
-      // undefined → 返回空字符串而不是 null（书源规则可能不需要返回值）
-      if (strResult == 'undefined') return '';
-      // null → 返回 Dart null，避免 "null" 字符串被当作有效结果
-      if (strResult == 'null') return null;
       return strResult;
     } catch (e) {
       AppLogger.instance.logJsError('QuickJS', e.toString());
@@ -5203,14 +5303,8 @@ class JsEngine {
           if (optHeaders != null) mergedHeaders.addAll(optHeaders);
           final effectiveHeaders = mergedHeaders.isNotEmpty ? mergedHeaders : null;
 
-          String? result;
-          if (url.startsWith('http://')) {
-            final r = nativeHttpGet(url,
-                headers: effectiveHeaders?.entries.map((e) => '${e.key}: ${e.value}').join('\r\n'));
-            result = r?['body'] as String?;
-          } else {
-            result = await NativeChannel.instance.httpGet(url, headers: effectiveHeaders);
-          }
+          // 网络请求统一走 PlatformBridge (Dio)，支持 HTTP/HTTPS
+          final result = await PlatformBridge.instance.httpGet(url, headers: effectiveHeaders);
           if (result != null) {
             return MapEntry('http_get:$url', result);
           }
@@ -5326,18 +5420,12 @@ class JsEngine {
               if (optHeaders != null) mergedHeaders.addAll(optHeaders);
               final effectiveHeaders = mergedHeaders.isNotEmpty ? mergedHeaders : null;
 
-              String? result;
-              if (entry.key.startsWith('http://')) {
-                final hdr = effectiveHeaders?.entries.map((e) => '${e.key}: ${e.value}').join('\r\n');
-                final r = nativeHttpPost(entry.key, entry.value, headers: hdr);
-                result = r?['body'] as String?;
-              } else {
-                result = await NativeChannel.instance.httpPost(
-                  entry.key,
-                  body: entry.value,
-                  headers: effectiveHeaders,
-                );
-              }
+              // 网络请求统一走 PlatformBridge (Dio)，支持 HTTP/HTTPS
+              final result = await PlatformBridge.instance.httpPost(
+                entry.key,
+                body: entry.value,
+                headers: effectiveHeaders,
+              );
               if (result != null) {
                 return MapEntry('http_post:${entry.key}', result);
               }
@@ -5375,7 +5463,7 @@ class JsEngine {
           final customHeaders = env?['headers'] as Map<String, String>?;
           final headResults = await _runWithConcurrency(() => headUrls.map((url) async {
             try {
-              final result = await NativeChannel.instance.httpHead(url, headers: customHeaders);
+              final result = await PlatformBridge.instance.httpHead(url, headers: customHeaders);
               if (result != null) {
                 // HEAD 请求返回 headers map，序列化为 JSON 字符串缓存
                 return MapEntry('http_head:$url', jsonEncode(result));
@@ -5530,7 +5618,7 @@ class JsEngine {
 
       downloadFutures.add(() async {
         try {
-          final result = await NativeChannel.instance.httpDownload(absoluteUrl, savePath);
+          final result = await PlatformBridge.instance.httpDownload(absoluteUrl, savePath);
           if (result != null && result.isNotEmpty) {
             return MapEntry(cacheKey, result);
           }
@@ -5678,7 +5766,7 @@ class JsEngine {
               if (saveName.isEmpty) saveName = 'archive_${DateTime.now().millisecondsSinceEpoch}';
               localPath = '$tempPath/$saveName';
               try {
-                await NativeChannel.instance.httpDownload(firstArg, localPath);
+                await PlatformBridge.instance.httpDownload(firstArg, localPath);
               } catch (_) {
                 return null;
               }
