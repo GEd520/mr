@@ -66,6 +66,7 @@ function atob(str) {
 // ===== Uint8Array ↔ 字符串 =====
 function _u8ToStr(u8) {
   if (Array.isArray(u8)) u8 = new Uint8Array(u8);
+  else if (u8 instanceof ArrayBuffer) u8 = new Uint8Array(u8);
   var s = '';
   for (var i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
   try { return decodeURIComponent(escape(s)); } catch(e) { return s; }
@@ -120,6 +121,47 @@ var CryptoJS = {
   mode: { CBC: 1, ECB: 2, CFB: 3, OFB: 4, CTR: 5 },
   pad: { Pkcs7: 1, ZeroPadding: 2, NoPadding: 3, Iso10126: 4, Iso97971: 5 },
 };
+
+// ===== __nativeCrypto 字节方法防护包装 =====
+// 与 java-bridge.js 保持一致：C 层 get_ab 只接受 ArrayBuffer/Uint8Array，
+// 书源直接调用 __nativeCrypto.aesDecryptNative() 传入 number[]/string 时自动转换。
+function _toU8(v) {
+  if (v instanceof Uint8Array) return v;
+  if (v instanceof ArrayBuffer) return new Uint8Array(v);
+  if (Array.isArray(v)) return new Uint8Array(v);
+  if (typeof v === 'string') return _strToU8(v);
+  return new Uint8Array(0);
+}
+if (typeof __nativeCrypto !== 'undefined') {
+  var _origAesDecryptNative = __nativeCrypto.aesDecryptNative;
+  if (typeof _origAesDecryptNative === 'function') {
+    __nativeCrypto.aesDecryptNative = function(ct, key, iv) { return _origAesDecryptNative(_toU8(ct), _toU8(key), _toU8(iv)); };
+  }
+  var _origAesEncryptNative = __nativeCrypto.aesEncryptNative;
+  if (typeof _origAesEncryptNative === 'function') {
+    __nativeCrypto.aesEncryptNative = function(pt, key, iv) { return _origAesEncryptNative(_toU8(pt), _toU8(key), _toU8(iv)); };
+  }
+  var _origAesEncryptNativeECB = __nativeCrypto.aesEncryptNativeECB;
+  if (typeof _origAesEncryptNativeECB === 'function') {
+    __nativeCrypto.aesEncryptNativeECB = function(pt, key) { return _origAesEncryptNativeECB(_toU8(pt), _toU8(key)); };
+  }
+  var _origMd5Native = __nativeCrypto.md5Native;
+  if (typeof _origMd5Native === 'function') {
+    __nativeCrypto.md5Native = function(data) { return _origMd5Native(_toU8(data)); };
+  }
+  var _origSha1Native = __nativeCrypto.sha1Native;
+  if (typeof _origSha1Native === 'function') {
+    __nativeCrypto.sha1Native = function(data) { return _origSha1Native(_toU8(data)); };
+  }
+  var _origSha256Native = __nativeCrypto.sha256Native;
+  if (typeof _origSha256Native === 'function') {
+    __nativeCrypto.sha256Native = function(data) { return _origSha256Native(_toU8(data)); };
+  }
+  var _origHmacSHA256Native = __nativeCrypto.hmacSHA256Native;
+  if (typeof _origHmacSHA256Native === 'function') {
+    __nativeCrypto.hmacSHA256Native = function(data, key) { return _origHmacSHA256Native(_toU8(data), _toU8(key)); };
+  }
+}
 
 // ===== _JsoupLite 空实现 =====
 var _JsoupLite = {
