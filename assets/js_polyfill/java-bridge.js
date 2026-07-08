@@ -301,17 +301,32 @@ var CryptoJS = {
       return { toString: function() { return result || ''; } };
     },
     decrypt: function(ciphertext, key, cfg) {
-      var keyStr = _u8ToStr(key);
-      var iv = cfg && cfg.iv ? _u8ToStr(cfg.iv) : '';
-      var ctStr = typeof ciphertext === 'string' ? ciphertext : ciphertext.toString();
+      // 统一 key 为 Uint8Array（key 通常来自 enc.Utf8.parse → _strToU8 → Uint8Array）
+      var keyU8 = key instanceof Uint8Array ? key : _strToU8(_u8ToStr(key));
+      // 统一 iv 为 Uint8Array（书源可能传 number[] / Uint8Array / string）
+      var ivU8 = null;
+      if (cfg && cfg.iv) {
+        var iv = cfg.iv;
+        ivU8 = iv instanceof Uint8Array ? iv : (typeof iv === 'string' ? _strToU8(iv) : new Uint8Array(iv));
+      }
       var result;
       if (typeof __nativeCrypto !== 'undefined') {
-        if (iv && __nativeCrypto.aesDecryptFromBase64) {
-          var plainU8 = __nativeCrypto.aesDecryptFromBase64(ctStr, keyStr, iv);
+        // cipher 为字节序列（number[] / Uint8Array）时优先走 aesDecryptNative，零 base64 开销。
+        // 兼容书源常见写法：atob(result) 取字节 → number[] 直接传入 CryptoJS.AES.decrypt。
+        var isBytes = (ciphertext instanceof Uint8Array) || Array.isArray(ciphertext);
+        if (isBytes && ivU8 && __nativeCrypto.aesDecryptNative) {
+          var ctU8 = ciphertext instanceof Uint8Array ? ciphertext : new Uint8Array(ciphertext);
+          var plainU8 = __nativeCrypto.aesDecryptNative(ctU8, keyU8, ivU8);
           if (plainU8 && plainU8.byteLength > 0) result = _u8ToStr(plainU8);
-        } else if (!iv && __nativeCrypto.aesDecryptFromBase64ECB) {
-          var plainU8b = __nativeCrypto.aesDecryptFromBase64ECB(ctStr, keyStr);
+        } else if (ivU8 && __nativeCrypto.aesDecryptFromBase64) {
+          // cipher 为 base64 字符串（标准 CryptoJS 路径）；数组则先转 base64
+          var ctStr = typeof ciphertext === 'string' ? ciphertext : btoa(_u8ToStr(new Uint8Array(ciphertext)));
+          var plainU8b = __nativeCrypto.aesDecryptFromBase64(ctStr, _u8ToStr(keyU8), _u8ToStr(ivU8));
           if (plainU8b && plainU8b.byteLength > 0) result = _u8ToStr(plainU8b);
+        } else if (!ivU8 && __nativeCrypto.aesDecryptFromBase64ECB) {
+          var ctStr2 = typeof ciphertext === 'string' ? ciphertext : btoa(_u8ToStr(new Uint8Array(ciphertext)));
+          var plainU8c = __nativeCrypto.aesDecryptFromBase64ECB(ctStr2, _u8ToStr(keyU8));
+          if (plainU8c && plainU8c.byteLength > 0) result = _u8ToStr(plainU8c);
         }
       }
       return { toString: function(enc) { return result || ''; } };
