@@ -1138,7 +1138,7 @@ static JSValue js_native_md5(JSContext *ctx, JSValueConst this_val,
     JSValue v0 = _to_arraybuffer(ctx, argv[0]);
     size_t len;
     const uint8_t *data = JS_IsNull(v0) ? NULL : get_ab(ctx, v0, &len, "md5Native", 1);
-    if (!data) { JS_FreeValue(ctx, v0); return JS_EXCEPTION; }
+    if (!data) { JS_FreeValue(ctx, v0); return JS_ThrowTypeError(ctx, "md5Native: failed to convert argument to ArrayBuffer"); }
 
     QuickJSBridge *bridge = (QuickJSBridge *)JS_GetContextOpaque(ctx);
     uint64_t t0 = bridge ? _now_us() : 0;
@@ -1158,7 +1158,7 @@ static JSValue js_native_sha1(JSContext *ctx, JSValueConst this_val,
     JSValue v0 = _to_arraybuffer(ctx, argv[0]);
     size_t len;
     const uint8_t *data = JS_IsNull(v0) ? NULL : get_ab(ctx, v0, &len, "sha1Native", 1);
-    if (!data) { JS_FreeValue(ctx, v0); return JS_EXCEPTION; }
+    if (!data) { JS_FreeValue(ctx, v0); return JS_ThrowTypeError(ctx, "sha1Native: failed to convert argument to ArrayBuffer"); }
 
     QuickJSBridge *bridge = (QuickJSBridge *)JS_GetContextOpaque(ctx);
     uint64_t t0 = bridge ? _now_us() : 0;
@@ -1178,7 +1178,7 @@ static JSValue js_native_sha256(JSContext *ctx, JSValueConst this_val,
     JSValue v0 = _to_arraybuffer(ctx, argv[0]);
     size_t len;
     const uint8_t *data = JS_IsNull(v0) ? NULL : get_ab(ctx, v0, &len, "sha256Native", 1);
-    if (!data) { JS_FreeValue(ctx, v0); return JS_EXCEPTION; }
+    if (!data) { JS_FreeValue(ctx, v0); return JS_ThrowTypeError(ctx, "sha256Native: failed to convert argument to ArrayBuffer"); }
 
     QuickJSBridge *bridge = (QuickJSBridge *)JS_GetContextOpaque(ctx);
     uint64_t t0 = bridge ? _now_us() : 0;
@@ -1199,9 +1199,9 @@ static JSValue js_native_hmac_sha256(JSContext *ctx, JSValueConst this_val,
     JSValue v1 = _to_arraybuffer(ctx, argv[1]);
     size_t data_len, key_len;
     const uint8_t *data = JS_IsNull(v0) ? NULL : get_ab(ctx, v0, &data_len, "hmacSHA256Native", 1);
-    if (!data) { JS_FreeValue(ctx, v0); JS_FreeValue(ctx, v1); return JS_EXCEPTION; }
+    if (!data) { JS_FreeValue(ctx, v0); JS_FreeValue(ctx, v1); return JS_ThrowTypeError(ctx, "hmacSHA256Native: failed to convert argument 1 to ArrayBuffer"); }
     const uint8_t *key = JS_IsNull(v1) ? NULL : get_ab(ctx, v1, &key_len, "hmacSHA256Native", 2);
-    if (!key) { JS_FreeValue(ctx, v0); JS_FreeValue(ctx, v1); return JS_EXCEPTION; }
+    if (!key) { JS_FreeValue(ctx, v0); JS_FreeValue(ctx, v1); return JS_ThrowTypeError(ctx, "hmacSHA256Native: failed to convert argument 2 to ArrayBuffer"); }
 
     QuickJSBridge *bridge = (QuickJSBridge *)JS_GetContextOpaque(ctx);
     uint64_t t0 = bridge ? _now_us() : 0;
@@ -1608,11 +1608,11 @@ static JSValue js_native_aes_decrypt(JSContext *ctx, JSValueConst this_val,
     v2 = _to_arraybuffer(ctx, argv[2]);
     size_t ct_len, key_len, iv_len;
     const uint8_t *ct = JS_IsNull(v0) ? NULL : get_ab(ctx, v0, &ct_len, "aesDecryptNative", 1);
-    if (!ct) goto done;
+    if (!ct) { ret = JS_ThrowTypeError(ctx, "aesDecryptNative: failed to convert argument 1 to ArrayBuffer"); goto done; }
     const uint8_t *key = JS_IsNull(v1) ? NULL : get_ab(ctx, v1, &key_len, "aesDecryptNative", 2);
-    if (!key) goto done;
+    if (!key) { ret = JS_ThrowTypeError(ctx, "aesDecryptNative: failed to convert argument 2 to ArrayBuffer"); goto done; }
     const uint8_t *iv = JS_IsNull(v2) ? NULL : get_ab(ctx, v2, &iv_len, "aesDecryptNative", 3);
-    if (!iv) goto done;
+    if (!iv) { ret = JS_ThrowTypeError(ctx, "aesDecryptNative: failed to convert argument 3 to ArrayBuffer"); goto done; }
 
     if (key_len != 16 && key_len != 24 && key_len != 32) {
         ret = JS_ThrowTypeError(ctx, "aesDecryptNative: key length must be 16/24/32, got %d", (int)key_len);
@@ -1678,11 +1678,11 @@ static JSValue js_native_aes_encrypt(JSContext *ctx, JSValueConst this_val,
     v2 = _to_arraybuffer(ctx, argv[2]);
     size_t pt_len, key_len, iv_len;
     const uint8_t *pt = JS_IsNull(v0) ? NULL : get_ab(ctx, v0, &pt_len, "aesEncryptNative", 1);
-    if (!pt) goto done;
+    if (!pt) { ret = JS_ThrowTypeError(ctx, "aesEncryptNative: failed to convert argument 1 to ArrayBuffer"); goto done; }
     const uint8_t *key = JS_IsNull(v1) ? NULL : get_ab(ctx, v1, &key_len, "aesEncryptNative", 2);
-    if (!key) goto done;
+    if (!key) { ret = JS_ThrowTypeError(ctx, "aesEncryptNative: failed to convert argument 2 to ArrayBuffer"); goto done; }
     const uint8_t *iv = JS_IsNull(v2) ? NULL : get_ab(ctx, v2, &iv_len, "aesEncryptNative", 3);
-    if (!iv) goto done;
+    if (!iv) { ret = JS_ThrowTypeError(ctx, "aesEncryptNative: failed to convert argument 3 to ArrayBuffer"); goto done; }
 
     if (key_len != 16 && key_len != 24 && key_len != 32) {
         ret = JS_ThrowTypeError(ctx, "aesEncryptNative: key length must be 16/24/32, got %d", (int)key_len);
@@ -1741,9 +1741,9 @@ static JSValue js_native_aes_encrypt_ecb(JSContext *ctx, JSValueConst this_val,
     v1 = _to_arraybuffer(ctx, argv[1]);
     size_t pt_len, key_len;
     const uint8_t *pt = JS_IsNull(v0) ? NULL : get_ab(ctx, v0, &pt_len, "aesEncryptNativeECB", 1);
-    if (!pt) goto done;
+    if (!pt) { ret = JS_ThrowTypeError(ctx, "aesEncryptNativeECB: failed to convert argument 1 to ArrayBuffer"); goto done; }
     const uint8_t *key = JS_IsNull(v1) ? NULL : get_ab(ctx, v1, &key_len, "aesEncryptNativeECB", 2);
-    if (!key) goto done;
+    if (!key) { ret = JS_ThrowTypeError(ctx, "aesEncryptNativeECB: failed to convert argument 2 to ArrayBuffer"); goto done; }
 
     if (key_len != 16 && key_len != 24 && key_len != 32) {
         ret = JS_ThrowTypeError(ctx, "aesEncryptNativeECB: key length must be 16/24/32, got %d", (int)key_len);
@@ -2999,10 +2999,29 @@ const char *quickjs_bridge_eval(QuickJSBridge *bridge, const char *script, int *
             pthread_mutex_unlock(&_g_bridge_mutex);
             return timeout_msg;
         }
+        // 防护：C 函数返回 JS_EXCEPTION 但未调用 JS_Throw 设置异常时，
+        // JS_GetException 返回 JS_UNINITIALIZED（初始值），JS_ToCString 对此 tag
+        // 返回 "[unsupported type]" 而非报错，此处拦截提供有意义的错误信息
+        if (JS_IsNull(exception) || JS_IsUninitialized(exception)) {
+            JS_FreeValue(bridge->ctx, exception);
+            if (is_error) *is_error = 1;
+            char *msg = strdup("TypeError: internal error (exception raised without message)");
+            memory_tracker_record_alloc(strlen(msg) + 1);
+            pthread_mutex_unlock(&_g_bridge_mutex);
+            return msg;
+        }
         const char *str = JS_ToCString(bridge->ctx, exception);
         JS_FreeValue(bridge->ctx, exception);
         if (is_error) *is_error = 1;
         if (str) {
+            // 检测 [unsupported type]：JS_ToCString 对未知 tag 返回此字符串而非报错
+            if (strcmp(str, "[unsupported type]") == 0) {
+                JS_FreeCString(bridge->ctx, str);
+                char *msg = strdup("TypeError: cannot serialize return value (unsupported internal type)");
+                memory_tracker_record_alloc(strlen(msg) + 1);
+                pthread_mutex_unlock(&_g_bridge_mutex);
+                return msg;
+            }
             char *result = strdup(str);
             JS_FreeCString(bridge->ctx, str);
             memory_tracker_record_alloc(strlen(result) + 1);
@@ -3016,11 +3035,22 @@ const char *quickjs_bridge_eval(QuickJSBridge *bridge, const char *script, int *
         return r;
     }
 
+    // 防护：检测 [unsupported type]，对未知 tag 的值提供有意义的错误信息
     const char *str = JS_ToCString(bridge->ctx, val);
     JS_FreeValue(bridge->ctx, val);
     if (is_error) *is_error = 0;
 
     if (str) {
+        // JS_ToCString 对未知 tag 返回 "[unsupported type]" 而非报错，
+        // 此处检测并转为错误，避免调用方收到无意义的字符串
+        if (strcmp(str, "[unsupported type]") == 0) {
+            JS_FreeCString(bridge->ctx, str);
+            if (is_error) *is_error = 1;
+            char *msg = strdup("TypeError: cannot serialize return value (unsupported internal type)");
+            memory_tracker_record_alloc(strlen(msg) + 1);
+            pthread_mutex_unlock(&_g_bridge_mutex);
+            return msg;
+        }
         char *result = strdup(str);
         JS_FreeCString(bridge->ctx, str);
         memory_tracker_record_alloc(strlen(result) + 1);

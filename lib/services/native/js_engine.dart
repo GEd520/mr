@@ -968,20 +968,24 @@ class JsEngine {
 
           var __returnValue = (function() { $wrappedCode })();
           if (typeof __returnValue === 'object' && __returnValue !== null) {
-            // Uint8Array 转普通数组再 JSON（Legado ByteArray 契约）
-            if (__returnValue instanceof Uint8Array) {
-              return JSON.stringify(Array.from(__returnValue));
-            }
-            return JSON.stringify(__returnValue);
-          }
-          return __returnValue;
-        })();
-      ''';
-      final evalResult = _jsRuntime!.evaluate(wrappedScript);
-      _flushConsoleLogs();
-      if (evalResult.isError) {
-        AppLogger.instance.logJsError('QuickJS', evalResult.stringResult);
-        // 追踪树：记录错误（由 executeSync 的 finally 统一 pop，这里只暂存错误信息）
+// Uint8Array / ArrayBuffer 转普通数组再 JSON（Legado ByteArray 契约）
+// C 原生函数（aesDecryptNative 等）返回 ArrayBuffer，需显式处理
+if (__returnValue instanceof Uint8Array) {
+return JSON.stringify(Array.from(__returnValue));
+}
+if (__returnValue instanceof ArrayBuffer) {
+return JSON.stringify(Array.from(new Uint8Array(__returnValue)));
+}
+return JSON.stringify(__returnValue);
+}
+return __returnValue;
+})();
+''';
+final evalResult = _jsRuntime!.evaluate(wrappedScript);
+_flushConsoleLogs();
+if (evalResult.isError) {
+AppLogger.instance.logJsError('QuickJS', evalResult.stringResult);
+// 追踪树：记录错误
         _lastEvalError = evalResult.stringResult;
         return null;
       }
@@ -1163,16 +1167,20 @@ class JsEngine {
 
           var __returnValue = (function() { $wrappedCode })();
           if (typeof __returnValue === 'object' && __returnValue !== null) {
-            // Uint8Array 转普通数组再 JSON（Legado ByteArray 契约）
-            if (__returnValue instanceof Uint8Array) {
-              return JSON.stringify(Array.from(__returnValue));
-            }
-            return JSON.stringify(__returnValue);
-          }
-          return __returnValue;
-        })();
-      ''';
-      // 先 yield 让出事件循环
+// Uint8Array / ArrayBuffer 转普通数组再 JSON（Legado ByteArray 契约）
+// C 原生函数（aesDecryptNative 等）返回 ArrayBuffer，需显式处理
+if (__returnValue instanceof Uint8Array) {
+return JSON.stringify(Array.from(__returnValue));
+}
+if (__returnValue instanceof ArrayBuffer) {
+return JSON.stringify(Array.from(new Uint8Array(__returnValue)));
+}
+return JSON.stringify(__returnValue);
+}
+return __returnValue;
+})();
+''';
+// 先 yield 让出事件循环
       await Future(() {});
       final evalResult = _jsRuntime!.evaluate(wrappedScript);
       _flushConsoleLogs();
@@ -1375,16 +1383,20 @@ class JsEngine {
 
           var __returnValue = (function() { $wrappedCode })();
           if (typeof __returnValue === 'object' && __returnValue !== null) {
-            // Uint8Array 转普通数组再 JSON（Legado ByteArray 契约）
-            if (__returnValue instanceof Uint8Array) {
-              return JSON.stringify(Array.from(__returnValue));
-            }
-            return JSON.stringify(__returnValue);
-          }
-          return __returnValue;
-        })();
-      ''';
-      // 优化：仅在 JS 代码较长时让出事件循环，短小 JS（如搜索 URL 生成）直接执行
+// Uint8Array / ArrayBuffer 转普通数组再 JSON（Legado ByteArray 契约）
+// C 原生函数（aesDecryptNative 等）返回 ArrayBuffer，需显式处理
+if (__returnValue instanceof Uint8Array) {
+return JSON.stringify(Array.from(__returnValue));
+}
+if (__returnValue instanceof ArrayBuffer) {
+return JSON.stringify(Array.from(new Uint8Array(__returnValue)));
+}
+return JSON.stringify(__returnValue);
+}
+return __returnValue;
+})();
+''';
+// 优化：仅在 JS 代码较长时让出事件循环
       // 阈值 5KB：超过此长度的 JS 可能执行较久，需要让出事件循环避免阻塞 UI
       if (wrappedScript.length > 5000) {
         await Future(() {});
