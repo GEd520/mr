@@ -142,6 +142,9 @@ class HttpClient {
   /// - OkHttp 原生支持 HTTP/2、连接池、自动重试
   /// - 不受 Dart VM 网络栈限制
   /// - 正确处理编码和重定向
+  ///
+  /// 对瞬时网络错误（connectionError/connectionTimeout 等）自动重试最多 2 次，
+  /// 带指数退避（500ms → 1000ms），避免因服务器瞬时不可用导致整条解析链路失败。
   Future<StrResponse> execute(
     String url, {
     String method = 'GET',
@@ -151,97 +154,138 @@ class HttpClient {
     Duration? connectTimeout,
     Duration? readTimeout,
   }) async {
-    try {
-      // Web 端受 CORS 限制，必须走代理
-      if (kIsWeb) {
-        // WebProxy.fetch() 内部会拼接代理前缀，这里只传原始 URL
-        final html = await WebProxy.instance.fetch(
-          url,
+    // 瞬时网络错误自动重试（指数退避）
+    const maxAutoRetries = 2;
+    const retryDelays = [Duration(milliseconds: 500), Duration(seconds: 1)];
+
+    for (int attempt = 0; attempt <= maxAutoRetries; attempt++) {
+      try {
+        // Web 端受 CORS 限制，必须走代理
+        if (kIsWeb) {
+          // WebProxy.fetch() 内部会拼接代理前缀，这里只传原始 URL
+          final html = await WebProxy.instance.fetch(
+            url,
+            method: method,
+            headers: headers,
+            body: body,
+          );
+          return StrResponse(
+            url: url,
+            body: html,
+            statusCode: 200,
+            headers: {},
+          );
+        }
+
+        // 降级方案：使用 Dio
+        // 当 charset 为非 UTF-8 时，用 ResponseType.bytes 获取原始字节后手动解码，
+        // 确保 GBK/GB2312/GB18030 等编码正确转换
+        final useBytes = charset != null && charset.trim().toLowerCase() != 'utf-8' && charset.trim().toLowerCase() != 'utf8';
+        final options = Options(
           method: method,
           headers: headers,
-          body: body,
+          responseType: useBytes ? ResponseType.bytes : ResponseType.plain,
+          receiveTimeout: readTimeout,
+          sendTimeout: connectTimeout,
         );
-        return StrResponse(
-          url: url,
-          body: html,
-          statusCode: 200,
-          headers: {},
-        );
-      }
 
-      // 降级方案：使用 Dio
-      // 当 charset 为非 UTF-8 时，用 ResponseType.bytes 获取原始字节后手动解码，
-      // 确保 GBK/GB2312/GB18030 等编码正确转换
-      final useBytes = charset != null && charset.trim().toLowerCase() != 'utf-8' && charset.trim().toLowerCase() != 'utf8';
-      final options = Options(
-        method: method,
-        headers: headers,
-        responseType: useBytes ? ResponseType.bytes : ResponseType.plain,
-        receiveTimeout: readTimeout,
-        sendTimeout: connectTimeout,
-      );
+        if (useBytes) {
+          final response = await _dio.request<List<int>>(
+            url,
+            data: body,
+            options: options,
+          );
+          final rawBytes = response.data ?? <int>[];
+          final bodyStr = CharsetUtils.decodeResponse(
+            Uint8List.fromList(rawBytes), charset);
+          return StrResponse(
+            url: response.realUri.toString(),
+            body: bodyStr,
+            statusCode: response.statusCode ?? 200,
+            headers: response.headers.map.map(
+              (key, value) => MapEntry(key, value.first),
+            ),
+            raw: response,
+          );
+        }
 
-      if (useBytes) {
-        final response = await _dio.request<List<int>>(
+        final response = await _dio.request<String>(
           url,
           data: body,
           options: options,
         );
-        final rawBytes = response.data ?? <int>[];
-        final bodyStr = CharsetUtils.decodeResponse(
-          Uint8List.fromList(rawBytes), charset);
+
         return StrResponse(
           url: response.realUri.toString(),
-          body: bodyStr,
+          body: response.data ?? '',
           statusCode: response.statusCode ?? 200,
           headers: response.headers.map.map(
             (key, value) => MapEntry(key, value.first),
           ),
           raw: response,
         );
-      }
+      } on DioException catch (e) {
+        // 判断是否为可重试的瞬时网络错误
+        final isTransient = _isTransientNetworkError(e);
+        if (isTransient && attempt < maxAutoRetries) {
+          debugPrint('⚠️ 瞬时网络错误，自动重试 (${attempt + 1}/$maxAutoRetries): ${e.type} - ${e.message}');
+          await Future.delayed(retryDelays[attempt]);
+          continue;
+        }
 
-      final response = await _dio.request<String>(
-        url,
-        data: body,
-        options: options,
-      );
-
-      return StrResponse(
-        url: response.realUri.toString(),
-        body: response.data ?? '',
-        statusCode: response.statusCode ?? 200,
-        headers: response.headers.map.map(
-          (key, value) => MapEntry(key, value.first),
-        ),
-        raw: response,
-      );
-    } on DioException catch (e) {
-      debugPrint('❌ HTTP Error: ${e.type} - ${e.message}');
-      if (e.response != null) {
+        debugPrint('❌ HTTP Error: ${e.type} - ${e.message}');
+        if (e.response != null) {
+          return StrResponse(
+            url: url,
+            body: e.response?.data?.toString() ?? '',
+            statusCode: e.response?.statusCode ?? 500,
+            headers: {},
+          );
+        }
+        // 网络错误（连接超时、DNS解析失败等），返回空响应而不是抛异常
+        debugPrint('❌ 网络请求失败: ${e.type} - ${e.message}');
         return StrResponse(
           url: url,
-          body: e.response?.data?.toString() ?? '',
-          statusCode: e.response?.statusCode ?? 500,
+          body: '',
+          statusCode: 0,
+          headers: {},
+        );
+      } catch (e) {
+        debugPrint('❌ 请求异常: $e');
+        return StrResponse(
+          url: url,
+          body: '',
+          statusCode: 0,
           headers: {},
         );
       }
-      // 网络错误（连接超时、DNS解析失败等），返回空响应而不是抛异常
-      debugPrint('❌ 网络请求失败: ${e.type} - ${e.message}');
-      return StrResponse(
-        url: url,
-        body: '',
-        statusCode: 0,
-        headers: {},
-      );
-    } catch (e) {
-      debugPrint('❌ 请求异常: $e');
-      return StrResponse(
-        url: url,
-        body: '',
-        statusCode: 0,
-        headers: {},
-      );
+    }
+
+    // 理论上不会走到这里（循环内所有路径都有 return），但编译器需要兜底
+    return StrResponse(url: url, body: '', statusCode: 0, headers: {});
+  }
+
+  /// 判断 DioException 是否为可重试的瞬时网络错误
+  ///
+  /// 以下错误类型通常是瞬时的，重试有可能成功：
+  /// - connectionError: 连接被关闭/重置（"Connection closed before full header was received"）
+  /// - connectionTimeout: 连接超时
+  /// - sendTimeout: 发送超时
+  /// - receiveTimeout: 接收超时
+  ///
+  /// 以下错误类型不可重试：
+  /// - badResponse: 服务器返回了错误状态码（4xx/5xx），重试无意义
+  /// - cancel: 请求被主动取消
+  /// - unknown: 未知错误，可能是 DNS 解析失败等永久性错误
+  bool _isTransientNetworkError(DioException e) {
+    switch (e.type) {
+      case DioExceptionType.connectionError:
+      case DioExceptionType.connectionTimeout:
+      case DioExceptionType.sendTimeout:
+      case DioExceptionType.receiveTimeout:
+        return true;
+      default:
+        return false;
     }
   }
 }
