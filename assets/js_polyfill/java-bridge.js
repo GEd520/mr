@@ -341,8 +341,10 @@ var CryptoJS = {
         return _strToU8(atob(str));
       },
       stringify: function(u8) {
-        if (typeof __nativeBase64 !== 'undefined' && __nativeBase64.b64FromBytes) return __nativeBase64.b64FromBytes(u8);
-        return btoa(_u8ToStr(u8));
+        // 统一转 Uint8Array，避免 C 层 b64FromBytes 对非 ArrayBuffer 抛 TypeError
+        var u8v = _toU8(u8);
+        if (typeof __nativeBase64 !== 'undefined' && __nativeBase64.b64FromBytes) return __nativeBase64.b64FromBytes(u8v);
+        return btoa(_u8ToStr(u8v));
       },
     },
     Hex: {
@@ -352,8 +354,10 @@ var CryptoJS = {
         return new Uint8Array(bytes);
       },
       stringify: function(u8) {
+        // 统一转 Uint8Array，兼容 ArrayBuffer / number[] 入参
+        var u8v = _toU8(u8);
         var hex = '';
-        for (var i = 0; i < u8.length; i++) hex += (u8[i] < 16 ? '0' : '') + u8[i].toString(16);
+        for (var i = 0; i < u8v.length; i++) hex += (u8v[i] < 16 ? '0' : '') + u8v[i].toString(16);
         return hex;
       },
     },

@@ -1083,6 +1083,10 @@ static JSValue _to_arraybuffer(JSContext *ctx, JSValueConst val) {
     const uint8_t *p = JS_GetArrayBuffer(ctx, &len, val);
     if (p) return JS_DupValue(ctx, val);
 
+    /* JS_GetArrayBuffer 失败时已抛出 TypeError，清除异常以便后续转换逻辑正常运行 */
+    JSValue _exc = JS_GetException(ctx);
+    JS_FreeValue(ctx, _exc);
+
     // number[] → ArrayBuffer
     if (JS_IsArray(ctx, val)) {
         JSValue lengthVal = JS_GetPropertyStr(ctx, val, "length");
@@ -1409,7 +1413,12 @@ static JSValue js_native_uint8_to_str(JSContext *ctx, JSValueConst this_val,
     if (argc < 1) return JS_NewString(ctx, "");
     size_t len;
     const uint8_t *data = JS_GetArrayBuffer(ctx, &len, argv[0]);
-    if (!data) return JS_NewString(ctx, "");
+    if (!data) {
+        /* JS_GetArrayBuffer 已抛出 TypeError，清除异常使调用方拿到空串而非崩溃 */
+        JSValue exc = JS_GetException(ctx);
+        JS_FreeValue(ctx, exc);
+        return JS_NewString(ctx, "");
+    }
     JSValue ret = JS_NewStringLen(ctx, (const char *)data, len);
     return ret;
 }
@@ -1421,7 +1430,13 @@ static JSValue js_native_b64_from_bytes(JSContext *ctx, JSValueConst this_val,
     if (argc < 1) return JS_NewString(ctx, "");
     size_t len;
     const uint8_t *data = JS_GetArrayBuffer(ctx, &len, argv[0]);
-    if (!data || len == 0) return JS_NewString(ctx, "");
+    if (!data) {
+        /* JS_GetArrayBuffer 已抛出 TypeError，清除异常使调用方拿到空串而非崩溃 */
+        JSValue exc = JS_GetException(ctx);
+        JS_FreeValue(ctx, exc);
+        return JS_NewString(ctx, "");
+    }
+    if (len == 0) return JS_NewString(ctx, "");
     size_t b64_len = 0;
     char *b64 = b64_encode(data, len, &b64_len);
     if (!b64) return JS_NewString(ctx, "");
