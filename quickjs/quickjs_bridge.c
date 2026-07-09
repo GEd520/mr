@@ -1055,6 +1055,9 @@ static JSValue js_call_crypto_binary(JSContext *ctx, int op, int argc, JSValueCo
 // 这些函数直接在 C 层调用 crypto 库，完全消除跨语言往返
 // 接受 ArrayBuffer，返回 ArrayBuffer（原始字节）
 
+// 前向声明：_free_array_buf 定义在 L1365+，此处提前声明供 _to_arraybuffer 使用
+static void _free_array_buf(JSRuntime *rt, void *opaque, void *ptr);
+
 // 辅助：从 JSValue 取 ArrayBuffer 指针
 static const uint8_t *get_ab(JSContext *ctx, JSValueConst val, size_t *len, const char *fn_name, int arg_idx) {
     const uint8_t *p = JS_GetArrayBuffer(ctx, len, val);
@@ -1064,13 +1067,74 @@ static const uint8_t *get_ab(JSContext *ctx, JSValueConst val, size_t *len, cons
     return p;
 }
 
+// 辅助：将 JSValue 转换为 ArrayBuffer（防护层）
+// C 层 get_ab 只接受 ArrayBuffer/Uint8Array，对 number[]/string 直接抛 TypeError。
+// 书源可能直接调用 __nativeCrypto.aesDecryptNative() 传入 number[] 或字符串，
+// 此处统一转换为 ArrayBuffer，避免 C 层拒绝导致整条链路崩溃。
+//
+// 返回值规则：
+//   - val 已是 ArrayBuffer/Uint8Array → 返回 JS_DupValue(val)（调用方需 JS_FreeValue）
+//   - val 是 number[]            → 创建新 ArrayBuffer（malloc 内存移交 QuickJS GC）
+//   - val 是 string              → 创建新 ArrayBuffer（UTF-8 编码，不含 '\0'）
+//   - 转换失败                   → 返回 JS_NULL
+// 调用方需对非 NULL 返回值调用 JS_FreeValue 释放引用。
+static JSValue _to_arraybuffer(JSContext *ctx, JSValueConst val) {
+    size_t len;
+    const uint8_t *p = JS_GetArrayBuffer(ctx, &len, val);
+    if (p) return JS_DupValue(ctx, val);
+
+    // number[] → ArrayBuffer
+    if (JS_IsArray(ctx, val)) {
+        JSValue lengthVal = JS_GetPropertyStr(ctx, val, "length");
+        uint32_t length = 0;
+        if (JS_ToUint32(ctx, &length, lengthVal) == 0) {
+            uint8_t *buf = (uint8_t *)malloc(length ? length : 1);
+            if (buf) {
+                int ok = 1;
+                for (uint32_t i = 0; i < length; i++) {
+                    JSValue elem = JS_GetPropertyUint32(ctx, val, i);
+                    uint32_t byte;
+                    if (JS_ToUint32(ctx, &byte, elem) != 0) {
+                        ok = 0;
+                        JS_FreeValue(ctx, elem);
+                        break;
+                    }
+                    buf[i] = (uint8_t)byte;
+                    JS_FreeValue(ctx, elem);
+                }
+                JS_FreeValue(ctx, lengthVal);
+                if (ok) {
+                    return JS_NewArrayBuffer(ctx, buf, length, _free_array_buf, NULL, 0);
+                }
+                free(buf);
+                return JS_NULL;
+            }
+        }
+        JS_FreeValue(ctx, lengthVal);
+    }
+
+    // string → ArrayBuffer（UTF-8 编码，不含 '\0'）
+    if (JS_IsString(val)) {
+        const char *str = JS_ToCString(ctx, val);
+        if (str) {
+            size_t slen = strlen(str);
+            JSValue ret = JS_NewArrayBufferCopy(ctx, (const uint8_t *)str, slen);
+            JS_FreeCString(ctx, str);
+            return ret;
+        }
+    }
+
+    return JS_NULL;
+}
+
 // MD5：输入 data ArrayBuffer，输出 16 字节摘要
 static JSValue js_native_md5(JSContext *ctx, JSValueConst this_val,
                              int argc, JSValueConst *argv) {
     if (argc < 1) return JS_ThrowTypeError(ctx, "md5Native requires 1 argument, got %d", argc);
+    JSValue v0 = _to_arraybuffer(ctx, argv[0]);
     size_t len;
-    const uint8_t *data = get_ab(ctx, argv[0], &len, "md5Native", 1);
-    if (!data) return JS_EXCEPTION;
+    const uint8_t *data = JS_IsNull(v0) ? NULL : get_ab(ctx, v0, &len, "md5Native", 1);
+    if (!data) { JS_FreeValue(ctx, v0); return JS_EXCEPTION; }
 
     QuickJSBridge *bridge = (QuickJSBridge *)JS_GetContextOpaque(ctx);
     uint64_t t0 = bridge ? _now_us() : 0;
@@ -1079,6 +1143,7 @@ static JSValue js_native_md5(JSContext *ctx, JSValueConst this_val,
     md5(data, len, digest);
 
     if (bridge) _stats_update(&bridge->stats, len, 16, _now_us() - t0);
+    JS_FreeValue(ctx, v0);
     return JS_NewArrayBufferCopy(ctx, digest, 16);
 }
 
@@ -1086,9 +1151,10 @@ static JSValue js_native_md5(JSContext *ctx, JSValueConst this_val,
 static JSValue js_native_sha1(JSContext *ctx, JSValueConst this_val,
                               int argc, JSValueConst *argv) {
     if (argc < 1) return JS_ThrowTypeError(ctx, "sha1Native requires 1 argument, got %d", argc);
+    JSValue v0 = _to_arraybuffer(ctx, argv[0]);
     size_t len;
-    const uint8_t *data = get_ab(ctx, argv[0], &len, "sha1Native", 1);
-    if (!data) return JS_EXCEPTION;
+    const uint8_t *data = JS_IsNull(v0) ? NULL : get_ab(ctx, v0, &len, "sha1Native", 1);
+    if (!data) { JS_FreeValue(ctx, v0); return JS_EXCEPTION; }
 
     QuickJSBridge *bridge = (QuickJSBridge *)JS_GetContextOpaque(ctx);
     uint64_t t0 = bridge ? _now_us() : 0;
@@ -1097,6 +1163,7 @@ static JSValue js_native_sha1(JSContext *ctx, JSValueConst this_val,
     sha1(data, len, digest);
 
     if (bridge) _stats_update(&bridge->stats, len, 20, _now_us() - t0);
+    JS_FreeValue(ctx, v0);
     return JS_NewArrayBufferCopy(ctx, digest, 20);
 }
 
@@ -1104,9 +1171,10 @@ static JSValue js_native_sha1(JSContext *ctx, JSValueConst this_val,
 static JSValue js_native_sha256(JSContext *ctx, JSValueConst this_val,
                                 int argc, JSValueConst *argv) {
     if (argc < 1) return JS_ThrowTypeError(ctx, "sha256Native requires 1 argument, got %d", argc);
+    JSValue v0 = _to_arraybuffer(ctx, argv[0]);
     size_t len;
-    const uint8_t *data = get_ab(ctx, argv[0], &len, "sha256Native", 1);
-    if (!data) return JS_EXCEPTION;
+    const uint8_t *data = JS_IsNull(v0) ? NULL : get_ab(ctx, v0, &len, "sha256Native", 1);
+    if (!data) { JS_FreeValue(ctx, v0); return JS_EXCEPTION; }
 
     QuickJSBridge *bridge = (QuickJSBridge *)JS_GetContextOpaque(ctx);
     uint64_t t0 = bridge ? _now_us() : 0;
@@ -1115,6 +1183,7 @@ static JSValue js_native_sha256(JSContext *ctx, JSValueConst this_val,
     sha256(data, len, digest);
 
     if (bridge) _stats_update(&bridge->stats, len, 32, _now_us() - t0);
+    JS_FreeValue(ctx, v0);
     return JS_NewArrayBufferCopy(ctx, digest, 32);
 }
 
@@ -1122,11 +1191,13 @@ static JSValue js_native_sha256(JSContext *ctx, JSValueConst this_val,
 static JSValue js_native_hmac_sha256(JSContext *ctx, JSValueConst this_val,
                                      int argc, JSValueConst *argv) {
     if (argc < 2) return JS_ThrowTypeError(ctx, "hmacSHA256Native requires 2 arguments, got %d", argc);
+    JSValue v0 = _to_arraybuffer(ctx, argv[0]);
+    JSValue v1 = _to_arraybuffer(ctx, argv[1]);
     size_t data_len, key_len;
-    const uint8_t *data = get_ab(ctx, argv[0], &data_len, "hmacSHA256Native", 1);
-    if (!data) return JS_EXCEPTION;
-    const uint8_t *key = get_ab(ctx, argv[1], &key_len, "hmacSHA256Native", 2);
-    if (!key) return JS_EXCEPTION;
+    const uint8_t *data = JS_IsNull(v0) ? NULL : get_ab(ctx, v0, &data_len, "hmacSHA256Native", 1);
+    if (!data) { JS_FreeValue(ctx, v0); JS_FreeValue(ctx, v1); return JS_EXCEPTION; }
+    const uint8_t *key = JS_IsNull(v1) ? NULL : get_ab(ctx, v1, &key_len, "hmacSHA256Native", 2);
+    if (!key) { JS_FreeValue(ctx, v0); JS_FreeValue(ctx, v1); return JS_EXCEPTION; }
 
     QuickJSBridge *bridge = (QuickJSBridge *)JS_GetContextOpaque(ctx);
     uint64_t t0 = bridge ? _now_us() : 0;
@@ -1135,6 +1206,8 @@ static JSValue js_native_hmac_sha256(JSContext *ctx, JSValueConst this_val,
     hmac_sha256(key, key_len, data, data_len, digest);
 
     if (bridge) _stats_update(&bridge->stats, data_len + key_len, 32, _now_us() - t0);
+    JS_FreeValue(ctx, v0);
+    JS_FreeValue(ctx, v1);
     return JS_NewArrayBufferCopy(ctx, digest, 32);
 }
 
@@ -1509,35 +1582,50 @@ static JSValue js_native_aes_decrypt_base64_ecb(JSContext *ctx, JSValueConst thi
 
 static JSValue js_native_aes_decrypt(JSContext *ctx, JSValueConst this_val,
                                      int argc, JSValueConst *argv) {
-    if (argc < 3) return JS_ThrowTypeError(ctx, "aesDecryptNative requires 3 arguments, got %d", argc);
+    JSValue ret = JS_EXCEPTION;
+    JSValue v0 = JS_NULL, v1 = JS_NULL, v2 = JS_NULL;
+    if (argc < 3) {
+        JS_ThrowTypeError(ctx, "aesDecryptNative requires 3 arguments, got %d", argc);
+        goto done;
+    }
+    v0 = _to_arraybuffer(ctx, argv[0]);
+    v1 = _to_arraybuffer(ctx, argv[1]);
+    v2 = _to_arraybuffer(ctx, argv[2]);
     size_t ct_len, key_len, iv_len;
-    const uint8_t *ct = get_ab(ctx, argv[0], &ct_len, "aesDecryptNative", 1);
-    if (!ct) return JS_EXCEPTION;
-    const uint8_t *key = get_ab(ctx, argv[1], &key_len, "aesDecryptNative", 2);
-    if (!key) return JS_EXCEPTION;
-    const uint8_t *iv = get_ab(ctx, argv[2], &iv_len, "aesDecryptNative", 3);
-    if (!iv) return JS_EXCEPTION;
+    const uint8_t *ct = JS_IsNull(v0) ? NULL : get_ab(ctx, v0, &ct_len, "aesDecryptNative", 1);
+    if (!ct) goto done;
+    const uint8_t *key = JS_IsNull(v1) ? NULL : get_ab(ctx, v1, &key_len, "aesDecryptNative", 2);
+    if (!key) goto done;
+    const uint8_t *iv = JS_IsNull(v2) ? NULL : get_ab(ctx, v2, &iv_len, "aesDecryptNative", 3);
+    if (!iv) goto done;
 
     if (key_len != 16 && key_len != 24 && key_len != 32) {
-        return JS_ThrowTypeError(ctx, "aesDecryptNative: key length must be 16/24/32, got %d", (int)key_len);
+        ret = JS_ThrowTypeError(ctx, "aesDecryptNative: key length must be 16/24/32, got %d", (int)key_len);
+        goto done;
     }
     if (iv_len != 16) {
-        return JS_ThrowTypeError(ctx, "aesDecryptNative: iv length must be 16, got %d", (int)iv_len);
+        ret = JS_ThrowTypeError(ctx, "aesDecryptNative: iv length must be 16, got %d", (int)iv_len);
+        goto done;
     }
     if (ct_len == 0 || ct_len % 16 != 0) {
-        return JS_ThrowTypeError(ctx, "aesDecryptNative: ciphertext length must be multiple of 16, got %d", (int)ct_len);
+        ret = JS_ThrowTypeError(ctx, "aesDecryptNative: ciphertext length must be multiple of 16, got %d", (int)ct_len);
+        goto done;
     }
 
     QuickJSBridge *bridge = (QuickJSBridge *)JS_GetContextOpaque(ctx);
 
     aes_ctx_t actx;
     if (_aes_init_cached(bridge, &actx, key, key_len) != 0) {
-        return JS_ThrowTypeError(ctx, "aesDecryptNative: key expansion failed");
+        ret = JS_ThrowTypeError(ctx, "aesDecryptNative: key expansion failed");
+        goto done;
     }
 
     // malloc 输出缓冲区 → 零拷贝给 ArrayBuffer
     uint8_t *out = (uint8_t *)malloc(ct_len);
-    if (!out) return JS_ThrowTypeError(ctx, "aesDecryptNative: out of memory");
+    if (!out) {
+        ret = JS_ThrowTypeError(ctx, "aesDecryptNative: out of memory");
+        goto done;
+    }
 
     uint64_t t0 = bridge ? _now_us() : 0;
     size_t out_len = aes_cbc_decrypt(&actx, iv, ct, ct_len, out);
@@ -1545,11 +1633,17 @@ static JSValue js_native_aes_decrypt(JSContext *ctx, JSValueConst this_val,
 
     if (out_len == (size_t)-1) {
         free(out);
-        return JS_ThrowTypeError(ctx, "aesDecryptNative: decryption failed (bad padding or key)");
+        ret = JS_ThrowTypeError(ctx, "aesDecryptNative: decryption failed (bad padding or key)");
+        goto done;
     }
 
     // 零拷贝：QuickJS 接管 out 生命期
-    JSValue ret = JS_NewArrayBuffer(ctx, out, out_len, _free_array_buf, NULL, 0);
+    ret = JS_NewArrayBuffer(ctx, out, out_len, _free_array_buf, NULL, 0);
+
+done:
+    JS_FreeValue(ctx, v0);
+    JS_FreeValue(ctx, v1);
+    JS_FreeValue(ctx, v2);
     return ret;
 }
 
@@ -1558,28 +1652,45 @@ static JSValue js_native_aes_decrypt(JSContext *ctx, JSValueConst this_val,
 // 返回: ArrayBuffer（密文），失败抛出异常
 static JSValue js_native_aes_encrypt(JSContext *ctx, JSValueConst this_val,
                                      int argc, JSValueConst *argv) {
-    if (argc < 3) return JS_ThrowTypeError(ctx, "aesEncryptNative requires 3 arguments, got %d", argc);
+    JSValue ret = JS_EXCEPTION;
+    JSValue v0 = JS_NULL, v1 = JS_NULL, v2 = JS_NULL;
+    if (argc < 3) {
+        JS_ThrowTypeError(ctx, "aesEncryptNative requires 3 arguments, got %d", argc);
+        goto done;
+    }
+    v0 = _to_arraybuffer(ctx, argv[0]);
+    v1 = _to_arraybuffer(ctx, argv[1]);
+    v2 = _to_arraybuffer(ctx, argv[2]);
     size_t pt_len, key_len, iv_len;
-    const uint8_t *pt = get_ab(ctx, argv[0], &pt_len, "aesEncryptNative", 1);
-    if (!pt) return JS_EXCEPTION;
-    const uint8_t *key = get_ab(ctx, argv[1], &key_len, "aesEncryptNative", 2);
-    if (!key) return JS_EXCEPTION;
-    const uint8_t *iv = get_ab(ctx, argv[2], &iv_len, "aesEncryptNative", 3);
-    if (!iv) return JS_EXCEPTION;
+    const uint8_t *pt = JS_IsNull(v0) ? NULL : get_ab(ctx, v0, &pt_len, "aesEncryptNative", 1);
+    if (!pt) goto done;
+    const uint8_t *key = JS_IsNull(v1) ? NULL : get_ab(ctx, v1, &key_len, "aesEncryptNative", 2);
+    if (!key) goto done;
+    const uint8_t *iv = JS_IsNull(v2) ? NULL : get_ab(ctx, v2, &iv_len, "aesEncryptNative", 3);
+    if (!iv) goto done;
 
-    if (key_len != 16 && key_len != 24 && key_len != 32)
-        return JS_ThrowTypeError(ctx, "aesEncryptNative: key length must be 16/24/32, got %d", (int)key_len);
-    if (iv_len != 16)
-        return JS_ThrowTypeError(ctx, "aesEncryptNative: iv length must be 16, got %d", (int)iv_len);
+    if (key_len != 16 && key_len != 24 && key_len != 32) {
+        ret = JS_ThrowTypeError(ctx, "aesEncryptNative: key length must be 16/24/32, got %d", (int)key_len);
+        goto done;
+    }
+    if (iv_len != 16) {
+        ret = JS_ThrowTypeError(ctx, "aesEncryptNative: iv length must be 16, got %d", (int)iv_len);
+        goto done;
+    }
 
     QuickJSBridge *bridge = (QuickJSBridge *)JS_GetContextOpaque(ctx);
     aes_ctx_t actx;
-    if (_aes_init_cached(bridge, &actx, key, key_len) != 0)
-        return JS_ThrowTypeError(ctx, "aesEncryptNative: key expansion failed");
+    if (_aes_init_cached(bridge, &actx, key, key_len) != 0) {
+        ret = JS_ThrowTypeError(ctx, "aesEncryptNative: key expansion failed");
+        goto done;
+    }
 
     size_t out_cap = pt_len + 16;
     uint8_t *out = (uint8_t *)malloc(out_cap);
-    if (!out) return JS_ThrowTypeError(ctx, "aesEncryptNative: out of memory");
+    if (!out) {
+        ret = JS_ThrowTypeError(ctx, "aesEncryptNative: out of memory");
+        goto done;
+    }
 
     uint64_t t0 = bridge ? _now_us() : 0;
     size_t out_len = aes_cbc_encrypt(&actx, iv, pt, pt_len, out);
@@ -1587,10 +1698,16 @@ static JSValue js_native_aes_encrypt(JSContext *ctx, JSValueConst this_val,
 
     if (out_len == (size_t)-1) {
         free(out);
-        return JS_ThrowTypeError(ctx, "aesEncryptNative: encryption failed");
+        ret = JS_ThrowTypeError(ctx, "aesEncryptNative: encryption failed");
+        goto done;
     }
 
-    JSValue ret = JS_NewArrayBuffer(ctx, out, out_len, _free_array_buf, NULL, 0);
+    ret = JS_NewArrayBuffer(ctx, out, out_len, _free_array_buf, NULL, 0);
+
+done:
+    JS_FreeValue(ctx, v0);
+    JS_FreeValue(ctx, v1);
+    JS_FreeValue(ctx, v2);
     return ret;
 }
 
@@ -1599,24 +1716,38 @@ static JSValue js_native_aes_encrypt(JSContext *ctx, JSValueConst this_val,
 // 返回: ArrayBuffer（密文），失败抛出异常
 static JSValue js_native_aes_encrypt_ecb(JSContext *ctx, JSValueConst this_val,
                                          int argc, JSValueConst *argv) {
-    if (argc < 2) return JS_ThrowTypeError(ctx, "aesEncryptNativeECB requires 2 arguments, got %d", argc);
+    JSValue ret = JS_EXCEPTION;
+    JSValue v0 = JS_NULL, v1 = JS_NULL;
+    if (argc < 2) {
+        JS_ThrowTypeError(ctx, "aesEncryptNativeECB requires 2 arguments, got %d", argc);
+        goto done;
+    }
+    v0 = _to_arraybuffer(ctx, argv[0]);
+    v1 = _to_arraybuffer(ctx, argv[1]);
     size_t pt_len, key_len;
-    const uint8_t *pt = get_ab(ctx, argv[0], &pt_len, "aesEncryptNativeECB", 1);
-    if (!pt) return JS_EXCEPTION;
-    const uint8_t *key = get_ab(ctx, argv[1], &key_len, "aesEncryptNativeECB", 2);
-    if (!key) return JS_EXCEPTION;
+    const uint8_t *pt = JS_IsNull(v0) ? NULL : get_ab(ctx, v0, &pt_len, "aesEncryptNativeECB", 1);
+    if (!pt) goto done;
+    const uint8_t *key = JS_IsNull(v1) ? NULL : get_ab(ctx, v1, &key_len, "aesEncryptNativeECB", 2);
+    if (!key) goto done;
 
-    if (key_len != 16 && key_len != 24 && key_len != 32)
-        return JS_ThrowTypeError(ctx, "aesEncryptNativeECB: key length must be 16/24/32, got %d", (int)key_len);
+    if (key_len != 16 && key_len != 24 && key_len != 32) {
+        ret = JS_ThrowTypeError(ctx, "aesEncryptNativeECB: key length must be 16/24/32, got %d", (int)key_len);
+        goto done;
+    }
 
     QuickJSBridge *bridge = (QuickJSBridge *)JS_GetContextOpaque(ctx);
     aes_ctx_t actx;
-    if (_aes_init_cached(bridge, &actx, key, key_len) != 0)
-        return JS_ThrowTypeError(ctx, "aesEncryptNativeECB: key expansion failed");
+    if (_aes_init_cached(bridge, &actx, key, key_len) != 0) {
+        ret = JS_ThrowTypeError(ctx, "aesEncryptNativeECB: key expansion failed");
+        goto done;
+    }
 
     size_t out_cap = pt_len + 16;
     uint8_t *out = (uint8_t *)malloc(out_cap);
-    if (!out) return JS_ThrowTypeError(ctx, "aesEncryptNativeECB: out of memory");
+    if (!out) {
+        ret = JS_ThrowTypeError(ctx, "aesEncryptNativeECB: out of memory");
+        goto done;
+    }
 
     uint64_t t0 = bridge ? _now_us() : 0;
     size_t out_len = aes_ecb_encrypt(&actx, pt, pt_len, out);
@@ -1624,10 +1755,15 @@ static JSValue js_native_aes_encrypt_ecb(JSContext *ctx, JSValueConst this_val,
 
     if (out_len == (size_t)-1) {
         free(out);
-        return JS_ThrowTypeError(ctx, "aesEncryptNativeECB: encryption failed");
+        ret = JS_ThrowTypeError(ctx, "aesEncryptNativeECB: encryption failed");
+        goto done;
     }
 
-    JSValue ret = JS_NewArrayBuffer(ctx, out, out_len, _free_array_buf, NULL, 0);
+    ret = JS_NewArrayBuffer(ctx, out, out_len, _free_array_buf, NULL, 0);
+
+done:
+    JS_FreeValue(ctx, v0);
+    JS_FreeValue(ctx, v1);
     return ret;
 }
 
