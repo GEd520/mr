@@ -14,6 +14,9 @@ import 'charset_utils.dart';
 import 'web_proxy.dart';
 import '../native/js_advanced_service.dart';
 import '../native/js_engine.dart';
+import '../native/dio_ssl_helper_stub.dart'
+    if (dart.library.io) '../native/dio_ssl_helper_io.dart' as ssl;
+
 /// 每个规则类型只显示一次日志的集合
 final Set<String> _loggedRuleTags = {};
 
@@ -120,8 +123,12 @@ class StrResponse {
 class HttpClient {
   static final HttpClient _instance = HttpClient._internal();
   static HttpClient get instance => _instance;
-  HttpClient._internal();
-  HttpClient();
+  HttpClient._internal() {
+    ssl.configureDioSslBypass(_dio);
+  }
+  HttpClient() {
+    ssl.configureDioSslBypass(_dio);
+  }
 
   final Dio _dio = Dio(BaseOptions(
     connectTimeout: const Duration(seconds: 15),

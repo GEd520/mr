@@ -1,6 +1,8 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'platform_channel.dart';
+import 'dio_ssl_helper_stub.dart'
+    if (dart.library.io) 'dio_ssl_helper_io.dart' as ssl;
 
 /// 统一平台桥接层
 ///
@@ -33,7 +35,7 @@ class PlatformBridge {
   /// - 跟随重定向
   /// - Web 端 CORS 代理由 ProxyService 处理，Dio 无需特殊配置
   Dio _createDio() {
-    return Dio(BaseOptions(
+    final dio = Dio(BaseOptions(
       connectTimeout: const Duration(seconds: 15),
       receiveTimeout: const Duration(seconds: 15),
       sendTimeout: const Duration(seconds: 15),
@@ -43,6 +45,9 @@ class PlatformBridge {
       // 接受所有状态码，不抛异常（与原 NativeChannel 行为一致）
       validateStatus: (status) => status != null && status < 600,
     ));
+    // 书源网站证书常有问题，允许不安全证书（Web 平台由浏览器处理）
+    ssl.configureDioSslBypass(dio);
+    return dio;
   }
 
   // ===== HTTP 请求（Dio）=====
