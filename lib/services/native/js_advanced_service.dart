@@ -79,7 +79,9 @@ class JsAdvancedService {
       // 2. Base64 字符串 → base64Decode
       // 3. 其他字符串 → 原样返回
       if (result is List) {
-        final decoded = Uint8List.fromList(result.cast<int>());
+        // 兼容 List<num>（含 double）→ 转 int，避免 cast<int>() 抛异常
+        final intList = result.map((e) => (e as num).toInt()).toList();
+        final decoded = Uint8List.fromList(intList);
         final hex = decoded
             .take(16)
             .map((b) => b.toRadixString(16).padLeft(2, '0'))
