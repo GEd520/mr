@@ -67,12 +67,16 @@ class JsAdvancedService {
       if (result == null) {
         final lastError = JsEngine.instance.lastEvalError;
         final rulePreview = ruleJs.length > 200 ? '${ruleJs.substring(0, 200)}...' : ruleJs;
+        final errBrief = (lastError ?? '(无错误信息)').length > 80
+            ? '${lastError!.substring(0, 80)}...'
+            : (lastError ?? '(无错误信息)');
         debugPrint('⚠️ [decodeImage] JS执行返回null: $imageUrl\n'
             '  lastEvalError: $lastError\n'
             '  ruleJs前200字符: $rulePreview');
-        // Release 模式下 debugPrint 不输出，用 AppLogger 确保日志可见
-        AppLogger.instance.logJsError(
-            'decodeImage', 'JS返回null: $imageUrl\n'
+        // 标题包含错误概要，避免日志去重时丢失关键信息
+        AppLogger.instance.error(LogCategory.js,
+            '[decodeImage] 解密失败: $errBrief',
+            detail: 'URL: $imageUrl\n'
                 '  lastEvalError: $lastError\n'
                 '  ruleJs: $rulePreview');
         return null;
@@ -102,8 +106,9 @@ class JsAdvancedService {
         debugPrint('⚠️ [decodeImage] JS返回空值: $imageUrl\n'
             '  result=$resultStr, type=${result.runtimeType}\n'
             '  lastEvalError: $lastError');
-        AppLogger.instance.logJsError(
-            'decodeImage', 'JS返回空值: $imageUrl\n'
+        AppLogger.instance.error(LogCategory.js,
+            '[decodeImage] JS返回空值($resultStr): ${imageUrl.length > 60 ? imageUrl.substring(0, 60) : imageUrl}',
+            detail: 'URL: $imageUrl\n'
                 '  result=$resultStr, type=${result.runtimeType}\n'
                 '  lastEvalError: $lastError\n'
                 '  ruleJs: $rulePreview');

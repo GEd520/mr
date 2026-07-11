@@ -362,7 +362,9 @@ class AppLogger {
 
     // ===== 循环日志去重 =====
     // 相同消息连续出现时，合并为一条摘要，避免循环日志刷屏
-    if (_lastLogMessage != null &&
+    // 注意：error 级别日志不参与去重，确保每条错误及其 detail 都完整保留
+    if (level != LogLevel.error &&
+        _lastLogMessage != null &&
         _lastLogLevel == level &&
         _isSimilarMessage(_lastLogMessage!, message)) {
       _duplicateCount++;

@@ -1024,11 +1024,18 @@ return __returnValue;
 final evalResult = _jsRuntime!.evaluate(wrappedScript);
 _flushConsoleLogs();
 if (evalResult.isError) {
-AppLogger.instance.logJsError('QuickJS', evalResult.stringResult);
-// 追踪树：记录错误
-        _lastEvalError = evalResult.stringResult;
-        return null;
-      }
+  // 记录完整错误信息 + 代码片段，方便诊断
+  final codePreview = jsCode.length > 200 ? '${jsCode.substring(0, 200)}...' : jsCode;
+  final errStr = evalResult.stringResult;
+  final errPreview = errStr.length > 80 ? errStr.substring(0, 80) : errStr;
+  // 标题包含错误概要，避免日志去重时丢失关键信息
+  AppLogger.instance.error(LogCategory.js,
+      '[QuickJS] 执行失败: $errPreview',
+      detail: '完整错误: $errStr\n  代码片段: $codePreview');
+  debugPrint('❌ [QuickJS] 执行失败: $errStr\n  代码: $codePreview');
+  _lastEvalError = errStr;
+  return null;
+}
       final parsed = _parseJsResult(evalResult.stringResult);
       // 诊断：parsed 为空或 null 时记录原始 stringResult，帮助定位解密失败原因
       if (parsed == null || (parsed is String && parsed.isEmpty)) {
@@ -1051,8 +1058,16 @@ AppLogger.instance.logJsError('QuickJS', evalResult.stringResult);
   }
 
   /// 包裹 JS 代码，确保最后一个表达式的值被返回
-  /// 如果代码已经包含 return 语句，直接使用
-  /// 如果没有 return，在代码末尾添加 return 语句
+  ///
+  /// 策略：
+  /// 1. 代码以 return 开头 → 直接使用（顶层已有 return）
+  /// 2. 单行代码 → `return <code>`
+  /// 3. 多行代码 → `return (function(){ <code> })()`
+  ///    使用内层函数包裹（而非 eval），因为：
+  ///    - eval 在 QuickJS 中对顶层 return 语句的兼容性不稳定
+  ///    - 内层函数能通过闭包访问外层变量（result/baseUrl/src 等）
+  ///    - 代码内部的 return 语句从内层函数返回，值被外层 return 返回
+  ///    - 代码无 return 时返回 undefined（调用方按 null 处理）
   String _wrapJsCode(String code) {
     final trimmed = code.trim();
 
@@ -1067,12 +1082,9 @@ AppLogger.instance.logJsError('QuickJS', evalResult.stringResult);
       return 'return $trimmed';
     }
 
-    // 多行代码：统一用 eval 包裹，确保最后一个表达式的值被返回
-    // 借鉴 legado：eval 在 IIFE 内部执行，最后一个表达式的值就是 eval 的返回值
-    // 修复：之前用 _returnRegex 检测 return 关键字，但 return 可能在函数内部
-    // （如 `function decrypt() { return result; } decrypt(result);`），
-    // 导致 IIFE 顶层没有 return，返回 undefined
-    return 'return eval(${jsonEncode(trimmed)})';
+    // 多行代码：用内层函数包裹，确保 return 语句从内层函数返回
+    // 不使用 eval：QuickJS 的 eval 对顶层 return 语句兼容性不稳定
+    return 'return (function() {\n$trimmed\n})();';
   }
 
   /// 从规则字符串中提取 JS 代码
