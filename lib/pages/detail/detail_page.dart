@@ -44,7 +44,6 @@ class _DetailPageState extends State<DetailPage> {
   Book? _book;
   List<Chapter> _chapters = [];
   int _totalWordCount = 0;
-  BookDataProvider? _dataProvider;
   bool _showReadRecord = true;
   BookSource? _bookSource;
 
@@ -73,9 +72,12 @@ class _DetailPageState extends State<DetailPage> {
 
     if (book != null) {
       try {
-        _dataProvider = createBookDataProvider(book);
+        // 局部变量捕获：避免 await 期间 _dataProvider 被修改导致不一致
+        final dataProvider = createBookDataProvider(book);
         if (book.originType == BookOriginType.online) {
-          final detailedBook = await _dataProvider!.getBookInfo(book.bookUrl);
+          final detailedBook = await dataProvider.getBookInfo(book.bookUrl);
+          // await 后页面可能已退出
+          if (!mounted) return;
           if (detailedBook != null) {
             book = mergeBookMetadata(detailedBook, book);
           }
@@ -94,7 +96,8 @@ class _DetailPageState extends State<DetailPage> {
             }
           }
         }
-        chapters = await _dataProvider!.getChapterList(book);
+        chapters = await dataProvider.getChapterList(book);
+        if (!mounted) return;
         if (book.totalChapterNum == null && chapters.isNotEmpty) {
           book = book.copyWith(totalChapterNum: chapters.length);
         }
@@ -136,7 +139,6 @@ class _DetailPageState extends State<DetailPage> {
       try {
         var book = initialBook;
         final dataProvider = createBookDataProvider(book);
-        _dataProvider = dataProvider;
         if (book.originType == BookOriginType.online) {
           final detailedBook = await dataProvider.getBookInfo(book.bookUrl);
           // await 后页面可能已退出
@@ -982,7 +984,6 @@ class _DetailPageState extends State<DetailPage> {
 
           // 获取新书源的目录
           final dataProvider = createBookDataProvider(newBook);
-          _dataProvider = dataProvider;
           final chapters = await dataProvider.getChapterList(newBook);
 
           if (!mounted) return;
