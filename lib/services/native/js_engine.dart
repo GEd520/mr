@@ -202,7 +202,8 @@ class JsEngine {
   final Lock _evalLock = Lock();
 
   // 热路径正则常量
-  static final _returnRegex = RegExp(r'\breturn\b');
+  // 检测代码以 return 开头（顶层 return），允许多行代码内部的 function return 不误判
+  static final _returnStartRegex = RegExp(r'^return\b');
   static final _jsTagRegex = RegExp(r'<js>([\s\S]*?)</js>', caseSensitive: false);
   static final _jsPrefixRegex = RegExp(r'^@js:', caseSensitive: false);
   static final _templateVarRegex = RegExp(r'\{\{([\s\S]*?)\}\}');
@@ -906,9 +907,15 @@ class JsEngine {
   /// 当图片解密与章节解析等 JS 任务并发时，必须使用此方法。
   Future<dynamic> executeAsync(String jsCode, dynamic content,
       {String? baseUrl, JsEngineType? sourceEngine, Map<String, dynamic>? variables}) async {
+    // 入口清空上次错误，避免状态污染（executeAsync 可能在 init 失败时直接返回 null，
+    // 此时 _lastEvalError 应为 null 而非旧值）
+    _lastEvalError = null;
     if (!_initialized || _jsRuntime == null) {
       await init();
-      if (!_initialized || _jsRuntime == null) return null;
+      if (!_initialized || _jsRuntime == null) {
+        _lastEvalError = 'JS引擎未初始化';
+        return null;
+      }
     }
 
     final extracted = _extractJsCode(jsCode) ?? jsCode;
@@ -1049,8 +1056,8 @@ AppLogger.instance.logJsError('QuickJS', evalResult.stringResult);
   String _wrapJsCode(String code) {
     final trimmed = code.trim();
 
-    // 已经有 return 语句 → 直接使用
-    if (trimmed.contains(_returnRegex)) {
+    // 代码以 return 开头 → 直接使用（顶层已有 return）
+    if (_returnStartRegex.hasMatch(trimmed)) {
       return trimmed;
     }
 
@@ -1062,7 +1069,9 @@ AppLogger.instance.logJsError('QuickJS', evalResult.stringResult);
 
     // 多行代码：统一用 eval 包裹，确保最后一个表达式的值被返回
     // 借鉴 legado：eval 在 IIFE 内部执行，最后一个表达式的值就是 eval 的返回值
-    // 修复：之前最后一行为空时返回 trimmed（无 return），导致 IIFE 返回 undefined
+    // 修复：之前用 _returnRegex 检测 return 关键字，但 return 可能在函数内部
+    // （如 `function decrypt() { return result; } decrypt(result);`），
+    // 导致 IIFE 顶层没有 return，返回 undefined
     return 'return eval(${jsonEncode(trimmed)})';
   }
 

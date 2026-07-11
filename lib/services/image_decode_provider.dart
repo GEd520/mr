@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import '../models/book.dart';
 import '../models/book_source.dart';
 import 'native/js_advanced_service.dart';
+import 'native/js_engine.dart';
 import 'native/platform_bridge.dart';
 
 /// 支持图片解密的自定义 ImageProvider
@@ -143,7 +144,16 @@ class DecodedImageProvider extends ImageProvider<DecodedImageProvider> {
     // 解密失败（JS 执行错误/返回 null）：有 imageDecode 规则说明图片是加密的，
     // 用原始加密字节也无法解码，直接报错避免模糊的 "Invalid image data"
     if (decoded == null) {
-      throw StateError('图片解密失败（JS返回null）: ${key.url}');
+      final lastError = JsEngine.instance.lastEvalError;
+      final ruleJs = key.isCover
+          ? key.source.coverDecodeJs
+          : key.source.ruleContent?.imageDecode;
+      final rulePreview = (ruleJs != null && ruleJs.length > 200)
+          ? '${ruleJs.substring(0, 200)}...'
+          : (ruleJs ?? '(空)');
+      throw StateError('图片解密失败（JS返回null）: ${key.url}\n'
+          '  lastEvalError: $lastError\n'
+          '  ruleJs: $rulePreview');
     }
 
     if (decoded.isEmpty) {
