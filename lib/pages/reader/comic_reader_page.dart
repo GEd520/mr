@@ -90,8 +90,8 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
   bool _grayscaleImages = false;
   bool _eyeCareMode = false;
   bool _keepScreenOn = false;
-  final List<String> _imageLoadLog = [];
-  Map<String, String> _imageHeaders = const {};
+final List<String> _imageLoadLog = [];
+Map<String, String> _imageHeaders = const {};
   final Map<String, Map<String, String>> _imageOptionHeaders = {};
   String _sourceName = '';
   BookSource? _bookSource;

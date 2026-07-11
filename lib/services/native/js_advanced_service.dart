@@ -41,11 +41,19 @@ class JsAdvancedService {
     final ruleJs = _getImageDecodeRule(source, isCover);
     if (ruleJs == null || ruleJs.isEmpty) return imageBytes;
 
+    final origHex = imageBytes
+        .take(16)
+        .map((b) => b.toRadixString(16).padLeft(2, '0'))
+        .join(' ');
+    debugPrint('🔓 [decodeImage] 开始解密: $imageUrl\n'
+        '  原始大小: ${imageBytes.length} bytes, 前16字节: $origHex\n'
+        '  imageDecode规则: ${ruleJs.length > 100 ? '${ruleJs.substring(0, 100)}...' : ruleJs}');
+
     try {
       // 借鉴 legado：result 传入原始字节数组（QuickJS 中为 Uint8Array）
       final result = JsEngine.instance.executeSync(
         ruleJs,
-        imageBytes,     // ← 直传 Uint8List，引擎自动变 new Uint8Array([...])
+        imageBytes,
         baseUrl: source.bookSourceUrl,
         sourceEngine: source.engineType,
         variables: {
@@ -55,31 +63,52 @@ class JsAdvancedService {
         },
       );
 
-      if (result == null) return null;
+      if (result == null) {
+        debugPrint('⚠️ [decodeImage] JS执行返回null（引擎忙或脚本错误）: $imageUrl');
+        return null;
+      }
 
       // 兼容三种返回格式：
       // 1. List<int> / List<num> → Uint8List
       // 2. Base64 字符串 → base64Decode
       // 3. 其他字符串 → 原样返回
       if (result is List) {
-        return Uint8List.fromList(result.cast<int>());
+        final decoded = Uint8List.fromList(result.cast<int>());
+        final hex = decoded
+            .take(16)
+            .map((b) => b.toRadixString(16).padLeft(2, '0'))
+            .join(' ');
+        debugPrint('✅ [decodeImage] 解密成功(List): $imageUrl\n'
+            '  解密后大小: ${decoded.length} bytes, 前16字节: $hex');
+        return decoded;
       }
 
       final resultStr = result.toString();
       if (resultStr.isEmpty || resultStr == 'null' || resultStr == 'undefined') {
-        return imageBytes;
+        debugPrint('⚠️ [decodeImage] JS返回空值: $imageUrl → result=$resultStr');
+        return null;
       }
 
       // 尝试 Base64 解码
       try {
-        return base64Decode(resultStr);
+        final decoded = base64Decode(resultStr);
+        final hex = decoded
+            .take(16)
+            .map((b) => b.toRadixString(16).padLeft(2, '0'))
+            .join(' ');
+        debugPrint('✅ [decodeImage] 解密成功(Base64): $imageUrl\n'
+            '  解密后大小: ${decoded.length} bytes, 前16字节: $hex');
+        return decoded;
       } catch (_) {
-        debugPrint('⚠️ 图片解密返回非Base64格式: ${resultStr.length > 50 ? resultStr.substring(0, 50) : resultStr}');
-        return imageBytes;
+        debugPrint('⚠️ [decodeImage] JS返回非Base64格式: $imageUrl\n'
+            '  返回类型: ${result.runtimeType}\n'
+            '  返回值前100字符: ${resultStr.length > 100 ? resultStr.substring(0, 100) : resultStr}');
+        return null;
       }
     } catch (e) {
+      debugPrint('❌ [decodeImage] 解密异常: $imageUrl → $e');
       AppLogger.instance.logJsError('decodeImage', '图片解密失败: $e');
-      return imageBytes;
+      return null;
     }
   }
 

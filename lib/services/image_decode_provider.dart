@@ -125,6 +125,12 @@ class DecodedImageProvider extends ImageProvider<DecodedImageProvider> {
       throw StateError('图片下载响应为空: ${key.url}');
     }
 
+    // 检测 HTML 错误页（服务器返回 200 但内容是 HTML 而非图片）
+    if (_isHtmlResponse(bytes)) {
+      final preview = String.fromCharCodes(bytes.take(200));
+      throw StateError('服务器返回 HTML 而非图片数据: ${key.url} (前200字符: $preview)');
+    }
+
     // 调用 JS 解密（借鉴 Legado ImageUtils.decode）
     final decoded = await JsAdvancedService.instance.decodeImage(
       bytes,
@@ -134,13 +140,45 @@ class DecodedImageProvider extends ImageProvider<DecodedImageProvider> {
       book: key.book?.toJson(),
     );
 
-    final finalBytes = decoded ?? bytes;
-    if (finalBytes.isEmpty) {
+    // 解密失败（JS 执行错误/返回 null）：有 imageDecode 规则说明图片是加密的，
+    // 用原始加密字节也无法解码，直接报错避免模糊的 "Invalid image data"
+    if (decoded == null) {
+      throw StateError('图片解密失败（JS返回null）: ${key.url}');
+    }
+
+    if (decoded.isEmpty) {
       throw StateError('图片解密后字节为空: ${key.url}');
     }
 
-    final buffer = await ui.ImmutableBuffer.fromUint8List(finalBytes);
-    return decode(buffer);
+    try {
+      final buffer = await ui.ImmutableBuffer.fromUint8List(decoded);
+      return decode(buffer);
+    } catch (e) {
+      // 解码失败时输出详细诊断：原始大小、解密后大小、前几字节
+      final origHex = bytes
+          .take(16)
+          .map((b) => b.toRadixString(16).padLeft(2, '0'))
+          .join(' ');
+      final decodedHex = decoded
+          .take(16)
+          .map((b) => b.toRadixString(16).padLeft(2, '0'))
+          .join(' ');
+      debugPrint('⚠️ [DecodedImageProvider] 图片解码失败: ${key.url}\n'
+          '  原始大小: ${bytes.length} bytes, 前16字节: $origHex\n'
+          '  解密后大小: ${decoded.length} bytes, 前16字节: $decodedHex\n'
+          '  错误: $e');
+      rethrow;
+    }
+  }
+
+  /// 检测字节数据是否为 HTML 而非图片
+  ///
+  /// 服务器可能返回 200 状态码但内容是 HTML 错误页（如 Cloudflare 拦截页），
+  /// 此时字节流以 `<!DOCTYPE` 或 `<html` 开头（不区分大小写）。
+  static bool _isHtmlResponse(Uint8List bytes) {
+    if (bytes.length < 6) return false;
+    final prefix = String.fromCharCodes(bytes.take(9)).toLowerCase();
+    return prefix.startsWith('<!doctype') || prefix.startsWith('<html');
   }
 
   @override
