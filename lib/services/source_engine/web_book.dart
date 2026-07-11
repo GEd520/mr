@@ -240,7 +240,11 @@ class HttpClient {
           continue;
         }
 
-        debugPrint('❌ HTTP Error: ${e.type} - ${e.message}');
+        // 记录完整诊断信息：type/message/error/staqueTrace/statusCode
+        // e.message 可能为 null（unknown 类型），需用 e.error 补充底层异常信息
+        final errDetail = 'type=${e.type}, message=${e.message ?? '(null)'}, '
+            'error=${e.error}, statusCode=${e.response?.statusCode}, url=$url';
+        debugPrint('❌ HTTP Error: $errDetail');
         if (e.response != null) {
           return StrResponse(
             url: url,
@@ -250,15 +254,15 @@ class HttpClient {
           );
         }
         // 网络错误（连接超时、DNS解析失败等），返回空响应而不是抛异常
-        debugPrint('❌ 网络请求失败: ${e.type} - ${e.message}');
+        debugPrint('❌ 网络请求失败: $errDetail');
         return StrResponse(
           url: url,
           body: '',
           statusCode: 0,
           headers: {},
         );
-      } catch (e) {
-        debugPrint('❌ 请求异常: $e');
+      } catch (e, st) {
+        debugPrint('❌ 请求异常: $e\n$st');
         return StrResponse(
           url: url,
           body: '',
