@@ -299,7 +299,9 @@ Map<String, String> _imageHeaders = const {};
     }
 
     final chapter = _chapter;
-    if (chapter == null || _book == null || _dataProvider == null) return;
+    final book = _book;
+    final dataProvider = _dataProvider;
+    if (chapter == null || book == null || dataProvider == null) return;
 
     setState(() {
       _isLoading = true;
@@ -312,27 +314,28 @@ Map<String, String> _imageHeaders = const {};
       List<String> images;
 
       // 优先从缓存读取
-      if (_book!.originType == BookOriginType.online) {
+      if (book.originType == BookOriginType.online) {
         final cachedImages = await ChapterCacheService.instance
-            .readComicChapterContent(_book!, chapter);
+            .readComicChapterContent(book, chapter);
         if (cachedImages != null && cachedImages.isNotEmpty) {
           images = cachedImages;
         } else {
           // 缓存没有则从网络获取
-          final content = await _dataProvider!.getContent(
-            _book!,
+          final content = await dataProvider.getContent(
+            book,
             chapter,
             allChapters: _chapters,
           );
+          // await 后用户可能已退出，使用局部变量避免 _book! 崩溃
           images = _extractImageUrls(
             content ?? '',
-            baseUrl: chapter.url ?? _book!.bookUrl,
+            baseUrl: chapter.url ?? book.bookUrl,
           );
           // 保存到缓存
           if (images.isNotEmpty) {
             unawaited(
               ChapterCacheService.instance.saveComicChapterContent(
-                _book!,
+                book,
                 chapter,
                 images,
               ),
@@ -340,14 +343,14 @@ Map<String, String> _imageHeaders = const {};
           }
         }
       } else {
-        final content = await _dataProvider!.getContent(
-          _book!,
+        final content = await dataProvider.getContent(
+          book,
           chapter,
           allChapters: _chapters,
         );
         images = _extractImageUrls(
           content ?? '',
-          baseUrl: chapter.url ?? _book!.bookUrl,
+          baseUrl: chapter.url ?? book.bookUrl,
         );
       }
 
@@ -923,29 +926,32 @@ Map<String, String> _imageHeaders = const {};
   }
 
   Future<List<String>> _loadChapterImages(Chapter chapter) async {
-    if (_book == null || _dataProvider == null) return [];
+    final book = _book;
+    final dataProvider = _dataProvider;
+    if (book == null || dataProvider == null) return [];
 
     try {
       List<String> images;
-      if (_book!.originType == BookOriginType.online) {
+      if (book.originType == BookOriginType.online) {
         final cachedImages = await ChapterCacheService.instance
-            .readComicChapterContent(_book!, chapter);
+            .readComicChapterContent(book, chapter);
         if (cachedImages != null && cachedImages.isNotEmpty) {
           images = cachedImages;
         } else {
-          final content = await _dataProvider!.getContent(
-            _book!,
+          final content = await dataProvider.getContent(
+            book,
             chapter,
             allChapters: _chapters,
           );
+          // await 后用户可能已退出，使用局部变量避免 _book! 崩溃
           images = _extractImageUrls(
             content ?? '',
-            baseUrl: chapter.url ?? _book!.bookUrl,
+            baseUrl: chapter.url ?? book.bookUrl,
           );
           if (images.isNotEmpty) {
             unawaited(
               ChapterCacheService.instance.saveComicChapterContent(
-                _book!,
+                book,
                 chapter,
                 images,
               ),
@@ -953,14 +959,14 @@ Map<String, String> _imageHeaders = const {};
           }
         }
       } else {
-        final content = await _dataProvider!.getContent(
-          _book!,
+        final content = await dataProvider.getContent(
+          book,
           chapter,
           allChapters: _chapters,
         );
         images = _extractImageUrls(
           content ?? '',
-          baseUrl: chapter.url ?? _book!.bookUrl,
+          baseUrl: chapter.url ?? book.bookUrl,
         );
       }
       return images;
