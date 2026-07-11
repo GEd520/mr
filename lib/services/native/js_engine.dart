@@ -995,13 +995,14 @@ class JsEngine {
 
           var __returnValue = (function() { $wrappedCode })();
           if (typeof __returnValue === 'object' && __returnValue !== null) {
-// Uint8Array / ArrayBuffer 转普通数组再 JSON（Legado ByteArray 契约）
-// C 原生函数（aesDecryptNative 等）返回 ArrayBuffer，需显式处理
+// Uint8Array / ArrayBuffer → base64 字符串（C 原生 b64FromBytes）
+// 避免大图片解密后用 JSON.stringify(Array.from(...)) 生成超长 JSON 数字数组
+// 调用方（decodeImage）通过 base64Decode 还原字节
 if (__returnValue instanceof Uint8Array) {
-return JSON.stringify(Array.from(__returnValue));
+return __nativeBase64.b64FromBytes(__returnValue);
 }
 if (__returnValue instanceof ArrayBuffer) {
-return JSON.stringify(Array.from(new Uint8Array(__returnValue)));
+return __nativeBase64.b64FromBytes(new Uint8Array(__returnValue));
 }
 return JSON.stringify(__returnValue);
 }
@@ -1194,13 +1195,14 @@ AppLogger.instance.logJsError('QuickJS', evalResult.stringResult);
 
           var __returnValue = (function() { $wrappedCode })();
           if (typeof __returnValue === 'object' && __returnValue !== null) {
-// Uint8Array / ArrayBuffer 转普通数组再 JSON（Legado ByteArray 契约）
-// C 原生函数（aesDecryptNative 等）返回 ArrayBuffer，需显式处理
+// Uint8Array / ArrayBuffer → base64 字符串（C 原生 b64FromBytes）
+// 避免大图片解密后用 JSON.stringify(Array.from(...)) 生成超长 JSON 数字数组
+// 调用方（decodeImage）通过 base64Decode 还原字节
 if (__returnValue instanceof Uint8Array) {
-return JSON.stringify(Array.from(__returnValue));
+return __nativeBase64.b64FromBytes(__returnValue);
 }
 if (__returnValue instanceof ArrayBuffer) {
-return JSON.stringify(Array.from(new Uint8Array(__returnValue)));
+return __nativeBase64.b64FromBytes(new Uint8Array(__returnValue));
 }
 return JSON.stringify(__returnValue);
 }
@@ -1410,13 +1412,14 @@ return __returnValue;
 
           var __returnValue = (function() { $wrappedCode })();
           if (typeof __returnValue === 'object' && __returnValue !== null) {
-// Uint8Array / ArrayBuffer 转普通数组再 JSON（Legado ByteArray 契约）
-// C 原生函数（aesDecryptNative 等）返回 ArrayBuffer，需显式处理
+// Uint8Array / ArrayBuffer → base64 字符串（C 原生 b64FromBytes）
+// 避免大图片解密后用 JSON.stringify(Array.from(...)) 生成超长 JSON 数字数组
+// 调用方（decodeImage）通过 base64Decode 还原字节
 if (__returnValue instanceof Uint8Array) {
-return JSON.stringify(Array.from(__returnValue));
+return __nativeBase64.b64FromBytes(__returnValue);
 }
 if (__returnValue instanceof ArrayBuffer) {
-return JSON.stringify(Array.from(new Uint8Array(__returnValue)));
+return __nativeBase64.b64FromBytes(new Uint8Array(__returnValue));
 }
 return JSON.stringify(__returnValue);
 }
@@ -1668,9 +1671,12 @@ return __returnValue;
   /// 序列化 content 为 JSON 字符串（用于嵌入 JS 脚本）
   static String serializeForJs(dynamic content) {
     if (content is List || content is Map) {
-      // Uint8List → JS new Uint8Array([...])，匹配 Legado ByteArray 契约
+      // Uint8List → C 原生 decodeToBytes（返回 Uint8Array），匹配 Legado ByteArray 契约
+      // 用 base64 注入而非数字字面量，避免大图片（几百 KB）生成几 MB 的
+      // `new Uint8Array([1,2,3,...])` 字面量导致 QuickJS 解析失败/超时
       if (content is Uint8List) {
-        return 'new Uint8Array([${content.join(',')}])';
+        final b64 = base64Encode(content);
+        return "__nativeBase64.decodeToBytes('$b64')";
       }
       return jsonEncode(content);
     } else if (content is String) {
