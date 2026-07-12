@@ -43,10 +43,16 @@ class AnalyzeRule {
   // ===== 热路径 RegExp 常量（避免重复编译）=====
 
   // 规则拆分正则
+  // [修复] 添加 \x00 作为 <js></js> 标签替换后的边界标记，
+  // 避免 </js> 后面的内容（如 CSS 选择器 class.xxx）被 _jsPatternRegex 吞入 JS 代码。
+  // 场景：<js>X</js>class.pic_txt_list → 替换为 @js:X\x00class.pic_txt_list
+  // _jsPatternRegex 在 \x00 处停止，class.pic_txt_list 作为独立规则解析。
   static final _jsPatternRegex = RegExp(
-      r'@js:([\s\S]*?)(?=@js:|$)',
+      r'@js:([\s\S]*?)(?=@js:|\x00|$)',
       caseSensitive: false);
   static final _jsTagPatternRegex = RegExp(r'<js>([\s\S]*?)</js>', caseSensitive: false);
+  /// \x00 边界标记清理正则
+  static final _jsBoundaryRegex = RegExp(r'\x00');
 
   // 变量替换正则
   static final _expressionOnlyRegex = RegExp(
@@ -276,6 +282,43 @@ class AnalyzeRule {
   Future<List<dynamic>> getElementsAsync(String? ruleStr) async {
     if (ruleStr == null || ruleStr.trim().isEmpty) return [];
 
+    // C 层 fast path：@CSS: 前缀 + String content + 单组规则
+    // 用 C 原生 lexbor 解析大 HTML + CSS 查询，替代 Dart html 包
+    // 1000+ 章目录场景：消除 Dart html 包解析 100KB+ HTML 的 50-100ms 开销
+    if (_content is String &&
+        (ruleStr.startsWith('@CSS:') || ruleStr.startsWith('@css:'))) {
+      final selector = ruleStr.substring(5).trim();
+      if (selector.isNotEmpty &&
+          !selector.contains('&&') &&
+          !selector.contains('||') &&
+          !selector.contains('%%')) {
+        try {
+          final outerHtmlJson = JsEngine.instance.htmlQueryExtractNative(
+              _content as String, selector, '@outerHtml', true);
+          if (outerHtmlJson.isNotEmpty && outerHtmlJson != '[]') {
+            final decoded = jsonDecode(outerHtmlJson);
+            if (decoded is List && decoded.isNotEmpty) {
+              final elements = <dynamic>[];
+              for (final htmlStr in decoded) {
+                if (htmlStr is String && htmlStr.isNotEmpty) {
+                  try {
+                    // 用 parseFragment 解析 outerHtml，取第一个子元素
+                    final fragment = html_parser.parseFragment(htmlStr);
+                    if (fragment.children.isNotEmpty) {
+                      elements.add(fragment.children.first);
+                    }
+                  } catch (_) {}
+                }
+              }
+              if (elements.isNotEmpty) return elements;
+            }
+          }
+        } catch (_) {
+          // C 层失败，fallback 到 Dart 路径
+        }
+      }
+    }
+
     final ruleList = _splitSourceRuleCacheString(ruleStr);
     return _getElementsAsync(ruleList);
   }
@@ -327,14 +370,17 @@ class AnalyzeRule {
     }
 
     // 解析 @js: 和 <js></js> 规则
-    // 先处理 <js></js> 标签 → 替换为 @js:
+    // 先处理 <js></js> 标签 → 替换为 @js:X\x00（\x00 作为边界标记）
+    // [修复] 必须在 @js:X 后面加 \x00 边界标记，否则 </js> 后面的内容
+    // （如 CSS 选择器 class.pic_txt_list）会被 _jsPatternRegex 吞入 JS 代码，
+    // 导致 QuickJS 报 SyntaxError: class statement requires a name
     String processedRule = ruleStr;
     final jsTagMatches = _jsTagPatternRegex.allMatches(processedRule).toList();
 
     if (jsTagMatches.isNotEmpty) {
       for (final match in jsTagMatches.reversed) {
         processedRule = processedRule.replaceRange(
-            match.start, match.end, '@js:${match.group(1)}');
+            match.start, match.end, '@js:${match.group(1)}\x00');
       }
     }
 
@@ -344,16 +390,20 @@ class AnalyzeRule {
     if (jsMatches.isNotEmpty) {
       var lastEnd = start;
       for (final match in jsMatches) {
-        // 添加匹配之前的部分
+        // 添加匹配之前的部分（清理 \x00 边界标记）
         if (match.start > lastEnd) {
-          final before = processedRule.substring(lastEnd, match.start).trim();
+          final before = processedRule
+              .substring(lastEnd, match.start)
+              .replaceAll(_jsBoundaryRegex, '')
+              .trim();
           if (before.isNotEmpty) {
             ruleList
                 .add(_SourceRule.parse(before, isJson: _isJson, mode: mode));
           }
         }
         // 添加 JS 规则（保留完整前缀，让 JsEngine._resolveEngine 处理分流）
-        final matchedText = match.group(0)?.trim() ?? '';
+        // 清理 JS 代码末尾可能残留的 \x00
+        final matchedText = match.group(0)?.replaceAll(_jsBoundaryRegex, '').trim() ?? '';
         if (matchedText.isNotEmpty) {
           ruleList.add(_SourceRule(
             matchedText,
@@ -364,17 +414,23 @@ class AnalyzeRule {
         }
         lastEnd = match.end;
       }
-      // 添加最后剩余的部分
+      // 添加最后剩余的部分（清理 \x00 边界标记）
       if (lastEnd < processedRule.length) {
-        final remaining = processedRule.substring(lastEnd).trim();
+        final remaining = processedRule
+            .substring(lastEnd)
+            .replaceAll(_jsBoundaryRegex, '')
+            .trim();
         if (remaining.isNotEmpty) {
           ruleList
               .add(_SourceRule.parse(remaining, isJson: _isJson, mode: mode));
         }
       }
     } else {
-      // 没有 JS 规则，直接解析
-      final rest = processedRule.substring(start).trim();
+      // 没有 JS 规则，直接解析（清理 \x00 边界标记）
+      final rest = processedRule
+          .substring(start)
+          .replaceAll(_jsBoundaryRegex, '')
+          .trim();
       if (rest.isNotEmpty) {
         ruleList.add(_SourceRule.parse(rest, isJson: _isJson, mode: mode));
       }
@@ -389,8 +445,10 @@ class AnalyzeRule {
       {dynamic mContent, bool isUrl = false, bool unescape = true}) {
     dynamic result = mContent ?? _content;
 
-    // 追踪树：开始规则链追踪
-    JsTracer.instance.clear();
+    // 追踪树：开始规则链追踪（Release 模式 enabled=false 跳过，避免 6000+ 次无意义 clear）
+    if (JsTracer.instance.enabled) {
+      JsTracer.instance.clear();
+    }
 
     for (var i = 0; i < ruleList.length; i++) {
       final rule = ruleList[i];
@@ -433,8 +491,11 @@ class AnalyzeRule {
     }
 
     // 输出完整 JS 执行树（info 级别，Release 模式可见）
-    final treeStr = JsTracer.instance.getTreeString();
-    AppLogger.instance.logJsTree('AnalyzeRule', treeStr);
+    // Release 模式 enabled=false 跳过 getTreeString 递归遍历，避免 6000+ 次空树字符串构建
+    if (JsTracer.instance.enabled) {
+      final treeStr = JsTracer.instance.getTreeString();
+      AppLogger.instance.logJsTree('AnalyzeRule', treeStr);
+    }
 
     if (result == null) return null;
 
@@ -465,8 +526,10 @@ class AnalyzeRule {
       {dynamic mContent, bool isUrl = false, bool unescape = true}) async {
     dynamic result = mContent ?? _content;
 
-    // 追踪树：开始规则链追踪
-    JsTracer.instance.clear();
+    // 追踪树：开始规则链追踪（Release 模式 enabled=false 跳过，避免 6000+ 次无意义 clear）
+    if (JsTracer.instance.enabled) {
+      JsTracer.instance.clear();
+    }
 
     for (var i = 0; i < ruleList.length; i++) {
       final rule = ruleList[i];
@@ -512,15 +575,19 @@ class AnalyzeRule {
         result = _applyReplaceRegex(result.toString(), rule);
       }
 
-      // 每 5 步让出事件循环，避免长规则链阻塞 UI
-      if (i % 5 == 0) {
+      // 每 20 步让出事件循环（原 i%5 过于频繁，1000+ 章 × 6 字段 = 6000 次调用 × N 步让出过多）
+      // 降级路径通常 ruleList.length=1-2，i%20 几乎不让出；长规则链（如 nextUrl）仍保证 UI 响应
+      if (i % 20 == 0 && i > 0) {
         await Future(() {});
       }
     }
 
     // 输出完整 JS 执行树（info 级别，Release 模式可见）
-    final treeStr = JsTracer.instance.getTreeString();
-    AppLogger.instance.logJsTree('AnalyzeRule', treeStr);
+    // Release 模式 enabled=false 跳过 getTreeString 递归遍历，避免 6000+ 次空树字符串构建
+    if (JsTracer.instance.enabled) {
+      final treeStr = JsTracer.instance.getTreeString();
+      AppLogger.instance.logJsTree('AnalyzeRule', treeStr);
+    }
 
     if (result == null) return null;
 
@@ -535,7 +602,14 @@ class AnalyzeRule {
     if (isUrl) {
       if (resultStr.isEmpty) return null;
       if (resultStr.contains('\n')) {
-        resultStr = resultStr.split('\n').first.trim();
+        // [修复 URL 截断 Bug] 含 JSON 选项的 URL（如 URL,{...}）跨多行时，
+        // 不能取第一行（会截断 JSON 选项），应去除换行符保留完整 URL。
+        // 对齐 legado getString：legado 不做换行符处理，直接返回整个字符串。
+        if (resultStr.contains(',{')) {
+          resultStr = resultStr.replaceAll(RegExp(r'[\r\n]+'), '');
+        } else {
+          resultStr = resultStr.split('\n').first.trim();
+        }
       }
       return _getAbsoluteUrl(resultStr);
     }
@@ -684,8 +758,10 @@ class AnalyzeRule {
       {bool isUrl = false}) async {
     dynamic result = _content;
 
-    // 追踪树：开始规则链追踪
-    JsTracer.instance.clear();
+    // 追踪树：开始规则链追踪（Release 模式 enabled=false 跳过，避免无意义 clear）
+    if (JsTracer.instance.enabled) {
+      JsTracer.instance.clear();
+    }
 
     for (var i = 0; i < ruleList.length; i++) {
       final rule = ruleList[i];
@@ -729,15 +805,19 @@ class AnalyzeRule {
         }
       }
 
-      // 每 5 步让出事件循环，避免长规则链阻塞 UI
-      if (i % 5 == 0) {
+      // 每 20 步让出事件循环（原 i%5 过于频繁，1000+ 章 × 6 字段 = 6000 次调用 × N 步让出过多）
+      // 降级路径通常 ruleList.length=1-2，i%20 几乎不让出；长规则链（如 nextUrl）仍保证 UI 响应
+      if (i % 20 == 0 && i > 0) {
         await Future(() {});
       }
     }
 
     // 输出完整 JS 执行树（info 级别，Release 模式可见）
-    final treeStr = JsTracer.instance.getTreeString();
-    AppLogger.instance.logJsTree('AnalyzeRule', treeStr);
+    // Release 模式 enabled=false 跳过 getTreeString 递归遍历，避免 6000+ 次空树字符串构建
+    if (JsTracer.instance.enabled) {
+      final treeStr = JsTracer.instance.getTreeString();
+      AppLogger.instance.logJsTree('AnalyzeRule', treeStr);
+    }
 
     if (result == null) return [];
 
@@ -815,8 +895,10 @@ class AnalyzeRule {
   Future<List<dynamic>> _getElementsAsync(List<_SourceRule> ruleList) async {
     dynamic result = _content;
 
-    // 追踪树：开始规则链追踪
-    JsTracer.instance.clear();
+    // 追踪树：开始规则链追踪（Release 模式 enabled=false 跳过，避免 1000+ 章目录无意义 clear）
+    if (JsTracer.instance.enabled) {
+      JsTracer.instance.clear();
+    }
 
     for (var i = 0; i < ruleList.length; i++) {
       final rule = ruleList[i];
@@ -873,8 +955,11 @@ class AnalyzeRule {
     }
 
     // 输出完整 JS 执行树（info 级别，Release 模式可见）
-    final treeStr = JsTracer.instance.getTreeString();
-    AppLogger.instance.logJsTree('AnalyzeRule', treeStr);
+    // [修复 Bug #7] 加 enabled 守卫，避免 1000+ 章目录场景 6000+ 次空树字符串构建
+    if (JsTracer.instance.enabled) {
+      final treeStr = JsTracer.instance.getTreeString();
+      AppLogger.instance.logJsTree('AnalyzeRule', treeStr);
+    }
 
     if (result == null) return [];
     if (result is List) return result;
@@ -1742,6 +1827,15 @@ class AnalyzeRule {
       });
 
       // 构造批量 JS：注入环境变量 + 用 map 对数组中的每个元素执行同一规则
+      // [bug 修复] JS 规则可能是表达式（result.trim()）或语句（return result.trim()）
+      // legado 的 Rhino eval 在函数上下文执行，return 合法
+      // QuickJS eval 在全局上下文执行，return 会 SyntaxError
+      // 解决：检测 jsCode 是否含 return/;/}，语句用函数包装，表达式直接赋值
+      final jsWrapper = jsCode.contains('return') ||
+              jsCode.contains(';') ||
+              jsCode.contains('}')
+          ? '(function(){ $jsCode })()'
+          : jsCode;
       final batchCode = '(function(){'
           'var baseUrl=$baseUrlStr;'
           'var book=$bookStr;'
@@ -1753,7 +1847,7 @@ class AnalyzeRule {
           'globalThis.baseUrl=baseUrl;globalThis.book=book;globalThis.source=source;'
           'return JSON.parse(JSON.stringify($itemsJson.map(function(el,idx){'
           'var result=el;'
-          'try{result=$jsCode}catch(e){result=null}'
+          'try{result=$jsWrapper}catch(e){result=null}'
           'return result;}))})();';
 
       // [性能优化] 走轻量路径 batchEvaluate，跳过 processJsRule 重路径
@@ -1778,6 +1872,354 @@ class AnalyzeRule {
       AppLogger.instance.logJsError('AnalyzeRule', e.toString());
       return List.filled(elements.length, null);
     }
+  }
+
+  /// [批量CSS/Jsoup提取] 对所有 elements 执行同一非 JS 规则
+  /// 用于目录/搜索/发现列表等「同字段・多元素」场景的 non-JS 字段。
+  /// 之前：N 个元素 × M 字段 = N×M 次 getStringAsync，每次创建 AnalyzeRule + JsTracer.clear + _applyVariablesAsync
+  /// 现在：M 字段 = M 次规则解析（含 _JsoupSourceRule/_RuleAnalyzer/splitRule 缓存）
+  ///       + N×M 次轻量 _cssLast/_chainLast（无 AnalyzeRule 对象、无 JsTracer、无日志、无变量替换扫描）
+  ///
+  /// 仅处理纯 CSS/Jsoup 规则。若规则含 $/@get:/{{/@js:/<js>/@put:/@webjs: 等特殊语法，
+  /// 返回 null 让调用方降级到逐元素 getStringAsync。
+  ///
+  /// [elements] 元素列表（dom.Element 或可转换为 dom.Element 的对象）
+  /// [rule] 非 JS 规则字符串
+  /// [isUrl] 结果是否为 URL（自动拼接为绝对路径，仅取第一行）
+  /// 返回 List<String?> 与 elements 一一对应；返回 null 表示该字段需降级
+  Future<List<String?>?> batchCssExtractAsync(
+    List<dynamic> elements,
+    String rule, {
+    bool isUrl = false,
+  }) async {
+    final n = elements.length;
+    if (n == 0 || rule.isEmpty) return List<String?>.filled(n, null);
+
+    // 含变量/模板/JS 的规则返回 null 让调用方降级
+    // 走 fast path 的规则必须能在「无 context」环境下静态求值
+    if (rule.contains(r'$') ||
+        rule.contains('@get:') ||
+        rule.contains('{{') ||
+        rule.contains('@js:') ||
+        rule.contains('<js>') ||
+        rule.contains('@put:') ||
+        rule.contains('@webjs:')) {
+      return null;
+    }
+
+    try {
+      // 解析规则一次（_JsoupSourceRule + _RuleAnalyzer + splitRule 在循环外完成）
+      final sourceRule = _JsoupSourceRule(rule);
+      final analyzer = _RuleAnalyzer(sourceRule.elementsRule);
+      final groups = analyzer.splitRule('&&', '||', '%%');
+      final isCss = sourceRule.isCss;
+      final elementsType = analyzer.elementsType;
+      final isInterleave = elementsType == '%%';
+
+      final results = List<String?>.filled(n, null);
+
+      for (var i = 0; i < n; i++) {
+        final element = _toElement(elements[i]);
+        if (element == null) {
+          results[i] = null;
+          continue;
+        }
+
+        // 逐 group 提取
+        final groupResults = <List<String>>[];
+        for (final group in groups) {
+          final values = isCss
+              ? _cssLast(element, group)
+              : _chainLast(element, group);
+          if (values.isNotEmpty) {
+            groupResults.add(values);
+            if (elementsType == '||') break;
+          }
+        }
+
+        // 合并结果（对齐 _jsoupGetStringList）
+        String? value;
+        if (groupResults.isEmpty) {
+          value = null;
+        } else if (isInterleave && groupResults.length > 1) {
+          final merged = <String>[];
+          final maxLen = groupResults
+              .map((e) => e.length)
+              .reduce((a, b) => a > b ? a : b);
+          for (var j = 0; j < maxLen; j++) {
+            for (final item in groupResults) {
+              if (j < item.length) merged.add(item[j]);
+            }
+          }
+          value = merged.isEmpty ? null : merged.join('\n');
+        } else {
+          final merged = <String>[];
+          for (final item in groupResults) {
+            merged.addAll(item);
+          }
+          value = merged.isEmpty ? null : merged.join('\n');
+        }
+
+        // 后处理：HTML 反转义 + URL 拼接
+        if (value != null && value.isNotEmpty) {
+          if (value.contains('&')) {
+            value = _unescapeHtml(value);
+          }
+          if (isUrl) {
+            // URL 模式只取第一行（对齐 _getStringAsync）
+            if (value.contains('\n')) {
+              value = value.split('\n').first.trim();
+            }
+            value = _getAbsoluteUrl(value);
+            if (value.isEmpty) value = null;
+          }
+        }
+        results[i] = value;
+
+        // 每 100 元素让出事件循环一次，避免 1000+ 章节阻塞 UI
+        // 比 _getStringAsync 的 i%5 让出频率降低 20x
+        if (i % 100 == 99) {
+          await Future(() {});
+        }
+      }
+
+      // [修复] 结果全 null 时返回 null，让调用方降级到逐元素 getStringAsync
+      // 之前：返回非 null 的全 null List，调用方 useCssName=true 不降级，导致 title 全空 → 列表 0
+      if (!results.any((e) => e != null && e.isNotEmpty)) {
+        return null;
+      }
+      return results;
+    } catch (e) {
+      AppLogger.instance.logJsError('AnalyzeRule',
+          'batchCssExtractAsync: $e');
+      return null; // 降级
+    }
+  }
+
+  /// [批量提取路由器] 根据规则类型自动路由到最佳批量方法
+  /// - 纯 CSS/Jsoup → batchCssExtractAsync
+  /// - CSS + JS 两步混合（selector@js:code）→ _batchCssThenJsInternal
+  /// - 含变量/模板/纯 JS/多步复杂规则 → 返回 null 降级到逐元素 getStringAsync
+  ///
+  /// 注意：纯 JS 规则（以 @js:/<js> 开头）不在此处理，
+  /// 由调用方通过 isXxxJs 判断后直接调用 batchApplyJsAsync
+  ///
+  /// 性能：1000+ 章目录场景，两步混合字段规则（如 class.title@js: result.trim()）
+  /// 之前：1000 次 getStringAsync（每次 2 步串行 + AnalyzeRule + JsTracer + 日志）
+  /// 现在：1 次 batchCss + 1 次 batchEvaluate
+  Future<List<String?>?> batchExtractAsync(
+    List<dynamic> elements,
+    String rule, {
+    bool isUrl = false,
+  }) async {
+    final n = elements.length;
+    if (n == 0 || rule.isEmpty) return List<String?>.filled(n, null);
+
+    // 含变量的规则降级（$0/@get:{key}/{{}}）
+    if (rule.contains(r'$') ||
+        rule.contains('@get:') ||
+        rule.contains('{{') ||
+        rule.contains('@put:')) {
+      return null;
+    }
+
+    // 检测是否含 JS（但不以 @js:/<js> 开头，那些是纯 JS 由调用方处理）
+    final hasJs = rule.contains('@js:') || rule.contains('<js>');
+    final hasWebJs = rule.contains('@webjs:');
+
+    if (!hasJs && !hasWebJs) {
+      // 纯 CSS/Jsoup 规则
+      return batchCssExtractAsync(elements, rule, isUrl: isUrl);
+    }
+
+    // 含 JS 的混合规则：尝试两步 CSS+JS 快速路径
+    try {
+      final ruleList = _splitSourceRuleCacheString(rule);
+
+      // 两步：步骤一 default_(CSS/Jsoup) + 步骤二 js/webJs
+      if (ruleList.length == 2 &&
+          ruleList[0].mode == RuleMode.default_ &&
+          (ruleList[1].mode == RuleMode.js ||
+              ruleList[1].mode == RuleMode.webJs)) {
+        return _batchCssThenJsInternal(elements, ruleList[0], ruleList[1],
+            isUrl: isUrl);
+      }
+
+      // 其他情况降级（多步、JSON、XPath、三步以上混合等）
+      return null;
+    } catch (e) {
+      AppLogger.instance.logJsError('AnalyzeRule', 'batchExtractAsync: $e');
+      return null;
+    }
+  }
+
+  /// [批量CSS+JS混合提取] 处理 selector@js:code 形式的两步规则
+  /// 步骤一：对所有元素批量执行 CSS 选择器，返回 String 列表（无后处理）
+  /// 步骤二：把 String 列表作为 result 数组，一次 batchEvaluate 执行 JS
+  ///
+  /// 对齐 _getStringAsync 两步行为：
+  /// - 步骤一 default_ mode 返回 _jsoupGetString（String，多结果用 \n 连接）
+  /// - 步骤二 js mode 接收 String 作为 result
+  /// - 最后统一做 HTML 反转义 + URL 拼接
+  Future<List<String?>?> _batchCssThenJsInternal(
+    List<dynamic> elements,
+    _SourceRule cssStep,
+    _SourceRule jsStep, {
+    bool isUrl = false,
+  }) async {
+    final n = elements.length;
+
+    // ===== 步骤一：批量 CSS 提取（无后处理，原始 String）=====
+    final cssRule = cssStep.rule;
+    final sourceRule = _JsoupSourceRule(cssRule);
+    final analyzer = _RuleAnalyzer(sourceRule.elementsRule);
+    final groups = analyzer.splitRule('&&', '||', '%%');
+    final isCss = sourceRule.isCss;
+    final elementsType = analyzer.elementsType;
+    final isInterleave = elementsType == '%%';
+
+    final cssResults = List<String>.filled(n, '');
+
+    for (var i = 0; i < n; i++) {
+      final element = _toElement(elements[i]);
+      if (element == null) continue;
+
+      final groupResults = <List<String>>[];
+      for (final group in groups) {
+        final values = isCss
+            ? _cssLast(element, group)
+            : _chainLast(element, group);
+        if (values.isNotEmpty) {
+          groupResults.add(values);
+          if (elementsType == '||') break;
+        }
+      }
+
+      // 合并结果（对齐 _jsoupGetStringList，多结果用 \n 连接）
+      String value = '';
+      if (groupResults.isNotEmpty) {
+        if (isInterleave && groupResults.length > 1) {
+          final merged = <String>[];
+          final maxLen = groupResults
+              .map((e) => e.length)
+              .reduce((a, b) => a > b ? a : b);
+          for (var j = 0; j < maxLen; j++) {
+            for (final item in groupResults) {
+              if (j < item.length) merged.add(item[j]);
+            }
+          }
+          value = merged.join('\n');
+        } else {
+          final merged = <String>[];
+          for (final item in groupResults) {
+            merged.addAll(item);
+          }
+          value = merged.join('\n');
+        }
+      }
+      cssResults[i] = value;
+
+      // 每 100 元素让出事件循环
+      if (i % 100 == 99) {
+        await Future(() {});
+      }
+    }
+
+    // ===== 步骤二：批量 JS 执行 =====
+    // 剥离 @js:/@webjs: 前缀（_splitSourceRule 保留完整前缀）
+    final jsCode = (jsStep.mode == RuleMode.webJs
+        ? jsStep.rule.substring(7) // @webjs: 前缀 7 字符
+        : jsStep.rule.substring(4)) // @js: 前缀 4 字符
+        .trim();
+
+    // 构造 JSON 数组：每个 cssResult 作为 JS 的 result 变量
+    final itemsJson = StringBuffer('[');
+    for (var i = 0; i < n; i++) {
+      if (i > 0) itemsJson.write(',');
+      itemsJson.write(jsonEncode(cssResults[i]));
+    }
+    itemsJson.write(']');
+
+    // 注入环境变量（对齐 batchApplyJsAsync）
+    final env = _collectVariables();
+    final baseUrlStr = jsonEncode(_baseUrl ?? '');
+    final bookStr = jsonEncode(env['book'] ?? {});
+    final sourceStr = jsonEncode(env['source'] ?? {});
+    final chapterStr = jsonEncode(env['chapter'] ?? {});
+    final cookieStr = jsonEncode(env['cookie'] ?? {});
+    final extraVars = StringBuffer();
+    env.forEach((k, v) {
+      if (k != 'book' &&
+          k != 'source' &&
+          k != 'chapter' &&
+          k != 'cookie' &&
+          k != 'src' &&
+          v is String) {
+        extraVars.write('var $k = ${jsonEncode(v)};globalThis.$k = $k;');
+      }
+    });
+
+    // [bug 修复] JS 规则可能是表达式（result.trim()）或语句（return result.trim()）
+    // legado 的 Rhino eval 在函数上下文执行，return 合法
+    // QuickJS eval 在全局上下文执行，return 会 SyntaxError
+    // 解决：检测 jsCode 是否含 return/;/}，语句用函数包装，表达式直接赋值
+    final jsWrapper = jsCode.contains('return') ||
+            jsCode.contains(';') ||
+            jsCode.contains('}')
+        ? '(function(){ $jsCode })()'
+        : jsCode;
+    final batchCode = '(function(){'
+        'var baseUrl=$baseUrlStr;'
+        'var book=$bookStr;'
+        'var source=$sourceStr;'
+        'var chapter=$chapterStr;'
+        'var cookie=$cookieStr;'
+        'var src="";'
+        '$extraVars'
+        'globalThis.baseUrl=baseUrl;globalThis.book=book;globalThis.source=source;'
+        'return JSON.parse(JSON.stringify($itemsJson.map(function(el,idx){'
+        'var result=el;'
+        'try{result=$jsWrapper}catch(e){result=null}'
+        'return result;}))})();';
+
+    final jsResult = await JsEngine.instance.batchEvaluate(batchCode);
+    if (jsResult == null || jsResult.isEmpty) {
+      return List<String?>.filled(n, null);
+    }
+
+    final decoded = jsonDecode(jsResult);
+    if (decoded is! List) {
+      return List<String?>.filled(n, null);
+    }
+
+    // 后处理：HTML 反转义 + URL 拼接
+    final results = List<String?>.filled(n, null);
+    for (var i = 0; i < n && i < decoded.length; i++) {
+      final v = decoded[i]?.toString();
+      if (v == null || v.isEmpty) {
+        results[i] = null;
+        continue;
+      }
+      var value = v;
+      if (value.contains('&')) {
+        value = _unescapeHtml(value);
+      }
+      if (isUrl) {
+        if (value.contains('\n')) {
+          value = value.split('\n').first.trim();
+        }
+        final url = _getAbsoluteUrl(value);
+        results[i] = url.isEmpty ? null : url;
+        continue;
+      }
+      results[i] = value;
+    }
+
+    // [修复] 结果全 null 时返回 null，让调用方降级到逐元素 getStringAsync
+    if (!results.any((e) => e != null && e.isNotEmpty)) {
+      return null;
+    }
+    return results;
   }
 
   /// JS 异步执行（带完整上下文绑定，借鉴 legado 的 evalJS）
@@ -1977,28 +2419,36 @@ class AnalyzeRule {
     var literal = rule.literal;
     final original = rule.rule.trim();
     final expressionOnly = _expressionOnlyRegex.hasMatch(original);
-
-    next = next.replaceAllMapped(_dollarIndexRegex, (match) {
-      final index = int.parse(match.group(1)!);
-      if (result is List && index >= 0 && index < result.length) {
-        literal = true;
-        return '${result[index] ?? ''}';
-      }
-      return match.group(0)!;
-    });
     literal = literal || expressionOnly;
 
+    // 快速预检：跳过不含特殊语法的规则，避免 3 次正则替换扫描
+    // 1000+ 章目录场景：消除 1000 × 6 × 3 = 18000 次无意义正则匹配
+    if (next.contains(r'$')) {
+      next = next.replaceAllMapped(_dollarIndexRegex, (match) {
+        final index = int.parse(match.group(1)!);
+        if (result is List && index >= 0 && index < result.length) {
+          literal = true;
+          return '${result[index] ?? ''}';
+        }
+        return match.group(0)!;
+      });
+    }
+
     // 替换 @get:{key}
-    next = next.replaceAllMapped(
-      _getVariableRegex,
-      (match) {
-        final key = match.group(1) ?? '';
-        return getVariable(key)?.toString() ?? '';
-      },
-    );
+    if (next.contains('@get:')) {
+      next = next.replaceAllMapped(
+        _getVariableRegex,
+        (match) {
+          final key = match.group(1) ?? '';
+          return getVariable(key)?.toString() ?? '';
+        },
+      );
+    }
 
     // 替换 {{variable}} — 异步版本
-    next = await _replaceTemplatesAsync(next);
+    if (next.contains('{{')) {
+      next = await _replaceTemplatesAsync(next);
+    }
 
     return _SourceRule(
       next,
@@ -2204,18 +2654,37 @@ class AnalyzeRule {
 
   String _getAbsoluteUrl(String value) {
     if (value.isEmpty) return '';
-    if (value.startsWith('http://') || value.startsWith('https://')) {
+    final lower = value.toLowerCase();
+    if (lower.startsWith('http://') || lower.startsWith('https://')) {
       return value;
     }
 
     final base = _redirectUrl ?? _baseUrl;
     if (base == null || base.isEmpty) return value;
 
-    try {
-      return Uri.parse(base).resolve(value).toString();
-    } catch (_) {
-      return value;
+    // 不能用 Uri.resolve，它会对 % 进行二次编码，破坏已编码的 URL 参数
+    final baseUri = Uri.tryParse(base);
+    if (baseUri == null) return value;
+
+    final trimmed = value.trim();
+    final valueLower = trimmed.toLowerCase();
+    if (valueLower.startsWith('data:')) return trimmed;
+    if (valueLower.startsWith('javascript')) return '';
+
+    final scheme = baseUri.scheme;
+    final host = baseUri.host;
+    final port = baseUri.hasPort ? ':${baseUri.port}' : '';
+
+    if (trimmed.startsWith('//')) {
+      return '$scheme:$trimmed';
     }
+    if (trimmed.startsWith('/')) {
+      return '$scheme://$host$port$trimmed';
+    }
+    final basePath = baseUri.path;
+    final lastSlash = basePath.lastIndexOf('/');
+    final dir = lastSlash >= 0 ? basePath.substring(0, lastSlash + 1) : '/';
+    return '$scheme://$host$port$dir$trimmed';
   }
 
   /// HTML 实体解码（单次正则替换，避免链式 replaceAll 创建多个中间字符串）

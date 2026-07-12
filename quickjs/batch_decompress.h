@@ -37,6 +37,39 @@ int aes_decrypt_lz_batch(const char **b64_inputs, const size_t *b64_lens, size_t
                          const char *key_utf8, size_t key_len,
                          char ***out_results, size_t **out_lens);
 
+// 批量 AES-CBC-PKCS7 解密（多线程分片并发，纯解密无 LZ 解压）
+//
+// 对应 aesDecryptFromBase64 的批量版本：
+//   每个 input 经 base64 decode → AES-CBC-PKCS7 decrypt → UTF-8 明文
+//   key 和 iv 为独立参数（非 IV 内嵌模式）
+//
+// 输入：
+//   b64_inputs / b64_lens - count 个 base64 密文字符串
+//   key_utf8 / key_len    - AES 密钥（16/24/32 字节）
+//   iv_utf8  / iv_len     - CBC IV（至少 16 字节，不足补零）
+// 输出：同 lz_decompress_batch
+//
+// 返回：0 成功，非 0 失败
+int aes_decrypt_cbc_batch(const char **b64_inputs, const size_t *b64_lens, size_t count,
+                          const char *key_utf8, size_t key_len,
+                          const char *iv_utf8, size_t iv_len,
+                          char ***out_results, size_t **out_lens);
+
+// 批量 AES-ECB-PKCS7 解密（多线程分片并发，纯解密无 LZ 解压）
+//
+// 对应 aesDecryptFromBase64ECB 的批量版本：
+//   每个 input 经 base64 decode → AES-ECB-PKCS7 decrypt → UTF-8 明文
+//
+// 输入：
+//   b64_inputs / b64_lens - count 个 base64 密文字符串
+//   key_utf8 / key_len    - AES 密钥（16/24/32 字节）
+// 输出：同 lz_decompress_batch
+//
+// 返回：0 成功，非 0 失败
+int aes_decrypt_ecb_batch(const char **b64_inputs, const size_t *b64_lens, size_t count,
+                          const char *key_utf8, size_t key_len,
+                          char ***out_results, size_t **out_lens);
+
 #ifdef __cplusplus
 }
 #endif

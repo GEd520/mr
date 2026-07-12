@@ -104,6 +104,15 @@ List<String?> lzDecompressBatch(List<String?> inputs) =>
 List<String?> aesDecryptLzBatch(List<String> b64Inputs, String key) =>
     List<String?>.filled(b64Inputs.length, null);
 
+/// Web stub：批量 AES-CBC 解密直接返回 null 列表
+List<String?> aesDecryptCbcBatch(
+        List<String> b64Inputs, String key, String iv) =>
+    List<String?>.filled(b64Inputs.length, null);
+
+/// Web stub：批量 AES-ECB 解密直接返回 null 列表
+List<String?> aesDecryptEcbBatch(List<String> b64Inputs, String key) =>
+    List<String?>.filled(b64Inputs.length, null);
+
 /// Web stub：清理加密回调结果（无操作）
 void cleanupCryptoResults() {}
 
@@ -253,14 +262,7 @@ String nativeBase64Encode(String input) => base64Encode(utf8.encode(input));
 /// Web stub：Base64 解码
 String nativeBase64Decode(String input) => utf8.decode(base64Decode(input), allowMalformed: true);
 
-// ===== HTTP 客户端 stubs（Web 端不支持 C socket）=====
-
-/// Web stub：HTTP GET（返回 null，走 Dio）
-Map<String, dynamic>? nativeHttpGet(String url, {String? headers, int timeoutMs = 15000}) => null;
-
-/// Web stub：HTTP POST（返回 null，走 Dio）
-Map<String, dynamic>? nativeHttpPost(String url, String body,
-    {String? headers, int timeoutMs = 15000}) => null;
+// HTTP 客户端已迁移至 Dart Dio（PlatformBridge），Web 端无需 stub
 
 // ===== 嵌入式简易哈希实现（避免 Web 平台引入 package:crypto）=====
 

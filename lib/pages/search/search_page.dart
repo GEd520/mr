@@ -1,4 +1,6 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:provider/provider.dart';
 import '../../providers/search_provider.dart';
@@ -7,7 +9,10 @@ import '../../models/book.dart';
 import '../../models/book_source.dart';
 import '../../routes/app_routes.dart';
 import '../../services/cover_config_service.dart';
+import '../../services/image_decode_provider.dart';
+import '../../services/app_logger.dart';
 import '../../utils/design_tokens.dart';
+import '../../utils/share_helper.dart';
 
 class SearchPage extends StatefulWidget {
   final String? initialKeyword;
@@ -441,6 +446,7 @@ class _SearchPageState extends State<SearchPage> {
                     coverUrl,
                     bookName: result['name']?.toString(),
                     bookAuthor: author,
+                    sourceUrl: result['sourceUrl']?.toString(),
                   ),
                 ),
               ),
@@ -588,6 +594,7 @@ class _SearchPageState extends State<SearchPage> {
                 coverUrl,
                 bookName: result['name']?.toString(),
                 bookAuthor: author,
+                sourceUrl: result['sourceUrl']?.toString(),
               ),
             ),
             Padding(
@@ -666,10 +673,13 @@ class _SearchPageState extends State<SearchPage> {
   }
 
   /// 构建搜索结果封面 - 接入封面配置
+  ///
+  /// [sourceUrl] 书源 URL，用于查找书源并提取防盗链请求头（Referer 等）
   Widget _buildSearchCoverImage(
     String coverUrl, {
     String? bookName,
     String? bookAuthor,
+    String? sourceUrl,
   }) {
     final coverConfig = CoverConfigService.instance;
     final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -683,10 +693,35 @@ class _SearchPageState extends State<SearchPage> {
     }
 
     if (coverUrl.isNotEmpty) {
+      // 查找书源，判断是否需要解密（借鉴 Legado ImageUtils.decode）
+      BookSource? source;
+      if (sourceUrl != null && sourceUrl.isNotEmpty) {
+        source = context
+            .read<SearchProvider>()
+            .bookSources
+            .where((s) => s.bookSourceUrl == sourceUrl)
+            .firstOrNull;
+      }
+      // 书源配置了 coverDecodeJs 时走解密链路
+      if (DecodedImageProvider.needsDecode(source, true)) {
+        return Image(
+          image: DecodedImageProvider(
+            url: coverUrl,
+            headers: _buildCoverHeaders(sourceUrl),
+            source: source!,
+            isCover: true,
+          ),
+          fit: BoxFit.cover,
+          gaplessPlayback: true,
+          errorBuilder: (_, __, ___) =>
+              _coverPlaceholder(bookName: bookName, bookAuthor: bookAuthor),
+        );
+      }
       final memCacheWidth = coverConfig.loadCoverHighQuality ? null : 240;
       final maxWidthDiskCache = coverConfig.loadCoverHighQuality ? null : 320;
       return CachedNetworkImage(
         imageUrl: coverUrl,
+        httpHeaders: _buildCoverHeaders(sourceUrl),
         fit: BoxFit.cover,
         memCacheWidth: memCacheWidth,
         maxWidthDiskCache: maxWidthDiskCache,
@@ -698,6 +733,76 @@ class _SearchPageState extends State<SearchPage> {
     }
 
     return _coverPlaceholder(bookName: bookName, bookAuthor: bookAuthor);
+  }
+
+  /// 根据书源 URL 构建封面图请求头
+  ///
+  /// 很多书源网站有防盗链机制，加载封面图时必须带 Referer 和 User-Agent，
+  /// 否则返回 403 Forbidden。这里从书源的 header 字段提取请求头，
+  /// 并自动补充 Referer（书源 URL）和默认 User-Agent。
+  Map<String, String> _buildCoverHeaders(String? sourceUrl) {
+    final headers = <String, String>{};
+    if (sourceUrl == null || sourceUrl.isEmpty) return headers;
+
+    // 从 SearchProvider 查找对应书源
+    final source = context
+        .read<SearchProvider>()
+        .bookSources
+        .where((s) => s.bookSourceUrl == sourceUrl)
+        .firstOrNull;
+    if (source == null) return headers;
+
+    // 解析书源的 header 字段（可能是 JSON 格式或 Key: Value 按行格式）
+    final headerStr = source.header;
+    if (headerStr != null && headerStr.isNotEmpty) {
+      try {
+        final decoded = json.decode(headerStr);
+        if (decoded is Map) {
+          decoded.forEach((key, value) {
+            final val = value.toString();
+            if (val.isNotEmpty) {
+              headers[key.toString()] = val;
+            }
+          });
+        }
+      } catch (_) {
+        // 非 JSON 格式，按行解析 Key: Value
+        for (final line in headerStr.split('\n')) {
+          final parts = line.split(':');
+          if (parts.length >= 2) {
+            final key = parts[0].trim();
+            final val = parts.sublist(1).join(':').trim();
+            if (key.isNotEmpty && val.isNotEmpty) {
+              headers[key] = val;
+            }
+          }
+        }
+      }
+    }
+
+    // 补充 Referer（使用书源 URL 作为来源页，绕过防盗链）
+    headers.putIfAbsent(
+        'Referer', () => _extractBaseUrl(sourceUrl));
+
+    // 补充默认 User-Agent
+    headers.putIfAbsent(
+      'User-Agent',
+      () => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+          '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    );
+
+    return headers;
+  }
+
+  /// 从完整 URL 中提取根 URL（scheme://host），用作 Referer
+  String _extractBaseUrl(String url) {
+    try {
+      final uri = Uri.parse(url);
+      if (uri.hasScheme && uri.host.isNotEmpty) {
+        return '${uri.scheme}://${uri.host}';
+      }
+    } catch (_) {}
+    return url;
   }
 
   List<String> _resultTags(Map<String, dynamic> result) {
@@ -992,22 +1097,7 @@ class _SearchPageState extends State<SearchPage> {
   void _showLogDialog() {
     showDialog(
       context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('搜索日志'),
-          content: const SizedBox(
-            width: double.maxFinite,
-            height: 300,
-            child: Center(child: Text('暂无日志')),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('关闭'),
-            ),
-          ],
-        );
-      },
+      builder: (context) => const _SearchLogDialog(),
     );
   }
 
@@ -1132,4 +1222,232 @@ class _SearchPageState extends State<SearchPage> {
 
 extension on Widget {
   IconData? get icon => null;
+}
+
+/// 搜索日志对话框：支持级别筛选、复制、导出
+/// - 顶部工具栏：筛选级别 / 复制全部 / 分享
+/// - 点击单条日志 → 复制该条到剪贴板
+/// - 长按单条日志 → 展开/收起详情（detail）
+/// - 展开后详情区为 SelectableText，可手动选中复制
+class _SearchLogDialog extends StatefulWidget {
+  const _SearchLogDialog();
+
+  @override
+  State<_SearchLogDialog> createState() => _SearchLogDialogState();
+}
+
+class _SearchLogDialogState extends State<_SearchLogDialog> {
+  /// 最低日志级别筛选（null = 全部）
+  LogLevel? _minLevel = LogLevel.warning;
+
+  /// 展开的日志条目索引集合（按 AppLogger 原始顺序的 index）
+  final Set<int> _expandedEntries = <int>{};
+
+  List<LogEntry> get _logs => AppLogger.instance.getLogs(minLevel: _minLevel);
+
+  Future<void> _copyAll() async {
+    final text = AppLogger.instance.exportLogs(minLevel: _minLevel);
+    await Clipboard.setData(ClipboardData(text: text));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已复制 ${_logs.length} 条日志到剪贴板')),
+      );
+    }
+  }
+
+  Future<void> _shareAll() async {
+    final text = AppLogger.instance.exportLogs(minLevel: _minLevel);
+    await ShareHelper.shareText(context, text, subject: '搜索日志');
+  }
+
+  Future<void> _copyEntry(LogEntry entry) async {
+    await Clipboard.setData(ClipboardData(text: entry.toFullString()));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('已复制该条日志'),
+          duration: Duration(seconds: 1),
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final logs = _logs;
+    final scheme = Theme.of(context).colorScheme;
+
+    return AlertDialog(
+      title: Row(
+        children: [
+          const Text('搜索日志'),
+          const SizedBox(width: 8),
+          Text(
+            '${logs.length} 条',
+            style: TextStyle(
+              fontSize: DesignTokens.fontCaption,
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+          const Spacer(),
+          // 级别筛选
+          PopupMenuButton<LogLevel?>(
+            icon: const Icon(Icons.filter_list, size: 20),
+            tooltip: '筛选级别',
+            onSelected: (level) => setState(() {
+              _minLevel = level;
+              _expandedEntries.clear();
+            }),
+            itemBuilder: (context) => const [
+              PopupMenuItem(value: null, child: Text('全部')),
+              PopupMenuItem(value: LogLevel.error, child: Text('仅错误')),
+              PopupMenuItem(value: LogLevel.warning, child: Text('警告及以上')),
+              PopupMenuItem(value: LogLevel.info, child: Text('信息及以上')),
+            ],
+          ),
+          IconButton(
+            icon: const Icon(Icons.copy, size: 20),
+            tooltip: '复制全部',
+            onPressed: _copyAll,
+          ),
+          IconButton(
+            icon: const Icon(Icons.ios_share, size: 20),
+            tooltip: '分享',
+            onPressed: _shareAll,
+          ),
+        ],
+      ),
+      content: SizedBox(
+        width: double.maxFinite,
+        height: 500,
+        child: logs.isEmpty
+            ? const Center(child: Text('暂无日志'))
+            : ListView.builder(
+                itemCount: logs.length,
+                itemBuilder: (context, index) {
+                  // 倒序显示（最新的在最上面）
+                  final actualIndex = logs.length - 1 - index;
+                  final entry = logs[actualIndex];
+                  final isExpanded = _expandedEntries.contains(actualIndex);
+                  final hasDetail =
+                      entry.detail != null && entry.detail!.isNotEmpty;
+
+                  final timeStr =
+                      '${entry.time.hour.toString().padLeft(2, '0')}:'
+                      '${entry.time.minute.toString().padLeft(2, '0')}:'
+                      '${entry.time.second.toString().padLeft(2, '0')}';
+
+                  return InkWell(
+                    onTap: () => _copyEntry(entry),
+                    onLongPress: hasDetail
+                        ? () => setState(() {
+                              if (isExpanded) {
+                                _expandedEntries.remove(actualIndex);
+                              } else {
+                                _expandedEntries.add(actualIndex);
+                              }
+                            })
+                        : null,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          vertical: 6, horizontal: 8),
+                      decoration: BoxDecoration(
+                        border: Border(
+                          bottom: BorderSide(
+                            color: Theme.of(context).dividerColor,
+                            width: 0.5,
+                          ),
+                        ),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          RichText(
+                            maxLines: isExpanded ? null : 4,
+                            overflow: isExpanded
+                                ? TextOverflow.visible
+                                : TextOverflow.ellipsis,
+                            text: TextSpan(
+                              style: DefaultTextStyle.of(context)
+                                  .style
+                                  .copyWith(
+                                    fontSize: DesignTokens.fontCaption,
+                                  ),
+                              children: [
+                                TextSpan(
+                                  text: '$timeStr ${entry.levelIcon} ',
+                                  style: TextStyle(
+                                    fontFamily: 'monospace',
+                                    color: scheme.onSurfaceVariant,
+                                  ),
+                                ),
+                                TextSpan(
+                                  text: '[${entry.category.label}] ',
+                                  style: TextStyle(
+                                    color: scheme.primary,
+                                  ),
+                                ),
+                                TextSpan(text: entry.message),
+                              ],
+                            ),
+                          ),
+                          // 展开后显示完整详情（SelectableText 支持手动选中复制）
+                          if (isExpanded && hasDetail) ...[
+                            const SizedBox(height: 4),
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(6),
+                              decoration: BoxDecoration(
+                                color: scheme.surfaceContainerHighest,
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: SelectableText(
+                                entry.detail!,
+                                style: TextStyle(
+                                  fontSize: DesignTokens.fontCaption,
+                                  fontFamily: 'monospace',
+                                  color: scheme.onSurfaceVariant,
+                                ),
+                              ),
+                            ),
+                          ],
+                          if (hasDetail && !isExpanded)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 2),
+                              child: Text(
+                                '长按展开详情 · 点击复制',
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  color: scheme.onSurfaceVariant
+                                      .withValues(alpha: 0.6),
+                                ),
+                              ),
+                            ),
+                          if (!hasDetail)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 2),
+                              child: Text(
+                                '点击复制',
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  color: scheme.onSurfaceVariant
+                                      .withValues(alpha: 0.6),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('关闭'),
+        ),
+      ],
+    );
+  }
 }

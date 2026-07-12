@@ -42,10 +42,16 @@ class JsAdvancedService {
     if (ruleJs == null || ruleJs.isEmpty) return imageBytes;
 
     try {
-      // 借鉴 legado：result 传入原始字节数组（QuickJS 中为 Uint8Array）
-      final result = JsEngine.instance.executeSync(
+      // 加载书源 jsLib（借鉴 WebBook._loadJsLib）
+      final jsLib = source.jsLib;
+      if (jsLib != null && jsLib.isNotEmpty) {
+        JsEngine.instance.loadJsLib(source.bookSourceUrl, jsLib);
+      }
+
+      // 借鉴 legado：result 传入原始字节数组，src 传入图片 URL
+      final result = await JsEngine.instance.executeAsync(
         ruleJs,
-        imageBytes,     // ← 直传 Uint8List，引擎自动变 new Uint8Array([...])
+        imageBytes,
         baseUrl: source.bookSourceUrl,
         sourceEngine: source.engineType,
         variables: {
@@ -57,29 +63,28 @@ class JsAdvancedService {
 
       if (result == null) return null;
 
-      // 兼容三种返回格式：
-      // 1. List<int> / List<num> → Uint8List
-      // 2. Base64 字符串 → base64Decode
-      // 3. 其他字符串 → 原样返回
+      // 兼容 List<num> → Uint8List
       if (result is List) {
-        return Uint8List.fromList(result.cast<int>());
+        final intList = result.map((e) => (e as num).toInt()).toList();
+        return Uint8List.fromList(intList);
       }
 
       final resultStr = result.toString();
       if (resultStr.isEmpty || resultStr == 'null' || resultStr == 'undefined') {
-        return imageBytes;
+        return null;
       }
 
       // 尝试 Base64 解码
       try {
         return base64Decode(resultStr);
       } catch (_) {
-        debugPrint('⚠️ 图片解密返回非Base64格式: ${resultStr.length > 50 ? resultStr.substring(0, 50) : resultStr}');
-        return imageBytes;
+        return null;
       }
     } catch (e) {
-      AppLogger.instance.logJsError('decodeImage', '图片解密失败: $e');
-      return imageBytes;
+      AppLogger.instance.error(LogCategory.js,
+          '[decodeImage] $imageUrl解密错误',
+          detail: '错误: $e');
+      return null;
     }
   }
 
@@ -491,7 +496,7 @@ class PayActionResult {
 
   static const notImplemented = PayActionResult();
 
-  bool get isUrl => url != null && url!.isNotEmpty;
+  bool get isUrl => url?.isNotEmpty == true;
   bool get isSuccess => success;
 }
 

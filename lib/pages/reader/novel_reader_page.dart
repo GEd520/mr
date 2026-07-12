@@ -171,35 +171,39 @@ class _NovelReaderPageState extends State<NovelReaderPage>
   }
 
   Future<void> _checkBookmark() async {
-    if (_book == null) return;
+    // 局部变量捕获：避免 await 期间 _book 被置 null
+    final book = _book;
+    if (book == null) return;
     final provider = context.read<ReaderProvider>();
-    await provider.loadBookmarks(_book!.bookUrl);
+    await provider.loadBookmarks(book.bookUrl);
+    if (!mounted) return;
     _hasBookmark = await provider.hasBookmarkForChapter(
-      _book!.bookUrl,
+      book.bookUrl,
       _currentChapterIndex,
     );
     if (mounted) setState(() {});
   }
 
   Future<void> _toggleBookmark() async {
-    if (_book == null) return;
+    final book = _book;
+    if (book == null) return;
     final provider = context.read<ReaderProvider>();
     if (_hasBookmark) {
       // 移除书签
       final bookmarks = provider.bookmarks
           .where(
             (b) =>
-                b.bookUrl == _book!.bookUrl &&
+                b.bookUrl == book.bookUrl &&
                 b.chapterIndex == _currentChapterIndex,
           )
           .toList();
       for (final b in bookmarks) {
-        await provider.removeBookmark(_book!.bookUrl, b.id);
+        await provider.removeBookmark(book.bookUrl, b.id);
       }
     } else {
       // 添加书签
       await provider.addBookmark(
-        bookUrl: _book!.bookUrl,
+        bookUrl: book.bookUrl,
         chapterIndex: _currentChapterIndex,
         chapterTitle: _chapterTitle,
         content: _content.length > 100 ? _content.substring(0, 100) : _content,
@@ -395,25 +399,30 @@ class _NovelReaderPageState extends State<NovelReaderPage>
     try {
       final bookData = StorageService.instance.getBook(widget.bookUrl);
       _book = bookData != null ? Book.fromJson(bookData) : widget.initialBook;
-      if (_book != null) {
-        _dataProvider = createBookDataProvider(_book!);
-        _chapters = await _dataProvider!.getChapterList(_book!);
+      // 局部变量捕获：避免 await 期间 _book 被置 null
+      final book = _book;
+      if (book != null) {
+        final dataProvider = createBookDataProvider(book);
+        _dataProvider = dataProvider;
+        _chapters = await dataProvider.getChapterList(book);
+        // await 后用户可能已退出
+        if (!mounted) return;
         _totalChapters = _chapters.length;
         if (_totalChapters > 0) {
           final initialIndex = widget.resumeProgress
-              ? _book!.durChapterIndex
+              ? book.durChapterIndex
               : widget.chapterIndex;
           _currentChapterIndex = _readableChapterIndex(initialIndex);
-          _initialChapterPos = widget.resumeProgress ? _book!.durChapterPos : 0;
+          _initialChapterPos = widget.resumeProgress ? book.durChapterPos : 0;
           _restoreInitialPosition =
               widget.resumeProgress && _initialChapterPos > 0;
           _sliderValue = _currentChapterIndex.toDouble();
         }
         // 加载书源信息
-        if (_book!.originType == BookOriginType.online &&
-            _book!.sourceUrl != null) {
+        if (book.originType == BookOriginType.online &&
+            book.sourceUrl != null) {
           final sourceData = StorageService.instance.getBookSource(
-            _book!.sourceUrl!,
+            book.sourceUrl!,
           );
           if (sourceData != null) {
             _bookSource = BookSource.fromJson(sourceData);
@@ -431,7 +440,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
   }
 
   Future<void> _loadChapterContent() async {
-    if (_book == null || _chapters.isEmpty) {
+    if (_book == null || _dataProvider == null || _chapters.isEmpty) {
       _isChangingChapterByPageView = false;
       setState(() {
         _isLoading = false;
@@ -465,38 +474,49 @@ class _NovelReaderPageState extends State<NovelReaderPage>
     }
 
     try {
+      // 局部变量捕获：避免 await 期间 _book / _dataProvider 被置 null
+      final book = _book;
+      final dataProvider = _dataProvider;
+      if (book == null || dataProvider == null) {
+        _isChangingChapterByPageView = false;
+        setState(() {
+          _isLoading = false;
+          _content = '无法加载内容';
+        });
+        return;
+      }
       // 1. 优先从预取内存缓存读取（瞬时返回，跳过文件 I/O）
       String? content;
-      if (_book!.originType == BookOriginType.online && chapter.url != null) {
+      if (book.originType == BookOriginType.online && chapter.url != null) {
         content = ChapterPrefetchService.instance.getCachedContent(
-          _book!.bookUrl ?? '',
+          book.bookUrl,
           chapter.url!,
         );
       }
 
       // 2. 内存未命中则从文件缓存读取
       if ((content == null || content.isEmpty) &&
-          _book!.originType == BookOriginType.online) {
+          book.originType == BookOriginType.online) {
         content = await ChapterCacheService.instance.readChapterContent(
-          _book!,
+          book,
           chapter,
         );
       }
 
       // 3. 缓存没有则从网络获取
       if (content == null || content.isEmpty) {
-        content = await _dataProvider!.getContent(
-          _book!,
+        content = await dataProvider.getContent(
+          book,
           chapter,
           allChapters: _chapters,
         );
         // 保存到缓存
         if (content != null &&
             content.isNotEmpty &&
-            _book!.originType == BookOriginType.online) {
+            book.originType == BookOriginType.online) {
           unawaited(
             ChapterCacheService.instance.saveChapterContent(
-              _book!,
+              book,
               chapter,
               content,
             ),
@@ -508,12 +528,12 @@ class _NovelReaderPageState extends State<NovelReaderPage>
       if (content != null && content.length > 5 * 1024 * 1024) {
         if (kDebugMode) debugPrint('⚠️ 章节内容过大 (${content.length} chars)，熔断截断');
         AppLogger.instance.warn(LogCategory.system, '章节内容过大熔断',
-            detail: 'chapter=${chapter.title}, size=${content!.length}');
+            detail: 'chapter=${chapter.title}, size=${content.length}');
         CrashLogService.instance.logJsEngineError(
           'Reader.oom',
-          '章节内容过大: chapter=${chapter.title}, size=${content!.length}',
+          '章节内容过大: chapter=${chapter.title}, size=${content.length}',
         );
-        content = '${content!.substring(0, 5 * 1024 * 1024)}\n\n...(内容过长已截断)';
+        content = '${content.substring(0, 5 * 1024 * 1024)}\n\n...(内容过长已截断)';
       }
 
       if (mounted &&
@@ -558,7 +578,7 @@ class _NovelReaderPageState extends State<NovelReaderPage>
         unawaited(_preloadAdjacentChapters(_currentChapterIndex));
 
         // 后台预取后续 N 章（Phase 3 流水线化：用户翻页时瞬时返回）
-        if (_book!.originType == BookOriginType.online &&
+        if (book.originType == BookOriginType.online &&
             chapterIndex + 1 < _chapters.length) {
           final prefetchIndices = ChapterPrefetchService.computePrefetchIndices(
             chapterIndex,
@@ -570,9 +590,9 @@ class _NovelReaderPageState extends State<NovelReaderPage>
             final prefetchChs =
                 prefetchIndices.map((i) => _chapters[i]).toList();
             unawaited(ChapterPrefetchService.instance.prefetchChapters(
-              book: _book!,
+              book: book,
               chapters: prefetchChs,
-              provider: _dataProvider!,
+              provider: dataProvider,
               allChapters: _chapters,
             ));
           }
@@ -670,15 +690,18 @@ class _NovelReaderPageState extends State<NovelReaderPage>
   }
 
   Future<void> _preloadAdjacentChapters(int chapterIndex) async {
-    if (_book == null) return;
+    // 局部变量捕获：避免 await 期间 _book / _dataProvider 被置 null
+    final book = _book;
+    final dataProvider = _dataProvider;
+    if (book == null || dataProvider == null) return;
 
     // 预加载下一章
     String? nextContent;
     final nextIndex = _nextReadableChapterIndex(chapterIndex);
     if (nextIndex != null) {
       final nextChapter = _chapters[nextIndex];
-      nextContent = await _dataProvider!.getContent(
-        _book!,
+      nextContent = await dataProvider.getContent(
+        book,
         nextChapter,
         allChapters: _chapters,
       );
@@ -689,8 +712,8 @@ class _NovelReaderPageState extends State<NovelReaderPage>
     final prevIndex = _previousReadableChapterIndex(chapterIndex);
     if (prevIndex != null) {
       final prevChapter = _chapters[prevIndex];
-      prevContent = await _dataProvider!.getContent(
-        _book!,
+      prevContent = await dataProvider.getContent(
+        book,
         prevChapter,
         allChapters: _chapters,
       );
@@ -706,12 +729,15 @@ class _NovelReaderPageState extends State<NovelReaderPage>
   }
 
   Future<void> _preloadNextChapter() async {
-    if (_book == null || _nextContent != null) return;
+    // 局部变量捕获：避免 await 期间 _book / _dataProvider 被置 null
+    final book = _book;
+    final dataProvider = _dataProvider;
+    if (book == null || dataProvider == null || _nextContent != null) return;
     final nextIndex = _nextReadableChapterIndex(_currentChapterIndex);
     if (nextIndex != null) {
       final nextChapter = _chapters[nextIndex];
-      _nextContent = await _dataProvider!.getContent(
-        _book!,
+      _nextContent = await dataProvider.getContent(
+        book,
         nextChapter,
         allChapters: _chapters,
       );
@@ -722,12 +748,15 @@ class _NovelReaderPageState extends State<NovelReaderPage>
 
   /// 预加载上一章（用于滚动模式往上滑）
   Future<void> _preloadPrevChapter() async {
-    if (_book == null || _prevContent != null) return;
+    // 局部变量捕获：避免 await 期间 _book / _dataProvider 被置 null
+    final book = _book;
+    final dataProvider = _dataProvider;
+    if (book == null || dataProvider == null || _prevContent != null) return;
     final prevIndex = _previousReadableChapterIndex(_currentChapterIndex);
     if (prevIndex != null) {
       final prevChapter = _chapters[prevIndex];
-      _prevContent = await _dataProvider!.getContent(
-        _book!,
+      _prevContent = await dataProvider.getContent(
+        book,
         prevChapter,
         allChapters: _chapters,
       );
@@ -2257,7 +2286,9 @@ class _NovelReaderPageState extends State<NovelReaderPage>
 
   void _showChangeSourceDialog() {
     _hideMenu();
-    if (_book == null || _book!.originType != BookOriginType.online) {
+    // 局部变量捕获：避免弹窗显示期间 _book 被置 null
+    final book = _book;
+    if (book == null || book.originType != BookOriginType.online) {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('本地书籍不支持换源')));
@@ -2266,33 +2297,38 @@ class _NovelReaderPageState extends State<NovelReaderPage>
 
     ChangeSourceSheet.show(
       context: context,
-      bookName: _book!.displayName,
-      bookAuthor: _book!.displayAuthor,
-      currentSourceUrl: _book!.sourceUrl,
-      currentSourceName: _book!.sourceName,
+      bookName: book.displayName,
+      bookAuthor: book.displayAuthor,
+      currentSourceUrl: book.sourceUrl,
+      currentSourceName: book.sourceName,
       onSourceSelected: (sourceUrl, sourceName, bookData) async {
-        if (_book == null) return;
+        // 回调可能在弹窗显示后任意时刻触发，使用局部变量避免 _book 野指针
+        if (!mounted) return;
 
         try {
           ScaffoldMessenger.of(
             context,
           ).showSnackBar(const SnackBar(content: Text('正在切换书源...')));
 
-          // 创建新的书籍对象
-          final newBook = _book!.copyWith(
+          // 创建新的书籍对象（用局部 book 而非 _book!）
+          final newBook = book.copyWith(
             sourceUrl: sourceUrl,
             sourceName: sourceName,
-            bookUrl: bookData['bookUrl'] ?? _book!.bookUrl,
-            name: bookData['name'] ?? _book!.name,
-            author: bookData['author'] ?? _book!.author,
-            coverUrl: bookData['coverUrl'] ?? _book!.coverUrl,
-            intro: bookData['intro'] ?? _book!.intro,
-            lastChapter: bookData['lastChapter'] ?? _book!.lastChapter,
+            bookUrl: bookData['bookUrl'] ?? book.bookUrl,
+            name: bookData['name'] ?? book.name,
+            author: bookData['author'] ?? book.author,
+            coverUrl: bookData['coverUrl'] ?? book.coverUrl,
+            intro: bookData['intro'] ?? book.intro,
+            lastChapter: bookData['lastChapter'] ?? book.lastChapter,
           );
 
           // 获取新书源的目录
-          _dataProvider = createBookDataProvider(newBook);
-          final chapters = await _dataProvider!.getChapterList(newBook);
+          final dataProvider = createBookDataProvider(newBook);
+          _dataProvider = dataProvider;
+          final chapters = await dataProvider.getChapterList(newBook);
+
+          // await 后页面可能已退出
+          if (!mounted) return;
 
           // 更新书籍
           final updatedBook = newBook.copyWith(

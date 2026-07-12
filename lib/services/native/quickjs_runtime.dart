@@ -70,12 +70,20 @@ const int _CRYPTO_OP_SHA1 = 5;
 /// 加载 QuickJS 动态库
 ///
 /// 全端加载策略：
-/// - iOS/macOS: podspec 配置 static_framework，符号链接到主程序 → DynamicLibrary.process()
+/// - iOS/macOS: podspec 配置动态框架（static_framework=false），
+///   编译为 QuickJS.framework/QuickJS 可执行文件。
+///   系统在 App 启动时自动 dlopen 嵌入的 .framework，符号在进程地址空间可见。
+///   [关键] 用 DynamicLibrary.process() 而非 DynamicLibrary.open('QuickJS.framework/QuickJS')
+///   原因：iOS 沙盒限制 dlopen 相对路径，DynamicLibrary.open 会抛 ArgumentError
+///   导致顶层 final _qjsLib 初始化失败 → 所有 FFI 调用全废 → App 闪退
+///   process() 在整个进程地址空间查找符号，包括已加载的动态框架，稳定可靠
 /// - Android: NDK 编译为 libquickjs_c_bridge.so → DynamicLibrary.open()
 /// - Windows: CMake 编译为 quickjs_c_bridge.dll → DynamicLibrary.open()
 /// - Linux: CMake 编译为 libquickjs_c_bridge.so → DynamicLibrary.open()
 DynamicLibrary _loadQuickJsLib() {
   if (Platform.isIOS || Platform.isMacOS) {
+    // 动态框架已由系统在 App 启动时 dlopen 加载，符号在进程地址空间可见
+    // 用 process() 查找整个进程，避免 dlopen 路径问题
     return DynamicLibrary.process();
   } else if (Platform.isAndroid) {
     return DynamicLibrary.open('libquickjs_c_bridge.so');
@@ -347,95 +355,10 @@ String nativeBase64Encode(String input) =>
 String nativeBase64Decode(String input) =>
     _callNativeStringOp(input, _nativeB64Decode);
 
-// ---------- Batch 2: C 原生 HTTP 客户端（HTTP-only）----------
-// HTTP/1.1 GET/POST via C socket，零 MethodChannel。
-// 仅支持 http://；https:// 返回 null，上层降级到 Dio。
-// C: http_response_t* http_get(url, headers, timeout_ms)
-// C: http_response_t* http_post(url, headers, body, body_len, timeout_ms)
-// C: void http_response_free(http_response_t*)
-
-final class HttpResponseNative extends Struct {
-  @Int32()
-  external int statusCode;
-  external Pointer<Utf8> body;
-  @IntPtr()
-  external int bodyLen;
-  external Pointer<Utf8> headersRaw;
-  @Int32()
-  external int isHttps;
-  @Array(256)
-  external Array<Int8> errorMsg;
-}
-
-typedef _HttpGetC = Pointer<HttpResponseNative> Function(
-    Pointer<Utf8>, Pointer<Utf8>, Int32);
-typedef _HttpGetDart = Pointer<HttpResponseNative> Function(
-    Pointer<Utf8>, Pointer<Utf8>, int);
-final _HttpGetDart _nativeHttpGet = _qjsLib
-    .lookup<NativeFunction<_HttpGetC>>('http_get')
-    .asFunction<_HttpGetDart>();
-
-typedef _HttpPostC = Pointer<HttpResponseNative> Function(
-    Pointer<Utf8>, Pointer<Utf8>, Pointer<Uint8>, IntPtr, Int32);
-typedef _HttpPostDart = Pointer<HttpResponseNative> Function(
-    Pointer<Utf8>, Pointer<Utf8>, Pointer<Uint8>, int, int);
-final _HttpPostDart _nativeHttpPost = _qjsLib
-    .lookup<NativeFunction<_HttpPostC>>('http_post')
-    .asFunction<_HttpPostDart>();
-
-typedef _HttpResponseFreeC = Void Function(Pointer<HttpResponseNative>);
-typedef _HttpResponseFreeDart = void Function(Pointer<HttpResponseNative>);
-final _HttpResponseFreeDart _nativeHttpResponseFree = _qjsLib
-    .lookup<NativeFunction<_HttpResponseFreeC>>('http_response_free')
-    .asFunction<_HttpResponseFreeDart>();
-
-/// C 原生 HTTP GET
-/// 仅支持 http://，返回 {statusCode, body, headersRaw} 或 null
-Map<String, dynamic>? nativeHttpGet(String url, {String? headers, int timeoutMs = 15000}) {
-  if (!url.startsWith('http://')) return null;
-  final urlPtr = url.toNativeUtf8();
-  final hdrPtr = headers?.toNativeUtf8();
-  try {
-    final respPtr = _nativeHttpGet(urlPtr, hdrPtr ?? nullptr, timeoutMs);
-    if (respPtr == nullptr) return null;
-    final r = respPtr.ref;
-    final result = <String, dynamic>{'statusCode': r.statusCode, 'bodyLen': r.bodyLen};
-    if (r.body != nullptr) result['body'] = r.body.toDartString();
-    if (r.headersRaw != nullptr) result['headersRaw'] = r.headersRaw.toDartString();
-    _nativeHttpResponseFree(respPtr);
-    return result;
-  } catch (_) { return null; }
-  finally {
-    malloc.free(urlPtr);
-    if (hdrPtr != null) malloc.free(hdrPtr);
-  }
-}
-
-/// C 原生 HTTP POST
-Map<String, dynamic>? nativeHttpPost(String url, String body,
-    {String? headers, int timeoutMs = 15000}) {
-  if (!url.startsWith('http://')) return null;
-  final urlPtr = url.toNativeUtf8();
-  final hdrPtr = headers?.toNativeUtf8();
-  final bodyBytes = utf8.encode(body);
-  final bodyPtr = malloc<Uint8>(bodyBytes.length);
-  for (var i = 0; i < bodyBytes.length; i++) bodyPtr[i] = bodyBytes[i];
-  try {
-    final respPtr = _nativeHttpPost(urlPtr, hdrPtr ?? nullptr, bodyPtr, bodyBytes.length, timeoutMs);
-    if (respPtr == nullptr) return null;
-    final r = respPtr.ref;
-    final result = <String, dynamic>{'statusCode': r.statusCode, 'bodyLen': r.bodyLen};
-    if (r.body != nullptr) result['body'] = r.body.toDartString();
-    if (r.headersRaw != nullptr) result['headersRaw'] = r.headersRaw.toDartString();
-    _nativeHttpResponseFree(respPtr);
-    return result;
-  } catch (_) { return null; }
-  finally {
-    malloc.free(urlPtr);
-    if (hdrPtr != null) malloc.free(hdrPtr);
-    malloc.free(bodyPtr);
-  }
-}
+// ---------- HTTP 客户端已迁移至 Dart Dio ----------
+// 原 C 层 http_client.c/h 已删除，所有 HTTP 请求统一由 PlatformBridge (Dio) 处理。
+// 网络请求不再经过 C FFI 或 MethodChannel，减少跨语言调用开销。
+// 参见: lib/services/native/platform_bridge.dart
 
 // ---------- C 原生 HTML 解析 + CSS 选择器引擎 ----------
 // 解析加速：原子调用 HTML 解析 + CSS 查询 + 属性提取
@@ -672,6 +595,33 @@ typedef _AesDecryptLzBatchDart = int Function(
     Pointer<Utf8>, int,
     Pointer<Pointer<Pointer<Utf8>>>, Pointer<Pointer<IntPtr>>);
 
+// C: int aes_decrypt_cbc_batch(const char **b64_inputs, const size_t *b64_lens,
+//                              size_t count, const char *key_utf8, size_t key_len,
+//                              const char *iv_utf8, size_t iv_len,
+//                              char ***out_results, size_t **out_lens)
+typedef _AesDecryptCbcBatchC = Int32 Function(
+    Pointer<Pointer<Utf8>>, Pointer<IntPtr>, IntPtr,
+    Pointer<Utf8>, IntPtr,
+    Pointer<Utf8>, IntPtr,
+    Pointer<Pointer<Pointer<Utf8>>>, Pointer<Pointer<IntPtr>>);
+typedef _AesDecryptCbcBatchDart = int Function(
+    Pointer<Pointer<Utf8>>, Pointer<IntPtr>, int,
+    Pointer<Utf8>, int,
+    Pointer<Utf8>, int,
+    Pointer<Pointer<Pointer<Utf8>>>, Pointer<Pointer<IntPtr>>);
+
+// C: int aes_decrypt_ecb_batch(const char **b64_inputs, const size_t *b64_lens,
+//                              size_t count, const char *key_utf8, size_t key_len,
+//                              char ***out_results, size_t **out_lens)
+typedef _AesDecryptEcbBatchC = Int32 Function(
+    Pointer<Pointer<Utf8>>, Pointer<IntPtr>, IntPtr,
+    Pointer<Utf8>, IntPtr,
+    Pointer<Pointer<Pointer<Utf8>>>, Pointer<Pointer<IntPtr>>);
+typedef _AesDecryptEcbBatchDart = int Function(
+    Pointer<Pointer<Utf8>>, Pointer<IntPtr>, int,
+    Pointer<Utf8>, int,
+    Pointer<Pointer<Pointer<Utf8>>>, Pointer<Pointer<IntPtr>>);
+
 final _GetCpuCountDart _getCpuCount = _qjsLib
     .lookup<NativeFunction<_GetCpuCountC>>('get_cpu_count')
     .asFunction<_GetCpuCountDart>();
@@ -683,6 +633,14 @@ final _LzDecompressBatchDart _lzDecompressBatch = _qjsLib
 final _AesDecryptLzBatchDart _aesDecryptLzBatch = _qjsLib
     .lookup<NativeFunction<_AesDecryptLzBatchC>>('aes_decrypt_lz_batch')
     .asFunction<_AesDecryptLzBatchDart>();
+
+final _AesDecryptCbcBatchDart _aesDecryptCbcBatch = _qjsLib
+    .lookup<NativeFunction<_AesDecryptCbcBatchC>>('aes_decrypt_cbc_batch')
+    .asFunction<_AesDecryptCbcBatchDart>();
+
+final _AesDecryptEcbBatchDart _aesDecryptEcbBatch = _qjsLib
+    .lookup<NativeFunction<_AesDecryptEcbBatchC>>('aes_decrypt_ecb_batch')
+    .asFunction<_AesDecryptEcbBatchDart>();
 
 /// 获取 CPU 逻辑核心数（来自 C 层，用于面板显示与策略决策）
 int nativeGetCpuCount() => _getCpuCount();
@@ -777,6 +735,149 @@ List<String?> aesDecryptLzBatch(List<String> b64Inputs, String key) {
     keyPtr[keyBytes.length] = 0;
     final rc = _aesDecryptLzBatch(
         inputsPtr, lensPtr, count, keyPtr.cast(), keyBytes.length, outResultsPtr, outLensPtr);
+    if (rc != 0) return List<String?>.filled(count, null);
+    final outResults = outResultsPtr.value;
+    final outLens = outLensPtr.value;
+    final results = <String?>[];
+    for (var i = 0; i < count; i++) {
+      final ptr = outResults[i];
+      if (ptr.address == 0) {
+        results.add(null);
+      } else {
+        final len = outLens[i];
+        if (len == 0) {
+          results.add('');
+        } else {
+          final bytes = ptr.cast<Uint8>().asTypedList(len);
+          results.add(utf8.decode(bytes, allowMalformed: true));
+        }
+        malloc.free(ptr.cast());
+      }
+    }
+    malloc.free(outResults.cast());
+    malloc.free(outLens);
+    return results;
+  } finally {
+    for (var i = 0; i < count; i++) {
+      if (inputsPtr[i].address != 0) malloc.free(inputsPtr[i].cast());
+    }
+    malloc.free(inputsPtr);
+    malloc.free(lensPtr);
+    malloc.free(keyPtr);
+    malloc.free(outResultsPtr);
+    malloc.free(outLensPtr);
+  }
+}
+
+/// 批量 AES-CBC-PKCS7 解密（多线程分片并发，纯解密无 LZ 解压）
+///
+/// 输入 [b64Inputs] base64 密文列表，[key] AES 密钥（16/24/32 字节），[iv] CBC IV
+/// 流程：base64 decode → AES-CBC-PKCS7 decrypt → UTF-8 明文
+/// 返回解密结果列表（null 表示对应输入解密失败）
+///
+/// 对应 JS 侧 __nativeCrypto.aesDecryptFromBase64Batch
+/// 将 1000+ 次逐条 JS↔C 调用压缩为 1 次批量调用
+List<String?> aesDecryptCbcBatch(
+    List<String> b64Inputs, String key, String iv) {
+  if (b64Inputs.isEmpty) return [];
+  final keyBytes = utf8.encode(key);
+  if (keyBytes.length != 16 && keyBytes.length != 24 && keyBytes.length != 32) {
+    throw ArgumentError(
+        'AES key length must be 16/24/32, got ${keyBytes.length}');
+  }
+  final ivBytes = utf8.encode(iv);
+  final count = b64Inputs.length;
+  final inputsPtr = malloc<Pointer<Utf8>>(count);
+  final lensPtr = malloc<IntPtr>(count);
+  final keyPtr = malloc<Uint8>(keyBytes.length + 1);
+  final ivPtr = malloc<Uint8>(ivBytes.length + 1);
+  final outResultsPtr = malloc<Pointer<Pointer<Utf8>>>();
+  final outLensPtr = malloc<Pointer<IntPtr>>();
+  try {
+    for (var i = 0; i < count; i++) {
+      final bytes = utf8.encode(b64Inputs[i]);
+      final ptr = malloc<Uint8>(bytes.length + 1);
+      for (var j = 0; j < bytes.length; j++) ptr[j] = bytes[j];
+      ptr[bytes.length] = 0;
+      inputsPtr[i] = ptr.cast();
+      lensPtr[i] = bytes.length;
+    }
+    for (var i = 0; i < keyBytes.length; i++) keyPtr[i] = keyBytes[i];
+    keyPtr[keyBytes.length] = 0;
+    for (var i = 0; i < ivBytes.length; i++) ivPtr[i] = ivBytes[i];
+    ivPtr[ivBytes.length] = 0;
+    final rc = _aesDecryptCbcBatch(inputsPtr, lensPtr, count,
+        keyPtr.cast(), keyBytes.length, ivPtr.cast(), ivBytes.length,
+        outResultsPtr, outLensPtr);
+    if (rc != 0) return List<String?>.filled(count, null);
+    final outResults = outResultsPtr.value;
+    final outLens = outLensPtr.value;
+    final results = <String?>[];
+    for (var i = 0; i < count; i++) {
+      final ptr = outResults[i];
+      if (ptr.address == 0) {
+        results.add(null);
+      } else {
+        final len = outLens[i];
+        if (len == 0) {
+          results.add('');
+        } else {
+          final bytes = ptr.cast<Uint8>().asTypedList(len);
+          results.add(utf8.decode(bytes, allowMalformed: true));
+        }
+        malloc.free(ptr.cast());
+      }
+    }
+    malloc.free(outResults.cast());
+    malloc.free(outLens);
+    return results;
+  } finally {
+    for (var i = 0; i < count; i++) {
+      if (inputsPtr[i].address != 0) malloc.free(inputsPtr[i].cast());
+    }
+    malloc.free(inputsPtr);
+    malloc.free(lensPtr);
+    malloc.free(keyPtr);
+    malloc.free(ivPtr);
+    malloc.free(outResultsPtr);
+    malloc.free(outLensPtr);
+  }
+}
+
+/// 批量 AES-ECB-PKCS7 解密（多线程分片并发，纯解密无 LZ 解压）
+///
+/// 输入 [b64Inputs] base64 密文列表，[key] AES 密钥（16/24/32 字节）
+/// 流程：base64 decode → AES-ECB-PKCS7 decrypt → UTF-8 明文
+/// 返回解密结果列表（null 表示对应输入解密失败）
+///
+/// 对应 JS 侧 __nativeCrypto.aesDecryptFromBase64ECBBatch
+List<String?> aesDecryptEcbBatch(List<String> b64Inputs, String key) {
+  if (b64Inputs.isEmpty) return [];
+  final keyBytes = utf8.encode(key);
+  if (keyBytes.length != 16 && keyBytes.length != 24 && keyBytes.length != 32) {
+    throw ArgumentError(
+        'AES key length must be 16/24/32, got ${keyBytes.length}');
+  }
+  final count = b64Inputs.length;
+  final inputsPtr = malloc<Pointer<Utf8>>(count);
+  final lensPtr = malloc<IntPtr>(count);
+  final keyPtr = malloc<Uint8>(keyBytes.length + 1);
+  final outResultsPtr = malloc<Pointer<Pointer<Utf8>>>();
+  final outLensPtr = malloc<Pointer<IntPtr>>();
+  try {
+    for (var i = 0; i < count; i++) {
+      final bytes = utf8.encode(b64Inputs[i]);
+      final ptr = malloc<Uint8>(bytes.length + 1);
+      for (var j = 0; j < bytes.length; j++) ptr[j] = bytes[j];
+      ptr[bytes.length] = 0;
+      inputsPtr[i] = ptr.cast();
+      lensPtr[i] = bytes.length;
+    }
+    for (var i = 0; i < keyBytes.length; i++) keyPtr[i] = keyBytes[i];
+    keyPtr[keyBytes.length] = 0;
+    final rc = _aesDecryptEcbBatch(
+        inputsPtr, lensPtr, count, keyPtr.cast(), keyBytes.length,
+        outResultsPtr, outLensPtr);
     if (rc != 0) return List<String?>.filled(count, null);
     final outResults = outResultsPtr.value;
     final outLens = outLensPtr.value;

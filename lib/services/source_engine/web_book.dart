@@ -14,6 +14,9 @@ import 'charset_utils.dart';
 import 'web_proxy.dart';
 import '../native/js_advanced_service.dart';
 import '../native/js_engine.dart';
+import '../native/dio_ssl_helper_stub.dart'
+    if (dart.library.io) '../native/dio_ssl_helper_io.dart' as ssl;
+
 /// 每个规则类型只显示一次日志的集合
 final Set<String> _loggedRuleTags = {};
 
@@ -120,8 +123,12 @@ class StrResponse {
 class HttpClient {
   static final HttpClient _instance = HttpClient._internal();
   static HttpClient get instance => _instance;
-  HttpClient._internal();
-  HttpClient();
+  HttpClient._internal() {
+    ssl.configureDioSslBypass(_dio);
+  }
+  HttpClient() {
+    ssl.configureDioSslBypass(_dio);
+  }
 
   final Dio _dio = Dio(BaseOptions(
     connectTimeout: const Duration(seconds: 15),
@@ -142,6 +149,9 @@ class HttpClient {
   /// - OkHttp 原生支持 HTTP/2、连接池、自动重试
   /// - 不受 Dart VM 网络栈限制
   /// - 正确处理编码和重定向
+  ///
+  /// 对瞬时网络错误（connectionError/connectionTimeout 等）自动重试最多 2 次，
+  /// 带指数退避（500ms → 1000ms），避免因服务器瞬时不可用导致整条解析链路失败。
   Future<StrResponse> execute(
     String url, {
     String method = 'GET',
@@ -151,97 +161,163 @@ class HttpClient {
     Duration? connectTimeout,
     Duration? readTimeout,
   }) async {
-    try {
-      // Web 端受 CORS 限制，必须走代理
-      if (kIsWeb) {
-        // WebProxy.fetch() 内部会拼接代理前缀，这里只传原始 URL
-        final html = await WebProxy.instance.fetch(
-          url,
+    // URL 有效性检查：空 URL 或无 host 时提前返回，避免 DioExceptionType.unknown
+    if (url.isEmpty) {
+      debugPrint('❌ HTTP Error: URL 为空');
+      return StrResponse(url: url, body: '', statusCode: 0, headers: {});
+    }
+    final parsedUri = Uri.tryParse(url);
+    if (parsedUri == null || parsedUri.host.isEmpty) {
+      final urlPreview = url.length > 100 ? '${url.substring(0, 100)}...' : url;
+      debugPrint('❌ HTTP Error: URL 无效（无 host）: $urlPreview');
+      return StrResponse(url: url, body: '', statusCode: 0, headers: {});
+    }
+
+    // 瞬时网络错误自动重试（指数退避）
+    const maxAutoRetries = 2;
+    const retryDelays = [Duration(milliseconds: 500), Duration(seconds: 1)];
+
+    for (int attempt = 0; attempt <= maxAutoRetries; attempt++) {
+      try {
+        // Web 端受 CORS 限制，必须走代理
+        if (kIsWeb) {
+          // WebProxy.fetch() 内部会拼接代理前缀，这里只传原始 URL
+          final html = await WebProxy.instance.fetch(
+            url,
+            method: method,
+            headers: headers,
+            body: body,
+          );
+          return StrResponse(
+            url: url,
+            body: html,
+            statusCode: 200,
+            headers: {},
+          );
+        }
+
+        // 降级方案：使用 Dio
+        // 当 charset 为非 UTF-8 时，用 ResponseType.bytes 获取原始字节后手动解码，
+        // 确保 GBK/GB2312/GB18030 等编码正确转换
+        final useBytes = charset != null && charset.trim().toLowerCase() != 'utf-8' && charset.trim().toLowerCase() != 'utf8';
+        final options = Options(
           method: method,
           headers: headers,
-          body: body,
+          responseType: useBytes ? ResponseType.bytes : ResponseType.plain,
+          receiveTimeout: readTimeout,
+          sendTimeout: connectTimeout,
         );
-        return StrResponse(
-          url: url,
-          body: html,
-          statusCode: 200,
-          headers: {},
-        );
-      }
 
-      // 降级方案：使用 Dio
-      // 当 charset 为非 UTF-8 时，用 ResponseType.bytes 获取原始字节后手动解码，
-      // 确保 GBK/GB2312/GB18030 等编码正确转换
-      final useBytes = charset != null && charset.trim().toLowerCase() != 'utf-8' && charset.trim().toLowerCase() != 'utf8';
-      final options = Options(
-        method: method,
-        headers: headers,
-        responseType: useBytes ? ResponseType.bytes : ResponseType.plain,
-        receiveTimeout: readTimeout,
-        sendTimeout: connectTimeout,
-      );
+        if (useBytes) {
+          final response = await _dio.request<List<int>>(
+            url,
+            data: body,
+            options: options,
+          );
+          final rawBytes = response.data ?? <int>[];
+          final bodyStr = CharsetUtils.decodeResponse(
+            Uint8List.fromList(rawBytes), charset);
+          return StrResponse(
+            url: response.realUri.toString(),
+            body: bodyStr,
+            statusCode: response.statusCode ?? 200,
+            headers: response.headers.map.map(
+              (key, value) => MapEntry(key, value.first),
+            ),
+            raw: response,
+          );
+        }
 
-      if (useBytes) {
-        final response = await _dio.request<List<int>>(
+        final response = await _dio.request<String>(
           url,
           data: body,
           options: options,
         );
-        final rawBytes = response.data ?? <int>[];
-        final bodyStr = CharsetUtils.decodeResponse(
-          Uint8List.fromList(rawBytes), charset);
+
         return StrResponse(
           url: response.realUri.toString(),
-          body: bodyStr,
+          body: response.data ?? '',
           statusCode: response.statusCode ?? 200,
           headers: response.headers.map.map(
             (key, value) => MapEntry(key, value.first),
           ),
           raw: response,
         );
-      }
+      } on DioException catch (e) {
+        // 判断是否为可重试的瞬时网络错误
+        final isTransient = _isTransientNetworkError(e);
+        if (isTransient && attempt < maxAutoRetries) {
+          debugPrint('⚠️ 瞬时网络错误，自动重试 (${attempt + 1}/$maxAutoRetries): ${e.type} - ${e.message}');
+          await Future.delayed(retryDelays[attempt]);
+          continue;
+        }
 
-      final response = await _dio.request<String>(
-        url,
-        data: body,
-        options: options,
-      );
-
-      return StrResponse(
-        url: response.realUri.toString(),
-        body: response.data ?? '',
-        statusCode: response.statusCode ?? 200,
-        headers: response.headers.map.map(
-          (key, value) => MapEntry(key, value.first),
-        ),
-        raw: response,
-      );
-    } on DioException catch (e) {
-      debugPrint('❌ HTTP Error: ${e.type} - ${e.message}');
-      if (e.response != null) {
+        // 记录完整诊断信息：type/message/error/staqueTrace/statusCode
+        // e.message 可能为 null（unknown 类型），需用 e.error 补充底层异常信息
+        final errDetail = 'type=${e.type}, message=${e.message ?? '(null)'}, '
+            'error=${e.error}, statusCode=${e.response?.statusCode}, url=$url';
+        debugPrint('❌ HTTP Error: $errDetail');
+        if (e.response != null) {
+          return StrResponse(
+            url: url,
+            body: e.response?.data?.toString() ?? '',
+            statusCode: e.response?.statusCode ?? 500,
+            headers: {},
+          );
+        }
+        // 网络错误（连接超时、DNS解析失败等），返回空响应而不是抛异常
+        debugPrint('❌ 网络请求失败: $errDetail');
         return StrResponse(
           url: url,
-          body: e.response?.data?.toString() ?? '',
-          statusCode: e.response?.statusCode ?? 500,
+          body: '',
+          statusCode: 0,
+          headers: {},
+        );
+      } catch (e, st) {
+        debugPrint('❌ 请求异常: $e\n$st');
+        return StrResponse(
+          url: url,
+          body: '',
+          statusCode: 0,
           headers: {},
         );
       }
-      // 网络错误（连接超时、DNS解析失败等），返回空响应而不是抛异常
-      debugPrint('❌ 网络请求失败: ${e.type} - ${e.message}');
-      return StrResponse(
-        url: url,
-        body: '',
-        statusCode: 0,
-        headers: {},
-      );
-    } catch (e) {
-      debugPrint('❌ 请求异常: $e');
-      return StrResponse(
-        url: url,
-        body: '',
-        statusCode: 0,
-        headers: {},
-      );
+    }
+
+    // 理论上不会走到这里（循环内所有路径都有 return），但编译器需要兜底
+    return StrResponse(url: url, body: '', statusCode: 0, headers: {});
+  }
+
+  /// 判断 DioException 是否为可重试的瞬时网络错误
+  ///
+  /// 以下错误类型通常是瞬时的，重试有可能成功：
+  /// - connectionError: 连接被关闭/重置（"Connection closed before full header was received"）
+  /// - connectionTimeout: 连接超时
+  /// - sendTimeout: 发送超时
+  /// - receiveTimeout: 接收超时
+  ///
+  /// 以下错误类型不可重试：
+  /// - badResponse: 服务器返回了错误状态码（4xx/5xx），重试无意义
+  /// - cancel: 请求被主动取消
+  /// - unknown: 未知错误，可能是 DNS 解析失败等永久性错误
+  ///
+  /// 例外：unknown 类型中的 HandshakeException（TLS 握手失败）可能是瞬时的
+  /// （服务器不稳定/网络干扰/TLS 会话缓存问题），值得重试。
+  /// 不直接引用 dart:io 的 HandshakeException（Web 平台不可用），用类型名检查。
+  bool _isTransientNetworkError(DioException e) {
+    switch (e.type) {
+      case DioExceptionType.connectionError:
+      case DioExceptionType.connectionTimeout:
+      case DioExceptionType.sendTimeout:
+      case DioExceptionType.receiveTimeout:
+        return true;
+      case DioExceptionType.unknown:
+        if (e.error != null && e.error.toString().contains('HandshakeException')) {
+          return true;
+        }
+        return false;
+      default:
+        return false;
     }
   }
 }
@@ -281,7 +357,7 @@ class WebBook {
 
   /// 执行 JS 规则并返回字符串结果
   Future<String?> _executeJs(String jsCode,
-      {String? result, String? baseUrl, Map<String, dynamic>? extraEnv}) async {
+      {String? result, String? baseUrl, Map<String, dynamic>? extraEnv, dynamic dynamicContent}) async {
     try {
       AppLogger.instance.logJsExecute('分流', jsCode);
       // 构建完整 env（借鉴 legado 的 evalJS 绑定）
@@ -298,13 +374,19 @@ class WebBook {
         baseUrl: baseUrl ?? source.bookSourceUrl,
         sourceEngine: source.engineType,
         env: env,
+        dynamicContent: dynamicContent,
       );
       if (_loggedRuleTags.add('flow')) {
         AppLogger.instance.logJsResult('分流', jsResult);
       }
       return jsResult;
     } catch (e) {
-      AppLogger.instance.logJsError('分流', e.toString());
+      final errStr = e.toString();
+      final errPreview = errStr.length > 80 ? errStr.substring(0, 80) : errStr;
+      final codePreview = jsCode.length > 200 ? '${jsCode.substring(0, 200)}...' : jsCode;
+      AppLogger.instance.error(LogCategory.js,
+          '[分流] 捕获异常: $errPreview',
+          detail: '完整错误: $errStr\n  JS代码: $codePreview');
       return null;
     }
   }
@@ -339,9 +421,12 @@ class WebBook {
         return resolved;
       }
       // JS 返回 null/空 → 日志告警 + 返回空，不要用原始 @js: 代码当 URL
+      final resultPreview = jsResult == null
+          ? '(null)'
+          : (jsResult.isEmpty ? '(空字符串)' : (jsResult.length > 200 ? '${jsResult.substring(0, 200)}...' : jsResult));
       AppLogger.instance.warn(LogCategory.network,
           'JS规则返回空: $url',
-          detail: 'JS执行结果=null，书源规则可能有问题');
+          detail: 'JS执行结果: $resultPreview\n  lastEvalError: ${JsEngine.instance.lastEvalError ?? "(无)"}');
       return '';
     }
 
@@ -360,36 +445,12 @@ class WebBook {
 
   /// 将相对链接拼接成绝对链接
   /// 对齐 legado NetworkUtils.getAbsoluteURL
+  ///
+  /// 关键：不能用 Dart 的 `Uri.resolve`，它会对 `%` 进行二次编码，
+  /// 导致已 URL 编码的参数被破坏。详见 AnalyzeUrl.resolve 的注释。
   static String resolveUrl(String? url, String baseUrl) {
     if (url == null || url.trim().isEmpty) return '';
-    url = url.trim();
-
-    // 对齐 legado isAbsUrl(): 大小写不敏感
-    final lower = url.toLowerCase();
-    if (lower.startsWith('http://') || lower.startsWith('https://')) {
-      return url;
-    }
-    // 对齐 legado isDataUrl()
-    if (lower.startsWith('data:')) return url;
-    // 对齐 legado: javascript 前缀返回空
-    if (lower.startsWith('javascript')) return '';
-
-    // 以 // 开头，补上协议
-    if (url.startsWith('//')) {
-      final baseUri = Uri.tryParse(baseUrl);
-      return '${baseUri?.scheme ?? 'https'}:$url';
-    }
-
-    // 解析 baseUrl
-    final baseUri = Uri.tryParse(baseUrl);
-    if (baseUri == null) return url;
-
-    // 对齐 legado: 直接用 Uri.resolve 拼接（等价于 Java 的 URL(base, relative)）
-    try {
-      return baseUri.resolve(url).toString();
-    } catch (_) {
-      return url;
-    }
+    return legado_url.AnalyzeUrl.resolve(baseUrl, url.trim());
   }
 
   /// 解析可能包含 JS 的请求头
@@ -590,11 +651,6 @@ class WebBook {
       headers['Content-Type'] = 'application/x-www-form-urlencoded';
     }
 
-    debugPrint('🌐 请求: $method ${parsed.url}');
-    if (body != null) {
-      debugPrint('📦 Body: $body');
-    }
-
     var requestUrl = parsed.url;
     final urlJs = parsed.option?.js;
     if (urlJs != null && urlJs.isNotEmpty) {
@@ -670,14 +726,15 @@ class WebBook {
         await _resolveUrl(source.searchUrl!, keyword: keyword, page: page);
     final parsed =
         _parseUrlWithOption(resolvedSearchUrl, keyword: keyword, page: page);
-    AppLogger.instance.info(LogCategory.network, '搜索URL: ${parsed.url}');
+    // 调试面板 1:1 显示 JS 输出的原始内容（含 ,{headers} 等选项），不显示解析后的 parsed.url
+    AppLogger.instance.info(LogCategory.network, '搜索URL: $resolvedSearchUrl');
 
     try {
       final response = await _executeRequest(parsed, keyword: keyword);
       final html = response.body;
 
       lastSearchHtml = html;
-      lastSearchUrl = parsed.url;  // 保存搜索链接
+      lastSearchUrl = resolvedSearchUrl;  // 保存 JS 输出的原始搜索链接
 
       AppLogger.instance
           .info(LogCategory.network, '搜索响应: ${html.length} chars');
@@ -794,7 +851,7 @@ class WebBook {
         final diagInfo = '元素数:${bookElements.length}, 但所有元素name为空!\n'
             'name规则: ${searchRule.name ?? ""}\n'
             '第一个元素类型: ${bookElements.first.runtimeType}\n'
-            '第一个元素HTML: ${bookElements.first is dom.Element ? (bookElements.first as dom.Element).outerHtml : "$bookElements.first"}';
+            '第一个元素HTML: ${bookElements.first is dom.Element ? (bookElements.first as dom.Element).outerHtml : "${bookElements.first}"}';
         AppLogger.instance.warn(LogCategory.parse, '搜索结果诊断', detail: diagInfo);
         debugPrint('⚠️ $diagInfo');
       }
@@ -939,10 +996,12 @@ class WebBook {
         ..setSourceInfo(_sourceToMap(source));
       // 借鉴 legado 的 BookInfo.kt：init 规则用 getElement() 获取元素对象
       // legado: analyzeRule.setContent(analyzeRule.getElement(infoRule.init))
+      // [修复 Bug #1] 改为异步 getElementsAsync 取首元素
+      // 之前用同步 getElement，内部走 executeSync 不预缓存桥接调用，init 规则含 java.ajax 等异步桥接必失败
       if (bookInfoRule.init != null && bookInfoRule.init!.isNotEmpty) {
-        final initElement = analyzer.getElement(bookInfoRule.init!);
-        if (initElement != null) {
-          analyzer.setContent(initElement);
+        final initElements = await analyzer.getElementsAsync(bookInfoRule.init!);
+        if (initElements.isNotEmpty) {
+          analyzer.setContent(initElements.first);
           if (_loggedRuleTags.add('详情_init')) {
             AppLogger.instance.logJsResult('init', '元素定位成功，内容已替换');
           }
@@ -953,15 +1012,17 @@ class WebBook {
       lastBookInfoHtml = html;
 
       // [性能] 详情页 8 字段并发提取，替代逐个串行 await
+      // [修复 Bug #2] coverUrl/tocUrl 加 isUrl:true，让引擎内部取第一行并拼接绝对路径
+      // 之前未传 isUrl，多行 URL 会让 resolveUrl 内部 Uri.resolve 抛异常或返回错误 URL
       final detailFields = await Future.wait([
         analyzer.getStringAsync(bookInfoRule.name ?? ''),
         analyzer.getStringAsync(bookInfoRule.author ?? ''),
-        analyzer.getStringAsync(bookInfoRule.coverUrl ?? ''),
+        analyzer.getStringAsync(bookInfoRule.coverUrl ?? '', isUrl: true),
         analyzer.getStringAsync(bookInfoRule.intro ?? ''),
         analyzer.getStringAsync(bookInfoRule.kind ?? ''),
         analyzer.getStringAsync(bookInfoRule.lastChapter ?? ''),
         analyzer.getStringAsync(bookInfoRule.wordCount ?? ''),
-        analyzer.getStringAsync(bookInfoRule.tocUrl ?? ''),
+        analyzer.getStringAsync(bookInfoRule.tocUrl ?? '', isUrl: true),
       ]);
       final name = detailFields[0];
       final author = detailFields[1];
@@ -1172,12 +1233,15 @@ class WebBook {
         for (int i = 0; i < list.length; i += batchSize) {
           final batchEnd = (i + batchSize).clamp(0, list.length);
           final indices = List.generate(batchEnd - i, (j) => i + j);
+          // [修复 Bug #18] 用 dynamicContent 传 Map 而非 result 传 JSON 字符串
+          // 之前 result=jsonEncode({...})，processJsRule 会把 JSON 字符串再 jsonEncode 一次，
+          // JS 规则里 result 变成带引号的字符串而非对象，result.title 返回 undefined，formatJs 失效
           final batchResults = await Future.wait(
             indices.map((idx) => _executeJs(tocRule.formatJs!,
-              result: jsonEncode({
+              dynamicContent: {
                 'index': idx + 1,
                 'title': list[idx].title,
-              }),
+              },
               baseUrl: tocUrl)),
           );
           for (int j = 0; j < indices.length; j++) {
@@ -1360,7 +1424,9 @@ class WebBook {
         final lastChapter = hasLastChapter ? (fields[fi++] ?? '') : '';
         final wordCount = hasWordCount ? (fields[fi++] ?? '') : '';
 
-        if (name.isNotEmpty) {
+        // [修复 Bug #4] 书名判空加 trim，避免空白书名条目混入搜索结果
+        // _formatBookName 内部会 trim，但判空在格式化之前，需先 trim 判空
+        if (name.trim().isNotEmpty) {
           name = _formatBookName(name);
           if (intro.isNotEmpty) intro = _formatIntro(intro);
           return <String, dynamic>{
@@ -1488,10 +1554,43 @@ class WebBook {
       batchFutures.add(isVipJs ? batchAnalyzer.batchApplyJsAsync(elements, _stripJsTag(vipRule)) : null);
       batchFutures.add(isPayJs ? batchAnalyzer.batchApplyJsAsync(elements, _stripJsTag(payRule)) : null);
 
-      // 并发发射所有 JS batch（非 JS 字段为 null，不参与 await）
-      final batchResults = await Future.wait(
-        batchFutures.map((f) => f ?? Future.value(null)),
+      // [批量提取路由器] 非 JS 字段并发发射 batchExtractAsync
+      // 路由器自动判断规则类型：
+      //   - 纯 CSS/Jsoup → batchCssExtractAsync（1 次规则解析 + N 次轻量调用）
+      //   - CSS+JS 两步混合（selector@js:code）→ batchCssThenJsInternal（1 次 batchCss + 1 次 batchEvaluate）
+      //   - 含变量/模板/多步复杂 → 返回 null 降级到逐元素 getStringAsync
+      // 之前：N 个元素 × M 非 JS 字段 = N×M 次 getStringAsync（每次创建 AnalyzeRule + JsTracer.clear + _applyVariablesAsync）
+      // 现在：M 字段 = M 次 batchExtractAsync，每字段规则只解析一次，跳过重路径
+      final batchCssFutures = <Future<List<String?>?>>[
+        !isNameJs && hasName
+            ? batchAnalyzer.batchExtractAsync(elements, nameRule)
+            : Future.value(null),
+        !isUrlJs && hasUrl
+            ? batchAnalyzer.batchExtractAsync(elements, urlRule, isUrl: true)
+            : Future.value(null),
+        !isVolumeJs && hasVolume
+            ? batchAnalyzer.batchExtractAsync(elements, volumeRule)
+            : Future.value(null),
+        !isTimeJs && hasTime
+            ? batchAnalyzer.batchExtractAsync(elements, timeRule)
+            : Future.value(null),
+        !isVipJs && hasVip
+            ? batchAnalyzer.batchExtractAsync(elements, vipRule)
+            : Future.value(null),
+        !isPayJs && hasPay
+            ? batchAnalyzer.batchExtractAsync(elements, payRule)
+            : Future.value(null),
+      ];
+
+      // [修复 Bug #16] JS batch 和 CSS batch 之间无依赖，并发启动后串行 await
+      // 两个 Future 已同时启动，第一个 await 时第二个已在跑，无额外延迟
+      // 之前两个串行 await，1000+ 章场景多 1 轮 FFI evaluate 延迟
+      final batchResultsFuture = Future.wait(
+        batchFutures.map((f) => f ?? Future.value(<String?>[])),
       );
+      final batchCssResultsFuture = Future.wait(batchCssFutures);
+      final batchResults = await batchResultsFuture;
+      final batchCssResults = await batchCssResultsFuture;
 
       final batchNames = batchResults[0];
       final batchUrls = batchResults[1];
@@ -1500,59 +1599,115 @@ class WebBook {
       final batchVips = batchResults[4];
       final batchPays = batchResults[5];
 
+      // CSS batch 可能返回 null（规则含变量/JS 需降级，或全 null 失败）
+      final batchCssNames = batchCssResults[0];
+      final batchCssUrls = batchCssResults[1];
+      final batchCssVolumes = batchCssResults[2];
+      final batchCssTimes = batchCssResults[3];
+      final batchCssVips = batchCssResults[4];
+      final batchCssPays = batchCssResults[5];
+
+      // [修复] batch 有效性检测 — 对齐搜索列表的可靠性
+      // JS batch：batchApplyJsAsync 返回 List<String?>（非 null），但可能全 null（JS 执行失败），
+      //   全 null 时必须降级到逐元素 getStringAsync，否则 title 全空 → 列表 0
+      // CSS batch：batchCssXxx != null 表示 batch 成功（已在 analyze_rule.dart 修复全 null 返回 null）
+      final useJsName = isNameJs &&
+          batchNames.any((e) => e != null && e.isNotEmpty);
+      final useJsUrl = isUrlJs &&
+          batchUrls.any((e) => e != null && e.isNotEmpty);
+      final useJsVolume = isVolumeJs &&
+          batchVolumes.any((e) => e != null && e.isNotEmpty);
+      final useJsTime = isTimeJs &&
+          batchTimes.any((e) => e != null && e.isNotEmpty);
+      final useJsVip = isVipJs &&
+          batchVips.any((e) => e != null && e.isNotEmpty);
+      final useJsPay = isPayJs &&
+          batchPays.any((e) => e != null && e.isNotEmpty);
+
+      final useCssName = !isNameJs && batchCssNames != null;
+      final useCssUrl = !isUrlJs && batchCssUrls != null;
+      final useCssVolume = !isVolumeJs && batchCssVolumes != null;
+      final useCssTime = !isTimeJs && batchCssTimes != null;
+      final useCssVip = !isVipJs && batchCssVips != null;
+      final useCssPay = !isPayJs && batchCssPays != null;
+
       final allResults = await Future.wait(
         List.generate(elements.length, (idx) async {
-          final item = elements[idx];
-          final itemAnalyzer = AnalyzeRule()
-            ..setContent(item, baseUrl: baseUrl)
-            ..setRedirectUrl(redirectUrl)
-            ..setSourceEngine(source.engineType)
-            ..setSourceInfo(sourceMap)
-            ..setBookInfo(bookMap);
+          // [修复] needItemAnalyzer 判断 — JS batch 全 null 也要降级
+          // 三路取值：JS batch 命中 / CSS batch 命中 / 逐元素降级
+          // 仅当至少一个字段需逐元素降级时才创建 itemAnalyzer（避免 1000+ 无谓对象创建）
+          final needItemAnalyzer = (hasName && !useJsName && !useCssName) ||
+              (hasUrl && !useJsUrl && !useCssUrl) ||
+              (hasVolume && !useJsVolume && !useCssVolume) ||
+              (hasTime && !useJsTime && !useCssTime) ||
+              (hasVip && !useJsVip && !useCssVip) ||
+              (hasPay && !useJsPay && !useCssPay);
 
-          // JS 规则从预计算结果数组取值，非 JS 规则走逐元素异步
+          final itemAnalyzer = needItemAnalyzer
+              ? (AnalyzeRule()
+                  ..setContent(elements[idx], baseUrl: baseUrl)
+                  ..setRedirectUrl(redirectUrl)
+                  ..setSourceEngine(source.engineType)
+                  ..setSourceInfo(sourceMap)
+                  ..setBookInfo(bookMap))
+              : null;
+
+          // 字段取值：JS batch 命中 / CSS batch 命中 / 逐元素降级
+          // 逐元素降级兼容 JS 规则（getStringAsync 内部走 processJsRule 处理 @js: 前缀）
+          // 用 batchCssXxx != null 让 Dart 自动 promote 类型，避免 ! 多余断言 warning
           final futures = <Future<String?>>[];
           if (hasName) {
-            if (isNameJs) {
-              // 从批量结果取值，零 FFI 调用
-              futures.add(Future.value(batchNames![idx]));
+            if (useJsName) {
+              futures.add(Future.value(batchNames[idx]));
+            } else if (batchCssNames != null) {
+              futures.add(Future.value(batchCssNames[idx]));
             } else {
-              futures.add(itemAnalyzer.getStringAsync(nameRule).catchError((_) => null));
+              futures.add(itemAnalyzer!.getStringAsync(nameRule).catchError((_) => null));
             }
           }
           if (hasUrl) {
-            if (isUrlJs) {
-              futures.add(Future.value(batchUrls![idx]));
+            if (useJsUrl) {
+              futures.add(Future.value(batchUrls[idx]));
+            } else if (batchCssUrls != null) {
+              futures.add(Future.value(batchCssUrls[idx]));
             } else {
-              futures.add(itemAnalyzer.getStringAsync(urlRule).catchError((_) => null));
+              futures.add(itemAnalyzer!.getStringAsync(urlRule, isUrl: true).catchError((_) => null));
             }
           }
           if (hasVolume) {
-            if (isVolumeJs) {
-              futures.add(Future.value(batchVolumes![idx]));
+            if (useJsVolume) {
+              futures.add(Future.value(batchVolumes[idx]));
+            } else if (batchCssVolumes != null) {
+              futures.add(Future.value(batchCssVolumes[idx]));
             } else {
-              futures.add(itemAnalyzer.getStringAsync(volumeRule).catchError((_) => null));
+              futures.add(itemAnalyzer!.getStringAsync(volumeRule).catchError((_) => null));
             }
           }
           if (hasTime) {
-            if (isTimeJs) {
-              futures.add(Future.value(batchTimes![idx]));
+            if (useJsTime) {
+              futures.add(Future.value(batchTimes[idx]));
+            } else if (batchCssTimes != null) {
+              futures.add(Future.value(batchCssTimes[idx]));
             } else {
-              futures.add(itemAnalyzer.getStringAsync(timeRule).catchError((_) => null));
+              futures.add(itemAnalyzer!.getStringAsync(timeRule).catchError((_) => null));
             }
           }
           if (hasVip) {
-            if (isVipJs) {
-              futures.add(Future.value(batchVips![idx]));
+            if (useJsVip) {
+              futures.add(Future.value(batchVips[idx]));
+            } else if (batchCssVips != null) {
+              futures.add(Future.value(batchCssVips[idx]));
             } else {
-              futures.add(itemAnalyzer.getStringAsync(vipRule).catchError((_) => null));
+              futures.add(itemAnalyzer!.getStringAsync(vipRule).catchError((_) => null));
             }
           }
           if (hasPay) {
-            if (isPayJs) {
-              futures.add(Future.value(batchPays![idx]));
+            if (useJsPay) {
+              futures.add(Future.value(batchPays[idx]));
+            } else if (batchCssPays != null) {
+              futures.add(Future.value(batchCssPays[idx]));
             } else {
-              futures.add(itemAnalyzer.getStringAsync(payRule).catchError((_) => null));
+              futures.add(itemAnalyzer!.getStringAsync(payRule).catchError((_) => null));
             }
           }
 
@@ -1573,12 +1728,13 @@ class WebBook {
           }
 
           // legado: if (bookChapter.title.isNotEmpty)
-          final finalTitle = title;
-          if (finalTitle.isNotEmpty) {
+          // [修复 Bug #3] 标题判空加 trim，避免纯空白标题章节混入目录
+          final trimmedTitle = title.trim();
+          if (trimmedTitle.isNotEmpty) {
             return Chapter(
               id: '${baseUrl}_$idx',
               bookId: book?.bookUrl ?? baseUrl,
-              title: finalTitle,
+              title: trimmedTitle,
               index: idx,
               url: resolvedUrl,
               isVolume: isVolume,
@@ -2338,18 +2494,9 @@ class JsoupElement {
   String? absUrl([String attrName = 'href']) {
     final value = _element.attributes[attrName];
     if (value == null) return null;
-
-    // 处理相对 URL
-    if (value.startsWith('http://') || value.startsWith('https://')) {
-      return value;
-    }
-
-    if (baseUrl != null) {
-      final base = Uri.parse(baseUrl!);
-      return base.resolve(value).toString();
-    }
-
-    return value;
+    if (baseUrl == null) return value;
+    // 不能用 Uri.resolve，它会对 % 进行二次编码，破坏已编码的 URL 参数
+    return WebBook.resolveUrl(value, baseUrl!);
   }
 
   /// 选择子元素（支持多步骤规则）
@@ -2593,19 +2740,9 @@ class JsoupElement {
   String _getAbsUrl(dom.Element element, String attrName) {
     final value = element.attributes[attrName];
     if (value == null) return '';
-
-    if (value.startsWith('http://') || value.startsWith('https://')) {
-      return value;
-    }
-
-    if (baseUrl != null) {
-      try {
-        final base = Uri.parse(baseUrl!);
-        return base.resolve(value).toString();
-      } catch (_) {}
-    }
-
-    return value;
+    if (baseUrl == null) return value;
+    // 不能用 Uri.resolve，它会对 % 进行二次编码，破坏已编码的 URL 参数
+    return WebBook.resolveUrl(value, baseUrl!);
   }
 
   /// 转换为 Element

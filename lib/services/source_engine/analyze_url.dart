@@ -120,11 +120,17 @@ class AnalyzeUrl {
     // 支持 @js:xxx 和 <js>xxx</js> 格式
     urlPart = _analyzeJs(urlPart, keyword: keyword, page: page);
 
-    // 2. 解析 URL 和选项
+    // [修复 URL 截断 Bug] 2. 替换变量（包括 {{js表达式}}）——必须在分离 URL/选项之前
+    // 对齐 legado initUrl 顺序：analyzeJs → replaceKeyPageJs → analyzeUrl
+    // 之前顺序反了：先分离再替换，导致 JSON 配置含 {{...}} 时 jsonDecode 失败
+    // → 选项丢失、URL 被拦腰截断
+    urlPart = replaceVariables(urlPart, keyword: keyword, page: page);
+
+    // 3. 解析 URL 和选项
     String? extractedUrl;
     UrlOption? option;
 
-    // 2a. 尝试纯 JSON 对象格式：{url: "/path", body: "...", method: "POST"}
+    // 3a. 尝试纯 JSON 对象格式：{url: "/path", body: "...", method: "POST"}
     if (urlPart.startsWith('{')) {
       try {
         final decoded = jsonDecode(urlPart);
@@ -140,7 +146,7 @@ class AnalyzeUrl {
       }
     }
 
-    // 2b. 原始 legado 格式：URL,{options}
+    // 3b. 原始 legado 格式：URL,{options}
     if (extractedUrl == null && option == null) {
       final optionMatch = _optionStart.firstMatch(urlPart);
       extractedUrl = optionMatch == null
@@ -148,10 +154,6 @@ class AnalyzeUrl {
           : urlPart.substring(0, optionMatch.start).trim();
 
       if (optionMatch != null) {
-        // 注意：必须用 urlPart（JS 执行后的结果），不能用 ruleUrl
-        // 因为 optionMatch 是在 urlPart 上匹配的，位置对应 urlPart 而非 ruleUrl
-        // 之前用 ruleUrl.substring(optionMatch.end) 会导致位置错位，
-        // 把 JS 代码尾部的字符（如 ';）混入选项文本，引发 FormatException
         final optionText = urlPart.substring(optionMatch.end).trim();
         try {
           final decoded = jsonDecode(optionText);
@@ -166,10 +168,6 @@ class AnalyzeUrl {
     }
 
     urlPart = extractedUrl ?? urlPart;
-
-    // 3. 替换变量（包括 {{js表达式}}）
-    urlPart = replaceVariables(urlPart, keyword: keyword, page: page);
-    option = option?.replaceVariables(keyword: keyword, page: page);
 
     // 4. 合并外部 body
     if (body != null && body.isNotEmpty) {
@@ -301,6 +299,13 @@ class AnalyzeUrl {
         return '{{$expr}}'; // 保留给后续替换
       }
 
+      // [修复] JSONPath 表达式：AnalyzeUrl 无 content 上下文，保留原样不替换
+      // 交给上游 AnalyzeRule._replaceTemplatesAsync 在有 content 的上下文中处理
+      // 之前直接当 JS 执行 → 语法错误 → 返回空字符串 → 破坏 JSON 结构
+      if (expr.startsWith(r'$.') || expr.startsWith(r'$[')) {
+        return '{{$expr}}';
+      }
+
       // 执行 JS 表达式
       try {
         var code = expr;
@@ -416,12 +421,50 @@ class AnalyzeUrl {
     return url;
   }
 
+  /// 拼接相对 URL 为绝对 URL（对齐 legado NetworkUtils.getAbsoluteURL）
+  ///
+  /// 关键：不能用 Dart 的 `Uri.resolve`，因为它遵循 RFC 3986 会对 `%` 进行二次编码，
+  /// 导致已 URL 编码的参数（如 `b=T%3mrlpPFa`）被错误转成 `b=T%253mrlpPFa`，
+  /// 服务器解码后得到 `T%3mrlpPFa` 而非原始值，解密失败。
+  /// legado 用 `java.net.URL(URL, String)` 构造函数，不会执行任何百分号编码。
+  /// 这里手动实现等价逻辑，保留原始字符不二次编码。
   static String resolve(String? baseUrl, String value) {
     if (value.isEmpty || baseUrl == null || baseUrl.isEmpty) return value;
-    try {
-      return Uri.parse(baseUrl).resolve(value).toString();
-    } catch (_) {
-      return value;
+
+    final trimmed = value.trim();
+    final lower = trimmed.toLowerCase();
+
+    // 已是绝对 URL，直接返回
+    if (lower.startsWith('http://') || lower.startsWith('https://')) {
+      return trimmed;
     }
+    // data: URL 直接返回
+    if (lower.startsWith('data:')) return trimmed;
+    // javascript: 前缀返回空（对齐 legado）
+    if (lower.startsWith('javascript')) return '';
+
+    // 解析 baseUrl
+    final baseUri = Uri.tryParse(baseUrl);
+    if (baseUri == null) return trimmed;
+
+    final scheme = baseUri.scheme;
+    final host = baseUri.host;
+    final port = baseUri.hasPort ? ':${baseUri.port}' : '';
+
+    // 以 // 开头，补上协议
+    if (trimmed.startsWith('//')) {
+      return '$scheme:$trimmed';
+    }
+
+    // 以 / 开头（绝对路径），拼接 scheme://host:port + path
+    if (trimmed.startsWith('/')) {
+      return '$scheme://$host$port$trimmed';
+    }
+
+    // 相对路径，拼接 baseUrl 的父目录
+    final basePath = baseUri.path;
+    final lastSlash = basePath.lastIndexOf('/');
+    final dir = lastSlash >= 0 ? basePath.substring(0, lastSlash + 1) : '/';
+    return '$scheme://$host$port$dir$trimmed';
   }
 }

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:ui';
 import 'package:flutter/foundation.dart';
@@ -17,6 +18,7 @@ import '../../routes/app_routes.dart';
 import '../../services/storage_service.dart';
 import '../../services/book_data_provider.dart';
 import '../../services/chapter_cache_service.dart';
+import '../../services/image_decode_provider.dart';
 import '../../widgets/change_source_sheet.dart';
 import '../../services/cover_config_service.dart';
 import '../../widgets/book_edit_sheet.dart';
@@ -42,7 +44,6 @@ class _DetailPageState extends State<DetailPage> {
   Book? _book;
   List<Chapter> _chapters = [];
   int _totalWordCount = 0;
-  BookDataProvider? _dataProvider;
   bool _showReadRecord = true;
   BookSource? _bookSource;
 
@@ -71,9 +72,12 @@ class _DetailPageState extends State<DetailPage> {
 
     if (book != null) {
       try {
-        _dataProvider = createBookDataProvider(book);
+        // 局部变量捕获：避免 await 期间 _dataProvider 被修改导致不一致
+        final dataProvider = createBookDataProvider(book);
         if (book.originType == BookOriginType.online) {
-          final detailedBook = await _dataProvider!.getBookInfo(book.bookUrl);
+          final detailedBook = await dataProvider.getBookInfo(book.bookUrl);
+          // await 后页面可能已退出
+          if (!mounted) return;
           if (detailedBook != null) {
             book = mergeBookMetadata(detailedBook, book);
           }
@@ -92,7 +96,8 @@ class _DetailPageState extends State<DetailPage> {
             }
           }
         }
-        chapters = await _dataProvider!.getChapterList(book);
+        chapters = await dataProvider.getChapterList(book);
+        if (!mounted) return;
         if (book.totalChapterNum == null && chapters.isNotEmpty) {
           book = book.copyWith(totalChapterNum: chapters.length);
         }
@@ -128,29 +133,37 @@ class _DetailPageState extends State<DetailPage> {
       _isRefreshing = true;
     });
 
-    if (_book != null) {
+    // 局部变量捕获：避免 await 期间 _book 被 setState 置 null 导致野指针
+    final initialBook = _book;
+    if (initialBook != null) {
       try {
-        _dataProvider = createBookDataProvider(_book!);
-        if (_book!.originType == BookOriginType.online) {
-          final detailedBook = await _dataProvider!.getBookInfo(_book!.bookUrl);
+        var book = initialBook;
+        final dataProvider = createBookDataProvider(book);
+        if (book.originType == BookOriginType.online) {
+          final detailedBook = await dataProvider.getBookInfo(book.bookUrl);
+          // await 后页面可能已退出
+          if (!mounted) return;
           if (detailedBook != null) {
-            _book = mergeBookMetadata(detailedBook, _book!);
+            book = mergeBookMetadata(detailedBook, book);
           }
           // 参照 Legado：根据书源类型刷新 mediaType
-          if (_book!.sourceUrl != null) {
+          if (book.sourceUrl != null) {
             final sourceData = StorageService.instance.getBookSource(
-              _book!.sourceUrl!,
+              book.sourceUrl!,
             );
             if (sourceData != null) {
               final source = BookSource.fromJson(sourceData);
               final sourceMediaType = source.bookSourceType.mediaType;
-              if (_book!.mediaType != sourceMediaType) {
-                _book = _book!.copyWith(mediaType: sourceMediaType);
+              if (book.mediaType != sourceMediaType) {
+                book = book.copyWith(mediaType: sourceMediaType);
               }
             }
           }
         }
-        _chapters = await _dataProvider!.getChapterList(_book!);
+        final chapters = await dataProvider.getChapterList(book);
+        if (!mounted) return;
+        _book = book;
+        _chapters = chapters;
       } catch (_) {
         // Keep the currently displayed metadata if refreshing fails.
       }
@@ -198,16 +211,7 @@ class _DetailPageState extends State<DetailPage> {
           if (!hasCustomBackground &&
               _book!.coverUrl.isNotEmpty &&
               !CoverConfigService.instance.useDefaultCover)
-            Positioned.fill(
-              child: CachedNetworkImage(
-                imageUrl: _book!.coverUrl,
-                fit: BoxFit.cover,
-                placeholder: (_, __) =>
-                    Container(color: Theme.of(context).colorScheme.primary),
-                errorWidget: (_, __, ___) =>
-                    Container(color: Theme.of(context).colorScheme.primary),
-              ),
-            ),
+            Positioned.fill(child: _buildBackgroundCoverImage()),
           Positioned.fill(
             child: RepaintBoundary(
               child: BackdropFilter(
@@ -251,6 +255,33 @@ class _DetailPageState extends State<DetailPage> {
       File(path),
       fit: BoxFit.cover,
       errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+    );
+  }
+
+  /// 背景封面图（书源配置了 coverDecodeJs 时走解密链路）
+  Widget _buildBackgroundCoverImage() {
+    final primaryColor = Theme.of(context).colorScheme.primary;
+    final url = _book!.coverUrl;
+    if (DecodedImageProvider.needsDecode(_bookSource, true)) {
+      return Image(
+        image: DecodedImageProvider(
+          url: url,
+          headers: _buildCoverHeaders(),
+          source: _bookSource!,
+          isCover: true,
+          book: _book,
+        ),
+        fit: BoxFit.cover,
+        gaplessPlayback: true,
+        errorBuilder: (_, __, ___) => Container(color: primaryColor),
+      );
+    }
+    return CachedNetworkImage(
+      imageUrl: url,
+      httpHeaders: _buildCoverHeaders(),
+      fit: BoxFit.cover,
+      placeholder: (_, __) => Container(color: primaryColor),
+      errorWidget: (_, __, ___) => Container(color: primaryColor),
     );
   }
 
@@ -595,23 +626,36 @@ class _DetailPageState extends State<DetailPage> {
     }
 
     if (coverUrl.isNotEmpty) {
+      final placeholder = coverConfig.buildDefaultCoverPlaceholder(
+        bookName: _book!.displayName,
+        bookAuthor: _book!.displayAuthor,
+        isDark: isDark,
+      );
+      // 书源配置了 coverDecodeJs 时走解密链路（借鉴 Legado ImageUtils.decode）
+      if (DecodedImageProvider.needsDecode(_bookSource, true)) {
+        return Image(
+          image: DecodedImageProvider(
+            url: coverUrl,
+            headers: _buildCoverHeaders(),
+            source: _bookSource!,
+            isCover: true,
+            book: _book,
+          ),
+          fit: BoxFit.cover,
+          gaplessPlayback: true,
+          errorBuilder: (_, __, ___) => placeholder,
+        );
+      }
       final memCacheWidth = coverConfig.loadCoverHighQuality ? null : 240;
       final maxWidthDiskCache = coverConfig.loadCoverHighQuality ? null : 320;
       return CachedNetworkImage(
         imageUrl: coverUrl,
+        httpHeaders: _buildCoverHeaders(),
         fit: BoxFit.cover,
         memCacheWidth: memCacheWidth,
         maxWidthDiskCache: maxWidthDiskCache,
-        placeholder: (_, __) => coverConfig.buildDefaultCoverPlaceholder(
-          bookName: _book!.displayName,
-          bookAuthor: _book!.displayAuthor,
-          isDark: isDark,
-        ),
-        errorWidget: (_, __, ___) => coverConfig.buildDefaultCoverPlaceholder(
-          bookName: _book!.displayName,
-          bookAuthor: _book!.displayAuthor,
-          isDark: isDark,
-        ),
+        placeholder: (_, __) => placeholder,
+        errorWidget: (_, __, ___) => placeholder,
       );
     }
 
@@ -620,6 +664,71 @@ class _DetailPageState extends State<DetailPage> {
       bookAuthor: _book!.displayAuthor,
       isDark: isDark,
     );
+  }
+
+  /// 根据书源构建封面图请求头
+  ///
+  /// 很多书源网站有防盗链机制，加载封面图时必须带 Referer 和 User-Agent，
+  /// 否则返回 403 Forbidden。这里从书源的 header 字段提取请求头，
+  /// 并自动补充 Referer（书源 URL）和默认 User-Agent。
+  Map<String, String> _buildCoverHeaders() {
+    final headers = <String, String>{};
+    final source = _bookSource;
+    if (source == null) return headers;
+
+    // 解析书源的 header 字段（可能是 JSON 格式或 Key: Value 按行格式）
+    final headerStr = source.header;
+    if (headerStr != null && headerStr.isNotEmpty) {
+      try {
+        final decoded = json.decode(headerStr);
+        if (decoded is Map) {
+          decoded.forEach((key, value) {
+            final val = value.toString();
+            if (val.isNotEmpty) {
+              headers[key.toString()] = val;
+            }
+          });
+        }
+      } catch (_) {
+        // 非 JSON 格式，按行解析 Key: Value
+        for (final line in headerStr.split('\n')) {
+          final parts = line.split(':');
+          if (parts.length >= 2) {
+            final key = parts[0].trim();
+            final val = parts.sublist(1).join(':').trim();
+            if (key.isNotEmpty && val.isNotEmpty) {
+              headers[key] = val;
+            }
+          }
+        }
+      }
+    }
+
+    // 补充 Referer（使用书源 URL 作为来源页，绕过防盗链）
+    final sourceUrl = source.bookSourceUrl;
+    if (sourceUrl.isNotEmpty) {
+      headers.putIfAbsent('Referer', () => _extractBaseUrl(sourceUrl));
+    }
+
+    // 补充默认 User-Agent
+    headers.putIfAbsent(
+      'User-Agent',
+      () => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+          '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    );
+
+    return headers;
+  }
+
+  /// 从完整 URL 中提取根 URL（scheme://host），用作 Referer
+  String _extractBaseUrl(String url) {
+    try {
+      final uri = Uri.parse(url);
+      if (uri.hasScheme && uri.host.isNotEmpty) {
+        return '${uri.scheme}://${uri.host}';
+      }
+    } catch (_) {}
+    return url;
   }
 
   Widget _buildAppBar() {
@@ -841,17 +950,19 @@ class _DetailPageState extends State<DetailPage> {
   }
 
   void _showChangeSourceDialog() {
-    if (_book == null) return;
+    // 局部变量捕获：避免弹窗显示期间 _book 被置 null
+    final book = _book;
+    if (book == null) return;
 
     ChangeSourceSheet.show(
       context: context,
-      bookName: _book!.displayName,
-      bookAuthor: _book!.displayAuthor,
-      currentSourceUrl: _book!.sourceUrl,
-      currentSourceName: _book!.sourceName,
+      bookName: book.displayName,
+      bookAuthor: book.displayAuthor,
+      currentSourceUrl: book.sourceUrl,
+      currentSourceName: book.sourceName,
       onSourceSelected: (sourceUrl, sourceName, bookData) async {
-        // 切换书源
-        if (_book == null) return;
+        // 回调可能在弹窗显示后任意时刻触发，使用局部变量避免 _book 野指针
+        if (!mounted) return;
 
         try {
           // 显示加载提示
@@ -859,21 +970,21 @@ class _DetailPageState extends State<DetailPage> {
             context,
           ).showSnackBar(const SnackBar(content: Text('正在获取目录...')));
 
-          // 创建新的书籍对象
-          final newBook = _book!.copyWith(
+          // 创建新的书籍对象（用局部 book 而非 _book!）
+          final newBook = book.copyWith(
             sourceUrl: sourceUrl,
             sourceName: sourceName,
-            bookUrl: bookData['bookUrl'] ?? _book!.bookUrl,
-            name: bookData['name'] ?? _book!.name,
-            author: bookData['author'] ?? _book!.author,
-            coverUrl: bookData['coverUrl'] ?? _book!.coverUrl,
-            intro: bookData['intro'] ?? _book!.intro,
-            lastChapter: bookData['lastChapter'] ?? _book!.lastChapter,
+            bookUrl: bookData['bookUrl'] ?? book.bookUrl,
+            name: bookData['name'] ?? book.name,
+            author: bookData['author'] ?? book.author,
+            coverUrl: bookData['coverUrl'] ?? book.coverUrl,
+            intro: bookData['intro'] ?? book.intro,
+            lastChapter: bookData['lastChapter'] ?? book.lastChapter,
           );
 
           // 获取新书源的目录
-          _dataProvider = createBookDataProvider(newBook);
-          final chapters = await _dataProvider!.getChapterList(newBook);
+          final dataProvider = createBookDataProvider(newBook);
+          final chapters = await dataProvider.getChapterList(newBook);
 
           if (!mounted) return;
 
@@ -914,10 +1025,13 @@ class _DetailPageState extends State<DetailPage> {
   }
 
   void _showChangeGroupDialog() {
+    // 局部变量捕获：避免 dialog 显示期间 _book 被置 null
+    final book = _book;
+    if (book == null) return;
     final bookshelfProvider = context.read<BookshelfProvider>();
     final groups = bookshelfProvider.getAllGroups();
     final defaultGroups = ['全部', '本地', '小说', '音频', '漫画', '视频'];
-    String selectedGroup = _book!.groupId ?? '全部';
+    String selectedGroup = book.groupId ?? '全部';
 
     showDialog(
       context: context,
@@ -1026,11 +1140,11 @@ class _DetailPageState extends State<DetailPage> {
                     TextButton(
                       onPressed: () async {
                         Navigator.pop(context);
-                        // 更新分组
+                        // 更新分组（用局部 book 避免 _book! 野指针）
                         final newGroupId = selectedGroup == '全部'
                             ? null
                             : selectedGroup;
-                        final updatedBook = _book!.copyWith(
+                        final updatedBook = book.copyWith(
                           groupId: newGroupId,
                         );
                         await StorageService.instance.addToBookshelf(
@@ -1316,15 +1430,17 @@ class _DetailPageState extends State<DetailPage> {
   }
 
   Future<void> _toggleBookshelf() async {
-    if (_book == null) return;
+    // 局部变量捕获：避免 await showDialog 期间 _book 被置 null
+    final book = _book;
+    if (book == null) return;
     final provider = context.read<BookshelfProvider>();
     if (_isInBookshelf) {
-      if (_book!.deleteAlert ?? false) {
+      if (book.deleteAlert ?? false) {
         final confirmed = await showDialog<bool>(
           context: context,
           builder: (dialogContext) => AlertDialog(
             title: const Text('确认移除'),
-            content: Text('确定从书架移除《${_book!.displayName}》吗？'),
+            content: Text('确定从书架移除《${book.displayName}》吗？'),
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(dialogContext, false),
@@ -1338,14 +1454,16 @@ class _DetailPageState extends State<DetailPage> {
           ),
         );
         if (confirmed != true) return;
+        // await 后页面可能已退出
+        if (!mounted) return;
       }
-      await provider.removeFromBookshelf(_book!.bookUrl);
+      await provider.removeFromBookshelf(book.bookUrl);
       if (!mounted) return;
       setState(() {
         _isInBookshelf = false;
       });
     } else {
-      await provider.addToBookshelf(_book!);
+      await provider.addToBookshelf(book);
       if (!mounted) return;
       setState(() {
         _isInBookshelf = true;
@@ -1409,10 +1527,12 @@ class _DetailPageState extends State<DetailPage> {
   }
 
   void _showBookEditSheet() {
+    final book = _book;
+    if (book == null) return;
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      builder: (context) => BookEditSheet(book: _book!, onSaved: _refreshData),
+      builder: (context) => BookEditSheet(book: book, onSaved: _refreshData),
     );
   }
 
@@ -1444,12 +1564,14 @@ class _DetailPageState extends State<DetailPage> {
   }
 
   void _searchBookName() async {
-    if (_book == null) return;
+    // 局部变量捕获：避免 await 期间 _book 被置 null
+    final book = _book;
+    if (book == null) return;
 
     // 执行书源回调，如果返回true则不执行默认操作
     final handled = await _executeSourceCallback(
       'clickBookName',
-      result: _book!.displayName,
+      result: book.displayName,
     );
 
     if (!handled && mounted) {
@@ -1457,22 +1579,23 @@ class _DetailPageState extends State<DetailPage> {
       Navigator.pushNamed(
         context,
         AppRoutes.search,
-        arguments: {'keyword': _book!.displayName},
+        arguments: {'keyword': book.displayName},
       );
     }
   }
 
   void _copyBookName() async {
-    if (_book == null) return;
+    final book = _book;
+    if (book == null) return;
 
     // 执行书源回调
     final handled = await _executeSourceCallback(
       'longClickBookName',
-      result: _book!.displayName,
+      result: book.displayName,
     );
 
     if (!handled && mounted) {
-      Clipboard.setData(ClipboardData(text: _book!.displayName));
+      Clipboard.setData(ClipboardData(text: book.displayName));
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('书名已复制')));
@@ -1480,12 +1603,13 @@ class _DetailPageState extends State<DetailPage> {
   }
 
   void _searchAuthor() async {
-    if (_book == null) return;
+    final book = _book;
+    if (book == null) return;
 
     // 执行书源回调
     final handled = await _executeSourceCallback(
       'clickAuthor',
-      result: _book!.displayAuthor,
+      result: book.displayAuthor,
     );
 
     if (!handled && mounted) {
@@ -1493,22 +1617,23 @@ class _DetailPageState extends State<DetailPage> {
       Navigator.pushNamed(
         context,
         AppRoutes.search,
-        arguments: {'keyword': _book!.displayAuthor},
+        arguments: {'keyword': book.displayAuthor},
       );
     }
   }
 
   void _copyAuthor() async {
-    if (_book == null) return;
+    final book = _book;
+    if (book == null) return;
 
     // 执行书源回调
     final handled = await _executeSourceCallback(
       'longClickAuthor',
-      result: _book!.displayAuthor,
+      result: book.displayAuthor,
     );
 
     if (!handled && mounted) {
-      Clipboard.setData(ClipboardData(text: _book!.displayAuthor));
+      Clipboard.setData(ClipboardData(text: book.displayAuthor));
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('作者已复制')));
@@ -1638,12 +1763,15 @@ class _DetailPageState extends State<DetailPage> {
   }
 
   void _showCustomButton() async {
+    // 局部变量捕获：避免 sheet 显示期间 _book / _bookSource 被置 null
+    final book = _book;
+    final source = _bookSource;
     // 检查书源是否有定制按钮
-    if (_bookSource != null && _bookSource!.customButton) {
+    if (source != null && source.customButton) {
       // 书源有定制按钮，执行书源回调
       // TODO: 实现书源回调JS执行
       // 参考 SourceCallBack.callBackBtn
-      final callBackJs = _bookSource!.ruleContent?.callBackJs;
+      final callBackJs = source.ruleContent?.callBackJs;
       if (callBackJs != null && callBackJs.isNotEmpty) {
         // 执行回调JS
         try {
@@ -1660,6 +1788,7 @@ class _DetailPageState extends State<DetailPage> {
     }
 
     // 没有书源定制按钮或回调返回false，显示默认菜单
+    final isOnline = book?.originType == BookOriginType.online;
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -1697,7 +1826,7 @@ class _DetailPageState extends State<DetailPage> {
                       _refreshData();
                     },
                   ),
-                  if (_book!.originType == BookOriginType.online)
+                  if (isOnline)
                     ListTile(
                       leading: const Icon(Icons.swap_horiz),
                       title: const Text('换源'),
@@ -1706,7 +1835,7 @@ class _DetailPageState extends State<DetailPage> {
                         _showChangeSourceDialog();
                       },
                     ),
-                  if (_book!.originType == BookOriginType.online)
+                  if (isOnline)
                     ListTile(
                       leading: const Icon(Icons.download),
                       title: const Text('下载'),
@@ -1731,14 +1860,16 @@ class _DetailPageState extends State<DetailPage> {
   }
 
   void _showSetSourceVariable() {
-    if (_bookSource == null) {
+    // 局部变量捕获：避免对话框显示期间 _bookSource 被置 null
+    final source = _bookSource;
+    if (source == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('无书源信息，无法设置源变量')),
       );
       return;
     }
     final controller = TextEditingController(
-      text: _bookSource!.variable ?? '',
+      text: source.variable ?? '',
     );
     showDialog(
       context: context,
@@ -1761,7 +1892,7 @@ class _DetailPageState extends State<DetailPage> {
             onPressed: () {
               final value = controller.text;
               Navigator.pop(context);
-              final updated = _bookSource!.copyWith(variable: value);
+              final updated = source.copyWith(variable: value);
               StorageService.instance.saveBookSource(updated.toJson());
               setState(() => _bookSource = updated);
               ScaffoldMessenger.of(context).showSnackBar(

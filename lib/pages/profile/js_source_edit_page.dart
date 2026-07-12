@@ -313,6 +313,12 @@ function nextContentUrl(result) {
     var exploreUrlMeta = _extractMeta(code, 'exploreUrl') ?? _extractJsVar(code, 'exploreUrl');
     var headerMeta = _extractMeta(code, 'header') ?? _extractJsVar(code, 'header');
 
+    // 提取图片解密规则（对齐 importJsText）
+    // coverDecodeJs 是 BookSource 顶层字段（封面解密）
+    // imageDecode 是 ContentRule 字段（正文图片解密）
+    final coverDecodeMeta = _extractMeta(code, 'coverDecode');
+    final imageDecodeMeta = _extractMeta(code, 'imageDecode');
+
     // 检测JS代码中定义了哪些函数
     final hasSearch = RegExp(r'function\s+search\s*\(').hasMatch(code);
     final hasExplore = RegExp(r'function\s+explore\s*\(').hasMatch(code);
@@ -337,6 +343,7 @@ function nextContentUrl(result) {
       jsLib: code,
       sourceFormat: 'js',
       header: headerMeta,
+      coverDecodeJs: coverDecodeMeta,
       searchUrl: searchUrlMeta ?? '',
       exploreUrl: exploreUrlMeta ?? '',
       ruleSearch: hasSearch ? SearchRule(
@@ -379,6 +386,7 @@ function nextContentUrl(result) {
       ) : null,
       ruleContent: hasContent ? ContentRule(
         content: '<js>content(result)</js>',
+        imageDecode: imageDecodeMeta,
         nextContentUrl: hasNextContentUrl ? '<js>nextContentUrl(result)</js>' : null,
       ) : null,
     );

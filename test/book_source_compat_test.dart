@@ -21,6 +21,61 @@ void main() {
       expect(parsed.option?.method, 'POST');
       expect(parsed.option?.body, '{"page":"4"}');
     });
+
+    test('preserves JSON option with JS expression in body (QQ reading style)',
+        () {
+      final parsed = AnalyzeUrl.parse(
+        'https://novel.html5.qq.com/be-api/content/ads-read,{'
+        '"method":"POST",'
+        '"body":{"Scene":"chapter","ContentAnchorBatch":[{"BookID":"{{page+1}}","ChapterSeqNo":[{{page}}]}]},'
+        '"headers":{"QG-UID":"test"}}',
+        page: 5,
+      );
+
+      // 验证 JSON 配置选项没有被截断/丢失
+      expect(parsed.url, 'https://novel.html5.qq.com/be-api/content/ads-read');
+      expect(parsed.option?.method, 'POST');
+      expect(parsed.option?.body, isNotNull);
+      // {{page}} 是固定变量，不需要 JsEngine，应被替换为 5
+      expect(parsed.option!.body!, contains('"ChapterSeqNo":[5]'));
+      expect(parsed.option?.headers?['QG-UID'], 'test');
+    });
+
+    test('preserves {{\$.jsonPath}} expressions without replacing them', () {
+      // 直接测试 replaceVariables，不经过 parse（避免 jsonDecode 失败）
+      // 因为 {{$.serialID}} 保留后不是合法 JSON 值，jsonDecode 会失败
+      // 这是预期行为：{{$.xxx}} 应由上游 AnalyzeRule 在有 content 上下文时替换
+      const input = r'{"body":{"id":{{$.serialID}}}}';
+      final result = AnalyzeUrl.replaceVariables(input);
+
+      // JSONPath 表达式应保留原样，不被当 JS 执行替换为空
+      expect(result, contains(r'{{$.serialID}}'));
+    });
+
+    // [回归测试] 验证 JS 输出的 url,{headers} 格式被正确解析
+    // 场景：全本小说书源 JS 返回 /?c=book&...,{\"headers\":{\"Referer\":\"...\"}}
+    test('parses JS output url with headers option (quanben style)', () {
+      final jsOutput =
+          '/?c=book&a=search.json&callback=search&t=1783250564438'
+          '&keywords=我的&b=y%25NPr1IPyc,'
+          '{"headers":{"Referer":"https://quanben-xiaoshuo.com/search.html"}}';
+      final parsed = AnalyzeUrl.parse(
+        jsOutput,
+        baseUrl: 'https://www.quanben5.com',
+      );
+
+      // URL 部分应分离出来，不含 ,{...}
+      // 关键：AnalyzeUrl.resolve 不对 % 进行二次编码（对齐 legado 的 java.net.URL 行为）
+      // keywords=我的 保持原样（Dio 发送时会自动 URL 编码非 ASCII 字符）
+      // b=y%25NPr1IPyc 保持原样（不被二次编码成 y%2525NPr1IPyc）
+      expect(parsed.url,
+          'https://www.quanben5.com/?c=book&a=search.json&callback=search&t=1783250564438&keywords=我的&b=y%25NPr1IPyc');
+      // option.headers 应被正确解析
+      expect(parsed.option, isNotNull);
+      expect(parsed.option!.headers, isNotNull);
+      expect(parsed.option!.headers!['Referer'],
+          'https://quanben-xiaoshuo.com/search.html');
+    });
   });
 
   group('BookSource import compatibility', () {

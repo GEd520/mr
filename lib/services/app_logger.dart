@@ -91,11 +91,123 @@ class LogEntry {
 /// 性能设计：
 /// - RingBuffer 环形缓冲区（默认 10000 条上限），避免无限内存膨胀
 /// - IOSink 批量文件写入（取代逐条异步 append），降低 100x I/O 开销
-/// - debugPrint 热路径节流（每 100 条输出一次摘要）
+/// - debugPrint 拦截：全局 debugPrint 重定向到日志系统，调试/日志页面可见
+/// - 循环日志去重：相同消息连续出现时合并为一条摘要，避免刷屏
+/// - 执行数据日志：成功时自动跳过，仅在错误/异常时记录
 /// - 日志出锁设计：日志生产者和消费者分离
 class AppLogger {
   AppLogger._();
   static final AppLogger instance = AppLogger._();
+
+  // ===== debugPrint 拦截 =====
+  /// 原始 debugPrint 函数（在替换前保存）
+  /// 注意：不能用 static final 懒加载，否则首次访问时 debugPrint 已被替换为
+  /// _capturedDebugPrint，导致 _originalDebugPrint 捕获到自身 → 无限递归 → Stack Overflow
+  static DebugPrintCallback? _originalDebugPrint;
+  /// 是否正在拦截（防止递归）
+  static bool _isCapturing = false;
+  /// 是否已启用 debugPrint 拦截
+  static bool _captureEnabled = false;
+
+  /// 启用 debugPrint 全局拦截
+  /// 所有 debugPrint 调用将被重定向到 AppLogger，同时仍输出到控制台
+  static void enableDebugPrintCapture() {
+    if (_captureEnabled) return;
+    _captureEnabled = true;
+    // 必须在替换之前保存原始函数，否则懒加载会捕获到已被替换的 _capturedDebugPrint
+    _originalDebugPrint = debugPrint;
+    debugPrint = _capturedDebugPrint;
+  }
+
+  /// 拦截后的 debugPrint 实现
+  static void _capturedDebugPrint(String? message, {int? wrapWidth}) {
+    // 先输出到控制台（保持原有行为）
+    _originalDebugPrint?.call(message, wrapWidth: wrapWidth);
+
+    // 防止递归：AppLogger 内部的 debugPrint 不再次捕获
+    if (_isCapturing) return;
+    if (message == null || message.isEmpty) return;
+
+    _isCapturing = true;
+    try {
+      instance._capturePrint(message);
+    } finally {
+      _isCapturing = false;
+    }
+  }
+
+  /// 将 debugPrint 消息转为 LogEntry 并写入日志系统
+  void _capturePrint(String message) {
+    // 智能分类：根据消息内容判断日志级别和分类
+    final result = _classifyPrintMessage(message);
+
+    // 跳过低价值日志（AppLogger 自身的节流输出等）
+    if (result == null) return;
+
+    _log(result.$1, result.$2, result.$3, detail: result.$4);
+  }
+
+  /// 根据 debugPrint 消息内容智能分类
+  /// 返回 (level, category, message, detail?) 或 null（跳过）
+  (LogLevel, LogCategory, String, String?)? _classifyPrintMessage(
+      String message) {
+    final msg = message.trim();
+    if (msg.isEmpty) return null;
+
+    // 跳过 AppLogger 自身的节流输出（避免递归噪音）
+    if (msg.startsWith('[AppLogger]')) return null;
+
+    // 根据前缀符号判断级别
+    LogLevel level;
+    LogCategory category;
+
+    if (msg.contains('❌') ||
+        msg.contains('失败') && !msg.contains('重试')) {
+      level = LogLevel.error;
+    } else if (msg.contains('⚠️') ||
+        msg.contains('警告') ||
+        msg.contains('跳过')) {
+      level = LogLevel.warning;
+    } else if (msg.contains('✅') ||
+        msg.contains('成功') ||
+        msg.contains('完成')) {
+      level = LogLevel.info;
+    } else {
+      level = LogLevel.debug;
+    }
+
+    // 根据内容关键词判断分类
+    // 注意：不能用 contains('JS')，因为 'JSON' 包含 'JS' 子串会误分类
+    // 用 \bJS\b 单词边界匹配，'JSON' 中的 'JS' 不是单词边界不会匹配
+    if (RegExp(r'\bJS\b').hasMatch(msg) ||
+        msg.contains('QuickJS') ||
+        msg.contains('引擎') ||
+        msg.contains('FFI')) {
+      category = LogCategory.js;
+    } else if (msg.contains('HTTP') ||
+        msg.contains('网络') ||
+        msg.contains('URL') ||
+        msg.contains('搜索') && msg.contains('响应')) {
+      category = LogCategory.network;
+    } else if (msg.contains('解析') ||
+        msg.contains('规则') ||
+        msg.contains('搜索结果')) {
+      category = LogCategory.parse;
+    } else if (msg.contains('Storage') ||
+        msg.contains('Hive') ||
+        msg.contains('Box') ||
+        msg.contains('书源')) {
+      category = LogCategory.storage;
+    } else if (msg.contains('代理') ||
+        msg.contains('CORS') ||
+        msg.contains('Proxy')) {
+      category = LogCategory.proxy;
+    } else {
+      category = LogCategory.system;
+    }
+
+    return (level, category, msg, null);
+  }
 
   /// 环形缓冲区最大容量（达到上限后最旧的日志被覆盖）
   static const int _maxBufferSize = 10000;
@@ -140,10 +252,15 @@ class AppLogger {
   /// 会话启动标记是否已写入
   bool _sessionMarkerWritten = false;
 
-  // ===== debugPrint 节流 =====
-  int _debugPrintCounter = 0;
-  static const int _debugPrintThrottle = 100; // 每 100 条打印一次
-  int _debugPrintAccumulated = 0; // 累积未打印的日志数
+  // ===== 循环日志去重 =====
+  /// 上一条日志的消息（用于去重检测）
+  String? _lastLogMessage;
+  /// 上一条日志的级别
+  LogLevel? _lastLogLevel;
+  /// 相同日志连续出现次数
+  int _duplicateCount = 0;
+  /// 去重阈值：相同消息连续出现超过此次数后合并
+  static const int _dedupThreshold = 2;
 
   /// 初始化文件日志系统
   Future<void> initFileLogging() async {
@@ -234,10 +351,33 @@ class AppLogger {
     }
     _bufferIndex = 0;
     _totalWritten = 0;
+    // 重置去重状态
+    _lastLogMessage = null;
+    _lastLogLevel = null;
+    _duplicateCount = 0;
   }
 
   void _log(LogLevel level, LogCategory category, String message, {String? detail}) {
     if (level.index < minLevel.index) return;
+
+    // ===== 循环日志去重 =====
+    // 相同消息连续出现时，合并为一条摘要，避免循环日志刷屏
+    // 注意：error 级别日志不参与去重，确保每条错误及其 detail 都完整保留
+    if (level != LogLevel.error &&
+        _lastLogMessage != null &&
+        _lastLogLevel == level &&
+        _isSimilarMessage(_lastLogMessage!, message)) {
+      _duplicateCount++;
+      if (_duplicateCount >= _dedupThreshold) {
+        // 更新最后一条日志的消息为合并摘要
+        _updateLastLogSummary(message, _duplicateCount + 1);
+        return;
+      }
+    } else {
+      _lastLogMessage = message;
+      _lastLogLevel = level;
+      _duplicateCount = 0;
+    }
 
     final entry = LogEntry(
       time: DateTime.now(),
@@ -259,24 +399,44 @@ class AppLogger {
     if (_fileInitialized && _fileSink != null) {
       unawaited(_writeToFile(entry.toFullString()));
     }
+  }
 
-    // 控制台输出（热路径节流：每 _debugPrintThrottle 条输出一次摘要）
-    if (kDebugMode) {
-      _debugPrintCounter++;
-      if (_debugPrintCounter >= _debugPrintThrottle) {
-        // 输出累积摘要
-        final accumulated = _debugPrintAccumulated + _debugPrintCounter;
-        if (accumulated > 0) {
-          debugPrint('[AppLogger] ⚡ ${entry.levelName}[${category.label}] $message (累计 ${accumulated - 1} 条相似日志, 最新 $_debugPrintCounter 条)');
-        } else {
-          debugPrint('[AppLogger] ⚡ ${entry.levelName}[${category.label}] $message');
-        }
-        _debugPrintCounter = 0;
-        _debugPrintAccumulated = 0;
-      } else {
-        _debugPrintAccumulated++;
-      }
-    }
+  /// 判断两条消息是否相似（用于循环日志去重）
+  /// 提取消息前缀部分比较，忽略数字/URL 等动态部分
+  bool _isSimilarMessage(String a, String b) {
+    // 完全相同
+    if (a == b) return true;
+    // 提取前缀（前20个字符或到第一个数字之前的部分）
+    final prefixA = _extractPrefix(a);
+    final prefixB = _extractPrefix(b);
+    return prefixA == prefixB && prefixA.length >= 5;
+  }
+
+  /// 提取消息前缀（将数字替换为 # 用于模式匹配）
+  String _extractPrefix(String msg) {
+    // 取前30个字符，将数字替换为 #
+    final truncated = msg.length > 30 ? msg.substring(0, 30) : msg;
+    return truncated.replaceAll(RegExp(r'\d+'), '#');
+  }
+
+  /// 更新最后一条日志为合并摘要
+  void _updateLastLogSummary(String currentMsg, int totalCount) {
+    if (_totalWritten == 0) return;
+    final lastIdx = (_bufferIndex - 1 + _maxBufferSize) % _maxBufferSize;
+    final lastEntry = _buffer[lastIdx];
+    if (lastEntry == null) return;
+
+    final summary = LogEntry(
+      time: lastEntry.time,
+      level: lastEntry.level,
+      category: lastEntry.category,
+      message: '${lastEntry.message.split(' (重复')[0]} (重复 $totalCount 次)',
+      detail: lastEntry.detail,
+      sessionId: lastEntry.sessionId,
+    );
+
+    _buffer[lastIdx] = summary;
+    _controller.add(summary);
   }
 
   // ===== 便捷方法 =====
@@ -313,15 +473,25 @@ class AppLogger {
   }
 
   // ===== JS 引擎专用 =====
+  // 日志策略：debug 模式下记录完整执行链路（[JS] 前缀，确保调试 tab 可见），
+  // release 模式跳过（性能优化，避免循环刷屏）。
+  // 级别设计：
+  //   - logJsStep / logJsError：info 级别（关键步骤，日志列表默认可见）
+  //   - logJsInput / logJsOutput / logJsExecute / logJsResult / logJsTree：debug 级别
+  //     （详细数据，日志列表默认过滤，但调试 tab 通过 [JS] 前缀注入可见）
 
   void logJsExecute(String engine, String code, {int? codeLength}) {
-    info(LogCategory.js, '[$engine] 执行JS #$_quickjsExecutionCount (${codeLength ?? code.length} chars)',
-      detail: code);
+    if (!kDebugMode) return;
+    final preview = code.length > 200 ? '${code.substring(0, 200)}...' : code;
+    _log(LogLevel.debug, LogCategory.js, '[JS] [$engine] 执行代码',
+        detail: 'len=${codeLength ?? code.length}\n$preview');
   }
 
   void logJsResult(String engine, String? result) {
-    info(LogCategory.js, '[$engine] 结果: ${result != null ? "${result.length} chars" : "null"}',
-      detail: result);
+    if (!kDebugMode) return;
+    final preview = (result != null && result.length > 200)
+        ? '${result.substring(0, 200)}...' : (result ?? '(null)');
+    _log(LogLevel.debug, LogCategory.js, '[JS] [$engine] 执行结果', detail: preview);
   }
 
   void logJsError(String engine, String errorMsg) {
@@ -329,34 +499,44 @@ class AppLogger {
   }
 
   void logJsInput(String engine, String? input, {String? tag}) {
-    final label = tag != null ? '[$engine] 输入[$tag]' : '[$engine] 输入';
-    info(LogCategory.js, '$label (${input?.length ?? 0} chars)', detail: input);
+    if (!kDebugMode) return;
+    final preview = (input != null && input.length > 500)
+        ? '${input.substring(0, 500)}...' : (input ?? '(null)');
+    _log(LogLevel.debug, LogCategory.js, '[JS] [$engine] 输入${tag != null ? " ($tag)" : ""}',
+        detail: preview);
   }
 
   void logJsOutput(String engine, String? output, {String? outputType, String? tag}) {
-    final typeInfo = outputType != null ? '($outputType)' : '';
-    final label = tag != null ? '[$engine] 输出[$tag]$typeInfo' : '[$engine] 输出$typeInfo';
-    info(LogCategory.js, '$label (${output?.length ?? 0} chars)', detail: output);
+    if (!kDebugMode) return;
+    final preview = (output != null && output.length > 500)
+        ? '${output.substring(0, 500)}...' : (output ?? '(null)');
+    _log(LogLevel.debug, LogCategory.js,
+        '[JS] [$engine] 输出${outputType != null ? "($outputType)" : ""}${tag != null ? " ($tag)" : ""}',
+        detail: preview);
   }
 
   void logJsTree(String engine, String treeString) {
-    if (treeString.isEmpty || treeString == '(no trace)') return;
-    info(LogCategory.js, '[$engine] JS执行树', detail: treeString);
+    if (!kDebugMode) return;
+    _log(LogLevel.debug, LogCategory.js, '[JS] [$engine] 执行树', detail: treeString);
   }
 
   void logJsStep(String engine, String step, {String? detail}) {
-    info(LogCategory.js, '[$engine] $step', detail: detail);
+    if (!kDebugMode) return;
+    _log(LogLevel.info, LogCategory.js, '[JS] [$engine] $step', detail: detail);
   }
 
   // ===== 规则解析专用 =====
+  // 执行数据日志策略：成功时跳过，仅 0 结果/错误时记录
 
   void logParse(String ruleType, String rule, {String? content}) {
-    debug(LogCategory.parse, '解析$ruleType: $rule',
-      detail: content != null ? '内容长度: ${content.length}' : null);
+    // 执行数据日志：解析规则不单独记录，避免刷屏
   }
 
   void logParseResult(String ruleType, int count) {
-    info(LogCategory.parse, '$ruleType 解析完成: $count 条结果');
+    // 执行数据日志：仅 0 结果时记录（可能有问题），有结果时跳过
+    if (count == 0) {
+      warn(LogCategory.parse, '$ruleType 解析完成: 0 条结果（可能规则有误）');
+    }
   }
 
   String _formatSize(int chars) {

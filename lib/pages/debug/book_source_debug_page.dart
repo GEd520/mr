@@ -49,7 +49,9 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
   // AppLogger 订阅
   StreamSubscription<LogEntry>? _logSubscription;
   final List<LogEntry> _appLogs = [];
-  LogLevel _logFilterLevel = LogLevel.verbose;
+  // 默认 info 级别降噪：过滤掉 verbose/debug 噪音，专注关键流程
+  // 调试 tab 的 [JS] 前缀日志独立注入，不受此过滤影响
+  LogLevel _logFilterLevel = LogLevel.info;
   LogCategory? _logFilterCategory;
 
   // setState 节流：调试期间日志高频产生，逐条 setState 会导致 UI 卡死
@@ -86,12 +88,37 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
     // 订阅 AppLogger 日志流
     // 注意：不在此处直接 setState，而是标记后由 _scheduleFlush 节流合并刷新，
     // 否则调试期间每条 AppLogger 日志（JS 执行/网络/解析，数百条/秒）都会触发全量重建。
+    // 将以下日志注入调试 tab，方便在调试过程中直接看到：
+    // 1. error/warning 级别日志（所有分类的错误和警告）
+    // 2. info 级别的关键日志（网络请求/响应、解析结果、JS console 打印等）
+    // 3. debug 级别的 JS console 打印指令（带 [JS] 前缀标记）
     _logSubscription = AppLogger.instance.stream.listen((entry) {
       if (!mounted) return;
       _appLogs.add(entry);
       // 日志流节流：只保留最新 500 条，避免 O(n) 内存膨胀
       if (_appLogs.length > 500) {
         _appLogs.removeRange(0, _appLogs.length - 500);
+      }
+      // 判断是否需要注入调试 tab
+      // 调试 tab 只显示：错误/警告 + JS console 输出（[JS] 前缀）
+      // 其他详细信息（解析、网络、引擎等 info 日志）去日志 tab 查看
+      // 注意：不能用 category 判断，因为 _classifyPrintMessage 会把
+      // 含 'JSON' 的消息误分类为 js（'JSON' 包含 'JS' 子串）
+      final shouldInject = entry.level == LogLevel.error ||
+          entry.level == LogLevel.warning ||
+          entry.message.startsWith('[JS]');
+      if (shouldInject) {
+        final prefix = switch (entry.level) {
+          LogLevel.error => '🔴',
+          LogLevel.warning => '🟡',
+          LogLevel.info => '🟢',
+          _ => '🔵',
+        };
+        final catLabel = entry.category == LogCategory.js &&
+                entry.message.startsWith('[JS]')
+            ? ''
+            : '[${entry.category.label}] ';
+        _pendingDebugLogs.add('$prefix$catLabel${entry.message}');
       }
       _appLogsDirty = true;
       _scheduleFlush();
@@ -1505,7 +1532,7 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
                   child: Text(
                     entry.message,
                     style: TextStyle(fontSize: 12, color: textColor),
-                    maxLines: 1,
+                    maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
@@ -1521,7 +1548,7 @@ class _BookSourceDebugPageState extends State<BookSourceDebugPage>
                     color: detailColor,
                     fontFamily: 'monospace',
                   ),
-                  maxLines: 3,
+                  maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                 ),
               ),

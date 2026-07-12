@@ -44,7 +44,6 @@ class _ChapterListPageState extends State<ChapterListPage> {
   Set<int> _expandedVolumes = {};
   final ScrollController _scrollController = ScrollController();
   final PageController _pageController = PageController();
-  BookDataProvider? _dataProvider;
   String? _loadError;
   Set<String> _cachedFiles = {};
   bool _showWordCount = false;
@@ -104,14 +103,18 @@ class _ChapterListPageState extends State<ChapterListPage> {
       if (_book == null) {
         throw StateError('书籍信息不存在');
       }
-      _dataProvider = createBookDataProvider(_book!);
-      _chapters = await _dataProvider!.getChapterList(_book!);
+      // 局部变量捕获：避免 await 期间 _book 被修改导致不一致
+      final book = _book!;
+      final dataProvider = createBookDataProvider(book);
+      _chapters = await dataProvider.getChapterList(book);
+      // await 后页面可能已退出
+      if (!mounted) return;
       _filteredChapters = _chapters;
       _groupChaptersByVolume();
       // 加载缓存信息
-      if (_book!.originType == BookOriginType.online) {
+      if (book.originType == BookOriginType.online) {
         _cachedFiles = await ChapterCacheService.instance.getChapterCacheFiles(
-          _book!,
+          book,
         );
       }
       _loadError = null;

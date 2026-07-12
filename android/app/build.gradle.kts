@@ -146,11 +146,6 @@ dependencies {
     // Kotlin 标准库（显式声明版本，确保 Android Studio 能解析）
     implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk8:2.2.20")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
-    // OkHttp（HTTP 客户端）
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
-    // Jsoup（HTML 解析 + 内置 XPath selectXpath()）
-    implementation("org.jsoup:jsoup:1.22.2")
     // JsonPath（JSON 解析）
     implementation("com.jayway.jsonpath:json-path:2.9.0")
     // Commons Text（HTML 反转义）

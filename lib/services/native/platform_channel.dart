@@ -1,15 +1,17 @@
 import 'package:flutter/services.dart';
 
-/// 原生平台通道
-/// 保留 C FFI 无法替代的平台特有 API：
-/// - 屏幕亮度（平台 UI API）
-/// - HTTPS HTTP 请求（C HTTP 仅支持 http://）
-/// - HTTP HEAD / Cookie / 下载
-/// - WebView JS 执行（平台 WebView API）
-/// - 设备信息
-/// - 数据存储
+/// 原生平台通道（MethodChannel）
 ///
-/// 已淘汰的 AES/MD5/SHA/Base64/Jsoup/字符集编码 请走 C FFI。
+/// 仅保留 Dart 层无法实现、必须依赖平台原生 API 的方法：
+/// - 屏幕亮度（平台 UI API）
+/// - WebView JS 执行（平台 WebView 组件）
+/// - Cookie（平台 Cookie 存储）
+/// - 设备信息（平台系统 API）
+/// - 数据存储（SharedPreferences / UserDefaults）
+/// - Native lib 完整性检查
+///
+/// HTTP 请求已迁移至 [PlatformBridge]（Dio），不再经过 MethodChannel。
+/// 加密/HTML 解析/编码转换由 C 层 FFI 直接处理。
 class NativeChannel {
   static NativeChannel? _instance;
   static NativeChannel get instance => _instance ??= NativeChannel._();
@@ -45,89 +47,13 @@ class NativeChannel {
     }
   }
 
-  // ===== HTTPS HTTP 请求（C HTTP 仅支持 http://，https:// 走平台）=====
-
-  Future<String?> httpGet(
-    String url, {
-    Map<String, String>? headers,
-    int timeoutMs = 10000,
-  }) async {
-    try {
-      final result = await _channel.invokeMethod<String>('httpGet', {
-        'url': url,
-        'headers': headers,
-        'timeoutMs': timeoutMs,
-      });
-      return result;
-    } on PlatformException catch (_) {
-      return null;
-    } on MissingPluginException catch (_) {
-      return null;
-    }
-  }
-
-  Future<String?> httpPost(
-    String url, {
-    String? body,
-    Map<String, String>? headers,
-    int timeoutMs = 10000,
-  }) async {
-    try {
-      final result = await _channel.invokeMethod<String>('httpPost', {
-        'url': url,
-        'body': body,
-        'headers': headers,
-        'timeoutMs': timeoutMs,
-      });
-      return result;
-    } on PlatformException catch (_) {
-      return null;
-    } on MissingPluginException catch (_) {
-      return null;
-    }
-  }
-
-  // ===== HTTP HEAD / Cookie / 下载 =====
-
-  Future<Map<String, String>?> httpHead(String url, {Map<String, String>? headers}) async {
-    try {
-      final result = await _channel.invokeMethod<Map>('httpHead', {
-        'url': url,
-        'headers': headers,
-      });
-      if (result == null) return null;
-      return result.map((k, v) => MapEntry(k, v?.toString() ?? ''));
-    } on PlatformException catch (_) {
-      return null;
-    } on MissingPluginException catch (_) {
-      return null;
-    }
-  }
+  // ===== Cookie（平台 Cookie 存储）=====
 
   Future<String?> getCookie(String url, {String? key}) async {
     try {
       final result = await _channel.invokeMethod<String>('getCookie', {
         'url': url,
         'key': key,
-      });
-      return result;
-    } on PlatformException catch (_) {
-      return null;
-    } on MissingPluginException catch (_) {
-      return null;
-    }
-  }
-
-  Future<String?> httpDownload(
-    String url,
-    String savePath, {
-    Map<String, String>? headers,
-  }) async {
-    try {
-      final result = await _channel.invokeMethod<String>('httpDownload', {
-        'url': url,
-        'savePath': savePath,
-        'headers': headers,
       });
       return result;
     } on PlatformException catch (_) {
@@ -214,27 +140,6 @@ class NativeChannel {
       return false;
     } on MissingPluginException catch (_) {
       return false;
-    }
-  }
-
-  // ===== 带缓存的请求（仅限平台级 https://）=====
-
-  Future<String?> httpGetWithCache(
-    String url, {
-    Map<String, String>? headers,
-    int cacheMaxAge = 3600,
-  }) async {
-    try {
-      final result = await _channel.invokeMethod<String>('httpGetWithCache', {
-        'url': url,
-        'headers': headers,
-        'cacheMaxAge': cacheMaxAge,
-      });
-      return result;
-    } on PlatformException catch (_) {
-      return null;
-    } on MissingPluginException catch (_) {
-      return null;
     }
   }
 

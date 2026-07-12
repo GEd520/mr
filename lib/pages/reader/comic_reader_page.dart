@@ -18,6 +18,7 @@ import '../../providers/bookshelf_provider.dart';
 import '../../routes/app_routes.dart';
 import '../../services/book_data_provider.dart';
 import '../../services/chapter_cache_service.dart';
+import '../../services/image_decode_provider.dart';
 import '../../services/native/platform_channel.dart';
 import '../../services/reader_bookmark_service.dart';
 import '../../services/source_engine/analyze_url.dart';
@@ -89,8 +90,8 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
   bool _grayscaleImages = false;
   bool _eyeCareMode = false;
   bool _keepScreenOn = false;
-  final List<String> _imageLoadLog = [];
-  Map<String, String> _imageHeaders = const {};
+final List<String> _imageLoadLog = [];
+Map<String, String> _imageHeaders = const {};
   final Map<String, Map<String, String>> _imageOptionHeaders = {};
   String _sourceName = '';
   BookSource? _bookSource;
@@ -253,15 +254,18 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
     try {
       final stored = StorageService.instance.getBook(widget.bookUrl);
       _book = stored != null ? Book.fromJson(stored) : widget.initialBook;
-      if (_book == null) {
+      final book = _book;
+      if (book == null) {
         throw StateError('书籍信息不存在');
       }
-      _dataProvider = createBookDataProvider(_book!);
-      _sourceName = _book!.sourceName ?? '';
+      _dataProvider = createBookDataProvider(book);
+      _sourceName = book.sourceName ?? '';
       _chapters = (await _dataProvider!.getChapterList(
-        _book!,
+        book,
       )).where((chapter) => !chapter.isVolume).toList();
-      final sourceUrl = _book!.sourceUrl;
+      // await 后用户可能已退出，使用局部变量避免 _book! 崩溃
+      if (!mounted) return;
+      final sourceUrl = book.sourceUrl;
       if (sourceUrl != null && sourceUrl.isNotEmpty) {
         final sourceData = StorageService.instance.getBookSource(sourceUrl);
         if (sourceData != null) {
@@ -275,8 +279,8 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
         throw StateError('目录为空');
       }
       if (widget.resumeProgress) {
-        _currentChapterIndex = _book!.durChapterIndex;
-        _currentPageIndex = _book!.durChapterPos;
+        _currentChapterIndex = book.durChapterIndex;
+        _currentPageIndex = book.durChapterPos;
       }
       if (!_chapters.any((chapter) => chapter.index == _currentChapterIndex)) {
         _currentChapterIndex = _chapters.first.index;
@@ -298,7 +302,9 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
     }
 
     final chapter = _chapter;
-    if (chapter == null || _book == null || _dataProvider == null) return;
+    final book = _book;
+    final dataProvider = _dataProvider;
+    if (chapter == null || book == null || dataProvider == null) return;
 
     setState(() {
       _isLoading = true;
@@ -311,27 +317,28 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
       List<String> images;
 
       // 优先从缓存读取
-      if (_book!.originType == BookOriginType.online) {
+      if (book.originType == BookOriginType.online) {
         final cachedImages = await ChapterCacheService.instance
-            .readComicChapterContent(_book!, chapter);
+            .readComicChapterContent(book, chapter);
         if (cachedImages != null && cachedImages.isNotEmpty) {
           images = cachedImages;
         } else {
           // 缓存没有则从网络获取
-          final content = await _dataProvider!.getContent(
-            _book!,
+          final content = await dataProvider.getContent(
+            book,
             chapter,
             allChapters: _chapters,
           );
+          // await 后用户可能已退出，使用局部变量避免 _book! 崩溃
           images = _extractImageUrls(
             content ?? '',
-            baseUrl: chapter.url ?? _book!.bookUrl,
+            baseUrl: chapter.url ?? book.bookUrl,
           );
           // 保存到缓存
           if (images.isNotEmpty) {
             unawaited(
               ChapterCacheService.instance.saveComicChapterContent(
-                _book!,
+                book,
                 chapter,
                 images,
               ),
@@ -339,14 +346,14 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
           }
         }
       } else {
-        final content = await _dataProvider!.getContent(
-          _book!,
+        final content = await dataProvider.getContent(
+          book,
           chapter,
           allChapters: _chapters,
         );
         images = _extractImageUrls(
           content ?? '',
-          baseUrl: chapter.url ?? _book!.bookUrl,
+          baseUrl: chapter.url ?? book.bookUrl,
         );
       }
 
@@ -732,13 +739,23 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
       0,
       _images.length,
     );
+    final needDecode = DecodedImageProvider.needsDecode(_bookSource, false);
     for (var index = _currentPageIndex + 1; index < end; index++) {
       if (_images[index].startsWith('data:')) continue;
+      final url = _images[index];
       precacheImage(
-        CachedNetworkImageProvider(
-          _images[index],
-          headers: _headersForImage(_images[index]),
-        ),
+        needDecode
+            ? DecodedImageProvider(
+                url: url,
+                headers: _headersForImage(url),
+                source: _bookSource!,
+                isCover: false,
+                book: _book,
+              )
+            : CachedNetworkImageProvider(
+                url,
+                headers: _headersForImage(url),
+              ),
         context,
       );
     }
@@ -912,29 +929,32 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
   }
 
   Future<List<String>> _loadChapterImages(Chapter chapter) async {
-    if (_book == null || _dataProvider == null) return [];
+    final book = _book;
+    final dataProvider = _dataProvider;
+    if (book == null || dataProvider == null) return [];
 
     try {
       List<String> images;
-      if (_book!.originType == BookOriginType.online) {
+      if (book.originType == BookOriginType.online) {
         final cachedImages = await ChapterCacheService.instance
-            .readComicChapterContent(_book!, chapter);
+            .readComicChapterContent(book, chapter);
         if (cachedImages != null && cachedImages.isNotEmpty) {
           images = cachedImages;
         } else {
-          final content = await _dataProvider!.getContent(
-            _book!,
+          final content = await dataProvider.getContent(
+            book,
             chapter,
             allChapters: _chapters,
           );
+          // await 后用户可能已退出，使用局部变量避免 _book! 崩溃
           images = _extractImageUrls(
             content ?? '',
-            baseUrl: chapter.url ?? _book!.bookUrl,
+            baseUrl: chapter.url ?? book.bookUrl,
           );
           if (images.isNotEmpty) {
             unawaited(
               ChapterCacheService.instance.saveComicChapterContent(
-                _book!,
+                book,
                 chapter,
                 images,
               ),
@@ -942,14 +962,14 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
           }
         }
       } else {
-        final content = await _dataProvider!.getContent(
-          _book!,
+        final content = await dataProvider.getContent(
+          book,
           chapter,
           allChapters: _chapters,
         );
         images = _extractImageUrls(
           content ?? '',
-          baseUrl: chapter.url ?? _book!.bookUrl,
+          baseUrl: chapter.url ?? book.bookUrl,
         );
       }
       return images;
@@ -1028,6 +1048,36 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
       );
     } else if (url.startsWith('data:')) {
       image = _buildImageError(message: 'Base64 图片解析失败');
+    } else if (DecodedImageProvider.needsDecode(_bookSource, false)) {
+      // 书源配置了 imageDecode 时走解密链路（借鉴 Legado ImageUtils.decode）
+      image = Image(
+        image: DecodedImageProvider(
+          url: url,
+          headers: _headersForImage(url),
+          source: _bookSource!,
+          isCover: false,
+          book: _book,
+        ),
+        width: double.infinity,
+        fit: fit,
+        gaplessPlayback: true,
+        filterQuality: _readMode == MangaReadMode.scroll
+            ? FilterQuality.low
+            : FilterQuality.medium,
+        loadingBuilder: (context, child, loadingProgress) {
+          if (loadingProgress == null) return child;
+          final total = loadingProgress.expectedTotalBytes;
+          final value = (total != null && total > 0)
+              ? loadingProgress.cumulativeBytesLoaded / total
+              : null;
+          _logImageLoadStart(url, value);
+          return _buildImageLoadingIndicator(value, minHeight);
+        },
+        errorBuilder: (_, error, ___) {
+          _logImageLoadError(url, error);
+          return _buildImageError();
+        },
+      );
     } else {
       final devicePixelRatio = MediaQuery.devicePixelRatioOf(context);
       final targetCacheWidth =
@@ -1137,6 +1187,63 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
     }
 
     return child;
+  }
+
+  /// 记录图片开始加载日志（借鉴原 progressIndicatorBuilder 逻辑）
+  void _logImageLoadStart(String url, double? value) {
+    if (value == null || _imageLoadLog.length >= 500) return;
+    final existingLog = _imageLoadLog.lastWhere(
+      (l) => l.contains(url.substring(0, url.length.clamp(0, 50))),
+      orElse: () => '',
+    );
+    if (existingLog.isNotEmpty) return;
+    final now = DateTime.now();
+    final timeStr =
+        '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
+    _imageLoadLog.add(
+      '[$timeStr] 开始加载: ${url.substring(0, url.length.clamp(0, 80))}...',
+    );
+  }
+
+  /// 记录图片加载失败日志
+  void _logImageLoadError(String url, Object error) {
+    if (_imageLoadLog.length >= 500) return;
+    final now = DateTime.now();
+    final timeStr =
+        '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
+    _imageLoadLog.add(
+      '[$timeStr] 加载失败: ${url.substring(0, url.length.clamp(0, 80))} - ${error.toString().substring(0, error.toString().length.clamp(0, 50))}',
+    );
+  }
+
+  /// 构建图片加载中进度指示器
+  Widget _buildImageLoadingIndicator(double? value, double minHeight) {
+    return Container(
+      constraints: BoxConstraints(
+        minHeight: minHeight > 0
+            ? minHeight
+            : MediaQuery.sizeOf(context).height * 0.55,
+      ),
+      color: _readerBackground,
+      alignment: Alignment.center,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          CircularProgressIndicator(
+            value: value,
+            color: _readerForeground,
+            strokeWidth: 3,
+          ),
+          if (value != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              '${(value * 100).round()}%',
+              style: TextStyle(color: _readerSecondary),
+            ),
+          ],
+        ],
+      ),
+    );
   }
 
   Widget _buildImageError({String message = '图片加载失败'}) {
@@ -1787,38 +1894,45 @@ class _ComicReaderPageState extends State<ComicReaderPage> {
     _disableAutoPaging();
     setState(() => _showMenu = false);
 
-    if (_book == null || _book!.originType != BookOriginType.online) {
+    // 局部变量捕获：避免回调延迟期间 _book 被置 null
+    final book = _book;
+    if (book == null || book.originType != BookOriginType.online) {
       _showMessage('本地书籍不支持换源');
       return;
     }
 
     ChangeSourceSheet.show(
       context: context,
-      bookName: _book!.displayName,
-      bookAuthor: _book!.displayAuthor,
-      currentSourceUrl: _book!.sourceUrl,
-      currentSourceName: _book!.sourceName,
+      bookName: book.displayName,
+      bookAuthor: book.displayAuthor,
+      currentSourceUrl: book.sourceUrl,
+      currentSourceName: book.sourceName,
       onSourceSelected: (sourceUrl, sourceName, bookData) async {
-        if (_book == null) return;
+        // 回调可能在弹窗显示后任意时刻触发，使用局部变量避免 _book 野指针
+        if (!mounted || _book == null) return;
 
         try {
           _showMessage('正在切换书源...');
 
-          // 创建新的书籍对象
-          final newBook = _book!.copyWith(
+          // 创建新的书籍对象（用局部 book 而非 _book!）
+          final newBook = book.copyWith(
             sourceUrl: sourceUrl,
             sourceName: sourceName,
-            bookUrl: bookData['bookUrl'] ?? _book!.bookUrl,
-            name: bookData['name'] ?? _book!.name,
-            author: bookData['author'] ?? _book!.author,
-            coverUrl: bookData['coverUrl'] ?? _book!.coverUrl,
-            intro: bookData['intro'] ?? _book!.intro,
-            lastChapter: bookData['lastChapter'] ?? _book!.lastChapter,
+            bookUrl: bookData['bookUrl'] ?? book.bookUrl,
+            name: bookData['name'] ?? book.name,
+            author: bookData['author'] ?? book.author,
+            coverUrl: bookData['coverUrl'] ?? book.coverUrl,
+            intro: bookData['intro'] ?? book.intro,
+            lastChapter: bookData['lastChapter'] ?? book.lastChapter,
           );
 
           // 获取新书源的目录
-          _dataProvider = createBookDataProvider(newBook);
-          final chapters = await _dataProvider!.getChapterList(newBook);
+          final dataProvider = createBookDataProvider(newBook);
+          _dataProvider = dataProvider;
+          final chapters = await dataProvider.getChapterList(newBook);
+
+          // await 后页面可能已退出，使用 mounted 检查避免野指针
+          if (!mounted) return;
 
           // 更新书籍
           final updatedBook = newBook.copyWith(
