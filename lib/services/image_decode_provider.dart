@@ -8,7 +8,6 @@ import 'package:flutter/material.dart';
 import '../models/book.dart';
 import '../models/book_source.dart';
 import 'native/js_advanced_service.dart';
-import 'native/js_engine.dart';
 import 'native/platform_bridge.dart';
 
 /// 支持图片解密的自定义 ImageProvider
@@ -96,14 +95,7 @@ class DecodedImageProvider extends ImageProvider<DecodedImageProvider> {
       expectedTotalBytes: null,
     ));
 
-    // 下载诊断：打印请求 URL 和 headers 的 keys，确认请求头是否传入
-    final headerKeys = key.headers.keys.map((k) => '$k=${_maskValue(key.headers[k])}').join(', ');
-    debugPrint('📥 [DecodedImageProvider] 开始下载: ${key.url}\n'
-        '  请求头: {$headerKeys}');
-
     Uint8List bytes;
-    int? statusCode;
-    Map<String, String> respHeaders = {};
     try {
       final response = await PlatformBridge.instance.dio.get<List<int>>(
         key.url,
@@ -122,38 +114,19 @@ class DecodedImageProvider extends ImageProvider<DecodedImageProvider> {
         },
       );
       bytes = Uint8List.fromList(response.data ?? const <int>[]);
-      statusCode = response.statusCode;
-      respHeaders = response.headers.map.map(
-        (k, v) => MapEntry(k, v.first),
-      );
-      // 下载诊断：打印状态码、字节数、前16字节、Content-Type
-      final hex = bytes
-          .take(16)
-          .map((b) => b.toRadixString(16).padLeft(2, '0'))
-          .join(' ');
-      final contentType = respHeaders['content-type'] ?? respHeaders['Content-Type'] ?? '(无)';
-      debugPrint('📥 [DecodedImageProvider] 下载完成: ${key.url}\n'
-          '  状态码: $statusCode, 字节数: ${bytes.length}\n'
-          '  Content-Type: $contentType, 前16字节: $hex');
     } catch (e) {
-      debugPrint('⚠️ [DecodedImageProvider] 下载失败: ${key.url} → $e');
       rethrow;
     } finally {
       await chunkEvents.close();
     }
 
     if (bytes.isEmpty) {
-      // 空响应诊断：打印状态码和响应头，帮助判断是 403/404 还是服务器返回空
-      debugPrint('❌ [DecodedImageProvider] 响应为空: ${key.url}\n'
-          '  状态码: $statusCode, 响应头: $respHeaders');
-      final statusInfo = statusCode != null ? '(状态码: $statusCode)' : '(无状态码)';
-      throw StateError('图片下载响应为空: ${key.url} $statusInfo');
+      throw StateError('图片下载响应为空: ${key.url}');
     }
 
     // 检测 HTML 错误页（服务器返回 200 但内容是 HTML 而非图片）
     if (_isHtmlResponse(bytes)) {
-      final preview = String.fromCharCodes(bytes.take(200));
-      throw StateError('服务器返回 HTML 而非图片数据: ${key.url} (前200字符: $preview)');
+      throw StateError('服务器返回 HTML 而非图片数据: ${key.url}');
     }
 
     // 调用 JS 解密（借鉴 Legado ImageUtils.decode）
@@ -168,41 +141,15 @@ class DecodedImageProvider extends ImageProvider<DecodedImageProvider> {
     // 解密失败（JS 执行错误/返回 null）：有 imageDecode 规则说明图片是加密的，
     // 用原始加密字节也无法解码，直接报错避免模糊的 "Invalid image data"
     if (decoded == null) {
-      final lastError = JsEngine.instance.lastEvalError;
-      final ruleJs = key.isCover
-          ? key.source.coverDecodeJs
-          : key.source.ruleContent?.imageDecode;
-      final rulePreview = (ruleJs != null && ruleJs.length > 200)
-          ? '${ruleJs.substring(0, 200)}...'
-          : (ruleJs ?? '(空)');
-      throw StateError('图片解密失败（JS返回null）: ${key.url}\n'
-          '  lastEvalError: $lastError\n'
-          '  ruleJs: $rulePreview');
+      throw StateError('图片解密失败: ${key.url}');
     }
 
     if (decoded.isEmpty) {
       throw StateError('图片解密后字节为空: ${key.url}');
     }
 
-    try {
-      final buffer = await ui.ImmutableBuffer.fromUint8List(decoded);
-      return decode(buffer);
-    } catch (e) {
-      // 解码失败时输出详细诊断：原始大小、解密后大小、前几字节
-      final origHex = bytes
-          .take(16)
-          .map((b) => b.toRadixString(16).padLeft(2, '0'))
-          .join(' ');
-      final decodedHex = decoded
-          .take(16)
-          .map((b) => b.toRadixString(16).padLeft(2, '0'))
-          .join(' ');
-      debugPrint('⚠️ [DecodedImageProvider] 图片解码失败: ${key.url}\n'
-          '  原始大小: ${bytes.length} bytes, 前16字节: $origHex\n'
-          '  解密后大小: ${decoded.length} bytes, 前16字节: $decodedHex\n'
-          '  错误: $e');
-      rethrow;
-    }
+    final buffer = await ui.ImmutableBuffer.fromUint8List(decoded);
+    return decode(buffer);
   }
 
   /// 检测字节数据是否为 HTML 而非图片
@@ -213,17 +160,6 @@ class DecodedImageProvider extends ImageProvider<DecodedImageProvider> {
     if (bytes.length < 6) return false;
     final prefix = String.fromCharCodes(bytes.take(9)).toLowerCase();
     return prefix.startsWith('<!doctype') || prefix.startsWith('<html');
-  }
-
-  /// 脱敏请求头值：过长值（如 Cookie）截断显示，便于诊断
-  static String _maskValue(String? value) {
-    if (value == null || value.isEmpty) return '(空)';
-    // 书源 header 通常是 UA/Referer，需要完整显示便于诊断
-    // 过长的值（如 Cookie）截断显示
-    if (value.length > 120) {
-      return '${value.substring(0, 120)}...(${value.length}字符)';
-    }
-    return value;
   }
 
   @override

@@ -1829,13 +1829,6 @@ return __returnValue;
           'JSON.stringify(Object.getOwnPropertyNames(globalThis))'
         );
         beforeProps = r.stringResult;
-        // 关键诊断：检查加载前 decode 是否已存在（脏全局检测）
-        final staleCheck = _jsRuntime!.evaluate(
-          'JSON.stringify({decodeExists: typeof decode !== "undefined", '
-          'decodeName: typeof decode !== "undefined" ? decode.name : null, '
-          'currentSource: typeof globalThis.__currentJsLib !== "undefined" ? globalThis.__currentJsLib : null})'
-        );
-        debugPrint('🔍 [loadJsLib] 加载前 ($sourceUrl) decode 状态: ${staleCheck.stringResult}');
       } catch (_) {}
     }
 
@@ -1845,7 +1838,6 @@ return __returnValue;
       _currentJsLibSourceUrl = sourceUrl;
     } catch (e) {
       final preview = jsLib.length > 200 ? '${jsLib.substring(0, 200)}...' : jsLib;
-      debugPrint('❌ [loadJsLib] jsLib 加载失败 ($sourceUrl): $e');
       AppLogger.instance.error(LogCategory.js,
           '[loadJsLib] jsLib 加载失败: $sourceUrl',
           detail: '错误: $e\n  jsLib预览: $preview');
@@ -1862,18 +1854,6 @@ return __returnValue;
         _computeNewGlobals(beforeProps, afterProps);
       } catch (_) {}
     }
-
-    // 诊断：加载后检查 decode 状态
-    if (kDebugMode && _jsRuntime != null) {
-      try {
-        final check = _jsRuntime!.evaluate(
-          'JSON.stringify({decodeType:typeof decode, decodeName:typeof decode!=="undefined"?decode.name:null, '
-          'newGlobalCount: ${_currentJsLibFunctions.length}, '
-          'newGlobals: ${jsonEncode(_currentJsLibFunctions.take(50).toList)}}}'
-        );
-        debugPrint('🔍 [loadJsLib] 加载后诊断 ($sourceUrl): ${check.stringResult}');
-      } catch (_) {}
-    }
   }
 
   /// 从 before/after 全局属性 JSON 列表计算 jsLib 新创建的全局属性
@@ -1888,9 +1868,7 @@ return __returnValue;
           _currentJsLibFunctions.add(prop);
         }
       }
-    } catch (e) {
-      debugPrint('⚠️ [_computeNewGlobals] 解析全局属性失败: $e');
-    }
+    } catch (_) {}
   }
 
   /// 清除当前已加载的 jsLib 全局函数
@@ -1900,40 +1878,13 @@ return __returnValue;
     try {
       final deleteCode = _currentJsLibFunctions.map((fn) => 'try{delete globalThis.$fn}catch(e){}').join(';');
       _jsRuntime!.evaluate(deleteCode);
-      debugPrint('🧹 [_clearCurrentJsLib] 清理 ${_currentJsLibFunctions.length} 个旧 jsLib 全局: ${_currentJsLibFunctions.take(20).join(",")}');
-    } catch (e) {
-      debugPrint('⚠️ [_clearCurrentJsLib] 清除旧 jsLib 函数失败: $e');
-    }
+    } catch (_) {}
     _currentJsLibFunctions.clear();
     _currentJsLibSourceUrl = null;
   }
 
   /// 获取书源的 jsLib 代码
   String? getJsLib(String sourceUrl) => _jsLibCache[sourceUrl];
-
-  /// 诊断：获取当前 jsLib 加载状态和全局函数列表
-  /// 用于排查 jsvmp 混淆代码的函数暴露问题
-  Future<String> diagnoseGlobalState() async {
-    if (_jsRuntime == null || !_initialized) return '(引擎未初始化)';
-    try {
-      final result = await _evalLock.synchronized(() async {
-        return _jsRuntime!.evaluate(
-          'JSON.stringify({'
-          'currentJsLibSourceUrl: typeof globalThis.__currentJsLibSourceUrl !== "undefined" ? globalThis.__currentJsLibSourceUrl : null,'
-          'decodeType: typeof decode,'
-          'decodeName: typeof decode !== "undefined" ? decode.name : null,'
-          'decodeLength: typeof decode !== "undefined" ? decode.length : null,'
-          'decodeHasPrototype: typeof decode !== "undefined" ? typeof decode.prototype : null,'
-          'decodeSrc: typeof decode !== "undefined" ? decode.toString().substring(0, 200) : null,'
-          'globalFunctions: Object.getOwnPropertyNames(globalThis).filter(function(k){return typeof globalThis[k] === "function" && k.charAt(0) !== "_";}).join(",")'
-          '})'
-        );
-      });
-      return result.stringResult;
-    } catch (e) {
-      return '诊断异常: $e';
-    }
-  }
 
   /// 清除书源的 jsLib 缓存
   void clearJsLib(String sourceUrl) {

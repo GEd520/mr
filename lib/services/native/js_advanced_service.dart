@@ -41,29 +41,14 @@ class JsAdvancedService {
     final ruleJs = _getImageDecodeRule(source, isCover);
     if (ruleJs == null || ruleJs.isEmpty) return imageBytes;
 
-    final origHex = imageBytes
-        .take(16)
-        .map((b) => b.toRadixString(16).padLeft(2, '0'))
-        .join(' ');
-    final jsLibPreview = source.jsLib != null
-        ? (source.jsLib!.length > 500 ? '${source.jsLib!.substring(0, 500)}...' : source.jsLib!)
-        : '(无jsLib)';
-    debugPrint('🔓 [decodeImage] 开始解密: $imageUrl\n'
-        '  原始大小: ${imageBytes.length} bytes, 前16字节: $origHex\n'
-        '  imageDecode规则: ${ruleJs.length > 100 ? '${ruleJs.substring(0, 100)}...' : ruleJs}\n'
-        '  jsLib前500字符: $jsLibPreview');
-
     try {
       // 加载书源 jsLib（借鉴 WebBook._loadJsLib）
-      // jsLib 中可能定义了 decode 等解密函数，必须在执行 ruleJs 前加载到 globalThis
-      // loadJsLib 内部有同一书源去重检查，重复调用无副作用
       final jsLib = source.jsLib;
       if (jsLib != null && jsLib.isNotEmpty) {
         JsEngine.instance.loadJsLib(source.bookSourceUrl, jsLib);
       }
 
-      // 借鉴 legado：result 传入原始字节数组（QuickJS 中为 Uint8Array）
-      // 使用 executeAsync 而非 executeSync，避免 _evalBusy 并发冲突导致返回 null
+      // 借鉴 legado：result 传入原始字节数组，src 传入图片 URL
       final result = await JsEngine.instance.executeAsync(
         ruleJs,
         imageBytes,
@@ -76,186 +61,29 @@ class JsAdvancedService {
         },
       );
 
-      if (result == null) {
-        final lastError = JsEngine.instance.lastEvalError;
-        final rulePreview = ruleJs.length > 200 ? '${ruleJs.substring(0, 200)}...' : ruleJs;
-        final origHex = imageBytes
-            .take(16)
-            .map((b) => b.toRadixString(16).padLeft(2, '0'))
-            .join(' ');
+      if (result == null) return null;
 
-        // [magic bytes 回退] 检查原始字节是否已是有效图片格式
-        // 场景：书源对未加密图片也调用 decode；jsvmp VM 在 QuickJS 跑不通返回 null；
-        //       但原始字节本身就是 WebP/JPEG/PNG/GIF/BMP，可直接使用
-        final plainFmt = _detectPlainImageFormat(imageBytes);
-        if (plainFmt != null) {
-          debugPrint('↩️ [decodeImage] JS返回null，回退原图($plainFmt): $imageUrl\n'
-              '  原始大小: ${imageBytes.length} bytes');
-          AppLogger.instance.info(LogCategory.js,
-              '[decodeImage] 回退原图($plainFmt): ${imageUrl.length > 60 ? imageUrl.substring(0, 60) : imageUrl}',
-              detail: 'URL: $imageUrl\n'
-                  '  原因: JS执行返回null，但原始字节是 $plainFmt 格式\n'
-                  '  lastEvalError: $lastError\n'
-                  '  原始大小: ${imageBytes.length} bytes');
-          return imageBytes;
-        }
-
-        // 诊断：全面检查 decode 函数身份和不同输入格式下的行为
-        // jsvmp 混淆会把函数伪装成 [native code]，需要多角度验证
-        String diagInfo = '';
-        try {
-          // 先获取全局状态诊断（不依赖 result 变量）
-          final globalDiag = await JsEngine.instance.diagnoseGlobalState();
-          debugPrint('🔍 [decodeImage] 全局状态: $globalDiag');
-
-          // 重新加载 jsLib，防止两次 executeAsync 之间其他书源执行导致 jsLib 被切换
-          final jsLib = source.jsLib;
-          if (jsLib != null && jsLib.isNotEmpty) {
-            JsEngine.instance.loadJsLib(source.bookSourceUrl, jsLib);
-          }
-          final diag = await JsEngine.instance.executeAsync(
-            'JSON.stringify({'
-            'decodeType: typeof decode,'
-            'decodeName: typeof decode !== "undefined" ? decode.name : null,'
-            'decodeLength: typeof decode !== "undefined" ? decode.length : null,'
-            'decodeSrc: typeof decode !== "undefined" ? decode.toString().substring(0, 300) : "undefined",'
-            // 关键诊断：用 Function.prototype.toString.call(decode) 绕过实例方法覆写
-            // jsLib 可能覆写 decode.toString 实例方法伪装成 native code，
-            // 但 Function.prototype.toString 本身没被覆写（toStringNative=true）
-            // 调用原始 toString 可拿到真实函数源码
-            'decodeRealSrc: typeof decode !== "undefined" ? Function.prototype.toString.call(decode).substring(0, 500) : "undefined",'
-            // 检测 decode.toString 是否被覆写为实例方法
-            'decodeToStringOwn: typeof decode !== "undefined" ? decode.hasOwnProperty("toString") : false,'
-            // jsvmp 伪装检测：Function.prototype.toString 是否被覆写
-            // 正常情况 toString 是 native function，jsvmp 会覆写它使所有函数显示为 [native code]
-            'toStringNative: Function.prototype.toString.toString().indexOf("[native code]") >= 0,'
-            // 尝试通过 Object.prototype.toString 拿到真实类型标签
-            'decodeObjectTag: typeof decode !== "undefined" ? Object.prototype.toString.call(decode) : null,'
-            // bind 检测：bind 创建的函数 toString() 返回 [native code]，且 name 以 "bound " 开头
-            'decodeIsBound: typeof decode !== "undefined" ? (decode.name && decode.name.indexOf("bound ") === 0) : false,'
-            // prototype 检测：bind 创建的函数没有 prototype
-            'decodeHasProto: typeof decode !== "undefined" ? decode.hasOwnProperty("prototype") : false,'
-            // decodeSimple 检测：globalFunctions 列表里有 decodeSimple，可能也是解密函数
-            'decodeSimpleType: typeof decodeSimple,'
-            'decodeSimpleResult: typeof decodeSimple === "function" ? (function(){try{var r=decodeSimple(result);return{ok:true,isNull:r===null,len:r?r.length:null,first16:r?Array.from(r.slice(0,16)).map(function(b){return b.toString(16).padStart(2,"0")}).join(" "):null}}catch(e){return{ok:false,err:e.toString()}}})() : null,'
-            'resultType: typeof result,'
-            'resultIsUint8Array: result instanceof Uint8Array,'
-            'resultLen: result ? result.length : null,'
-            'resultFirst16: result ? Array.from(result.slice(0,16)).map(function(b){return b.toString(16).padStart(2,"0")}).join(" ") : null,'
-            'callUint8Array: (function(){try{var r=decode(result);return{ok:true,type:typeof r,isNull:r===null,isUint8Array:r instanceof Uint8Array,len:r?r.length:null,stack:r===null?new Error().stack.substring(0,200):null}}catch(e){return{ok:false,err:e.toString(),stack:e.stack?e.stack.substring(0,200):null}}})(),'
-            // Reflect.apply 调用：用 null 作为 this，看是否有不同的结果
-            'callReflectApply: (function(){try{var r=Reflect.apply(decode,null,[result]);return{ok:true,isNull:r===null,len:r?r.length:null}}catch(e){return{ok:false,err:e.toString()}}})(),'
-            // call(globalThis, result)：用 globalThis 作为 this
-            'callWithGlobalThis: (function(){try{var r=decode.call(globalThis,result);return{ok:true,isNull:r===null,len:r?r.length:null}}catch(e){return{ok:false,err:e.toString()}}})(),'
-            'callArray: (function(){try{var r=decode(Array.from(result));return{ok:true,isNull:r===null,len:r?r.length:null}}catch(e){return{ok:false,err:e.toString()}}})(),'
-            'callBuffer: (function(){try{var r=decode(result.buffer);return{ok:true,isNull:r===null,len:r?r.length:null}}catch(e){return{ok:false,err:e.toString()}}})()'
-            '})',
-            imageBytes,
-            baseUrl: source.bookSourceUrl,
-            sourceEngine: source.engineType,
-            variables: {
-              'src': imageUrl,
-              'source': _sourceToMap(source),
-              'book': book ?? {},
-            },
-          );
-          // 把 globalDiag 拼入 diagInfo，确保在 error 日志中可见
-          diagInfo = 'globalDiag=$globalDiag\ndecodeDiag=${diag?.toString() ?? "(诊断返回null)"}';
-        } catch (diagErr) {
-          diagInfo = '诊断异常: $diagErr';
-        }
-
-        debugPrint('⚠️ [decodeImage] JS执行返回null: $imageUrl\n'
-            '  原始前16字节: $origHex\n'
-            '  lastEvalError: $lastError\n'
-            '  诊断: $diagInfo\n'
-            '  ruleJs前200字符: $rulePreview');
-        // 标题包含错误概要，避免日志去重时丢失关键信息
-        final lastErrorOrMsg = lastError ?? '(无错误信息)';
-        final errBrief = lastErrorOrMsg.length > 80
-            ? '${lastErrorOrMsg.substring(0, 80)}...'
-            : lastErrorOrMsg;
-        AppLogger.instance.error(LogCategory.js,
-            '[decodeImage] 解密失败: $errBrief',
-            detail: 'URL: $imageUrl\n'
-                '  原始前16字节: $origHex (大小: ${imageBytes.length})\n'
-                '  lastEvalError: $lastError\n'
-                '  诊断: $diagInfo\n'
-                '  ruleJs: $rulePreview');
-        return null;
-      }
-
-      // 兼容三种返回格式：
-      // 1. List<int> / List<num> → Uint8List
-      // 2. Base64 字符串 → base64Decode
-      // 3. 其他字符串 → 原样返回
+      // 兼容 List<num> → Uint8List
       if (result is List) {
-        // 兼容 List<num>（含 double）→ 转 int，避免 cast<int>() 抛异常
         final intList = result.map((e) => (e as num).toInt()).toList();
-        final decoded = Uint8List.fromList(intList);
-        final hex = decoded
-            .take(16)
-            .map((b) => b.toRadixString(16).padLeft(2, '0'))
-            .join(' ');
-        debugPrint('✅ [decodeImage] 解密成功(List): $imageUrl\n'
-            '  解密后大小: ${decoded.length} bytes, 前16字节: $hex');
-        return decoded;
+        return Uint8List.fromList(intList);
       }
 
       final resultStr = result.toString();
       if (resultStr.isEmpty || resultStr == 'null' || resultStr == 'undefined') {
-        final lastError = JsEngine.instance.lastEvalError;
-        final rulePreview = ruleJs.length > 200 ? '${ruleJs.substring(0, 200)}...' : ruleJs;
-
-        // [magic bytes 回退] 同 result==null 路径，检查原始字节是否已是有效图片
-        final plainFmt = _detectPlainImageFormat(imageBytes);
-        if (plainFmt != null) {
-          debugPrint('↩️ [decodeImage] JS返回空值($resultStr)，回退原图($plainFmt): $imageUrl\n'
-              '  原始大小: ${imageBytes.length} bytes');
-          AppLogger.instance.info(LogCategory.js,
-              '[decodeImage] 回退原图($plainFmt): ${imageUrl.length > 60 ? imageUrl.substring(0, 60) : imageUrl}',
-              detail: 'URL: $imageUrl\n'
-                  '  原因: JS返回空值($resultStr)，但原始字节是 $plainFmt 格式\n'
-                  '  lastEvalError: $lastError\n'
-                  '  原始大小: ${imageBytes.length} bytes');
-          return imageBytes;
-        }
-
-        debugPrint('⚠️ [decodeImage] JS返回空值: $imageUrl\n'
-            '  result=$resultStr, type=${result.runtimeType}\n'
-            '  lastEvalError: $lastError');
-        AppLogger.instance.error(LogCategory.js,
-            '[decodeImage] JS返回空值($resultStr): ${imageUrl.length > 60 ? imageUrl.substring(0, 60) : imageUrl}',
-            detail: 'URL: $imageUrl\n'
-                '  result=$resultStr, type=${result.runtimeType}\n'
-                '  lastEvalError: $lastError\n'
-                '  ruleJs: $rulePreview');
         return null;
       }
 
       // 尝试 Base64 解码
       try {
-        final decoded = base64Decode(resultStr);
-        final hex = decoded
-            .take(16)
-            .map((b) => b.toRadixString(16).padLeft(2, '0'))
-            .join(' ');
-        debugPrint('✅ [decodeImage] 解密成功(Base64): $imageUrl\n'
-            '  解密后大小: ${decoded.length} bytes, 前16字节: $hex');
-        return decoded;
+        return base64Decode(resultStr);
       } catch (_) {
-        debugPrint('⚠️ [decodeImage] JS返回非Base64格式: $imageUrl\n'
-            '  返回类型: ${result.runtimeType}\n'
-            '  返回值前100字符: ${resultStr.length > 100 ? resultStr.substring(0, 100) : resultStr}');
         return null;
       }
     } catch (e) {
-      final errStr = e.toString();
-      final errPreview = errStr.length > 80 ? errStr.substring(0, 80) : errStr;
-      debugPrint('❌ [decodeImage] 解密异常: $imageUrl → $e');
       AppLogger.instance.error(LogCategory.js,
-          '[decodeImage] 解密异常: $errPreview',
-          detail: 'URL: $imageUrl\n  完整错误: $errStr');
+          '[decodeImage] $imageUrl解密错误',
+          detail: '错误: $e');
       return null;
     }
   }
@@ -643,50 +471,6 @@ class JsAdvancedService {
   }
 
   // ===== 工具方法 =====
-
-  /// 检测字节数据是否为已知图片格式（magic bytes）
-  ///
-  /// 用于 decode 返回 null 时的回退：若原始字节本身就是有效图片，
-  /// 说明图片未加密，可直接使用原图，避免因 jsvmp VM 不兼容导致图片加载失败。
-  ///
-  /// 返回格式名称（WebP/JPEG/PNG/GIF/BMP），不是图片返回 null。
-  static String? _detectPlainImageFormat(Uint8List bytes) {
-    if (bytes.length < 12) return null;
-
-    // WebP: RIFF....WEBP
-    if (bytes[0] == 0x52 && bytes[1] == 0x49 &&
-        bytes[2] == 0x46 && bytes[3] == 0x46 &&
-        bytes[8] == 0x57 && bytes[9] == 0x45 &&
-        bytes[10] == 0x42 && bytes[11] == 0x50) {
-      return 'WebP';
-    }
-
-    // JPEG: FF D8 FF
-    if (bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF) {
-      return 'JPEG';
-    }
-
-    // PNG: 89 50 4E 47 0D 0A 1A 0A
-    if (bytes[0] == 0x89 && bytes[1] == 0x50 &&
-        bytes[2] == 0x4E && bytes[3] == 0x47 &&
-        bytes[4] == 0x0D && bytes[5] == 0x0A &&
-        bytes[6] == 0x1A && bytes[7] == 0x0A) {
-      return 'PNG';
-    }
-
-    // GIF: GIF8
-    if (bytes[0] == 0x47 && bytes[1] == 0x49 &&
-        bytes[2] == 0x46 && bytes[3] == 0x38) {
-      return 'GIF';
-    }
-
-    // BMP: BM
-    if (bytes[0] == 0x42 && bytes[1] == 0x4D) {
-      return 'BMP';
-    }
-
-    return null;
-  }
 
   Map<String, dynamic> _sourceToMap(BookSource source) {
     return {
