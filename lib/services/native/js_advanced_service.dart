@@ -79,14 +79,37 @@ class JsAdvancedService {
         final errBrief = lastErrorOrMsg.length > 80
             ? '${lastErrorOrMsg.substring(0, 80)}...'
             : lastErrorOrMsg;
+
+        // 诊断：检查 decode 函数是否存在、result 的类型和长度
+        // 借鉴 legado 的 debug 模式：失败时输出上下文信息帮助定位问题
+        String diagInfo = '';
+        try {
+          final diag = await JsEngine.instance.executeAsync(
+            'JSON.stringify({decodeType: typeof decode, resultType: typeof result, resultIsUint8Array: result instanceof Uint8Array, resultLength: result ? result.length : null, resultConstructor: result ? result.constructor.name : null})',
+            imageBytes,
+            baseUrl: source.bookSourceUrl,
+            sourceEngine: source.engineType,
+            variables: {
+              'src': imageUrl,
+              'source': _sourceToMap(source),
+              'book': book ?? {},
+            },
+          );
+          diagInfo = diag?.toString() ?? '(诊断返回null)';
+        } catch (diagErr) {
+          diagInfo = '诊断异常: $diagErr';
+        }
+
         debugPrint('⚠️ [decodeImage] JS执行返回null: $imageUrl\n'
             '  lastEvalError: $lastError\n'
+            '  诊断: $diagInfo\n'
             '  ruleJs前200字符: $rulePreview');
         // 标题包含错误概要，避免日志去重时丢失关键信息
         AppLogger.instance.error(LogCategory.js,
             '[decodeImage] 解密失败: $errBrief',
             detail: 'URL: $imageUrl\n'
                 '  lastEvalError: $lastError\n'
+                '  诊断: $diagInfo\n'
                 '  ruleJs: $rulePreview');
         return null;
       }
