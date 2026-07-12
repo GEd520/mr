@@ -294,7 +294,11 @@ static void _aes_key_cache_store(QuickJSBridge *bridge, const uint8_t *key, size
     aes_key_cache_entry_t *e = &bridge->aes_key_cache[target];
     e->hash = _fnv1a_hash((const char *)key, key_len);
     memcpy(e->key, key, key_len);  // 存储原始 key 内容用于碰撞检测
+    // 清零 key 尾部残留字节（key_len < AES_MAX_KEY_LEN 时，防止 LRU 复用槽位时旧 key 残留）
+    memset(e->key + key_len, 0, sizeof(e->key) - key_len);
     memcpy(e->round_key, round_key, rounds * 16);
+    // 同理清零 round_key 尾部（AES-128 用 160 字节，AES-256 用 224 字节，剩余部分防残留）
+    memset(e->round_key + rounds * 16, 0, sizeof(e->round_key) - rounds * 16);
     e->rounds = rounds;
     e->key_len = key_len;
     e->hits = 0;
@@ -1390,11 +1394,14 @@ static JSValue js_native_btoa(JSContext *ctx, JSValueConst this_val,
     if (argc < 1 || JS_IsNull(argv[0]) || JS_IsUndefined(argv[0])) {
         return JS_NewString(ctx, "");
     }
-    const char *input = JS_ToCString(ctx, argv[0]);
+    // [Bug 修复] 原用 JS_ToCString + strlen 获取输入，遇到 \0 字节会截断二进制字符串
+    // （WebP/JPEG 等图片数据大量包含 0x00 字节，导致 btoa 输出残缺 base64）
+    // 改用 JS_ToCStringLen 返回实际长度，正确处理包含 0x00 字节的数据
+    size_t input_len;
+    const char *input = JS_ToCStringLen(ctx, &input_len, argv[0]);
     if (!input) return JS_ThrowTypeError(ctx, "btoa: argument must be a string");
 
     // 解析 UTF-8 提取 code points（二进制字符串每个字符应为 0-255）
-    size_t input_len = strlen(input);
     uint8_t *bytes = (uint8_t *)malloc(input_len + 1);
     if (!bytes) {
         JS_FreeCString(ctx, input);
