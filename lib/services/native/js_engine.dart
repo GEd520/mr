@@ -1007,7 +1007,15 @@ class JsEngine {
           globalThis.src = src;
           $globalVarCode
 
-          var __returnValue = (function() { $wrappedCode })();
+          var __returnValue;
+          try {
+            __returnValue = (function() { $wrappedCode })();
+          } catch (e) {
+            // 兜底捕获 jsLib 函数未处理的异常（如 aesDecryptNative 抛出的 TypeError）
+            // 避免异常传播到 evaluate 顶层导致 evalResult.isError=true，调用方收到 null
+            console.error('[JS引擎] 函数执行异常: ' + e);
+            __returnValue = null;
+          }
           if (typeof __returnValue === 'object' && __returnValue !== null) {
 // Uint8Array / ArrayBuffer → base64 字符串（C 原生 b64FromBytes）
 // 避免大图片解密后用 JSON.stringify(Array.from(...)) 生成超长 JSON 数字数组
