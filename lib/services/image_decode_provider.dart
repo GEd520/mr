@@ -149,7 +149,11 @@ class DecodedImageProvider extends ImageProvider<DecodedImageProvider> {
     }
 
     final buffer = await ui.ImmutableBuffer.fromUint8List(decoded);
-    return decode(buffer);
+    try {
+      return await decode(buffer);
+    } catch (e) {
+      throw StateError('图片解码失败: ${key.url} - $e');
+    }
   }
 
   /// 检测字节数据是否为 HTML 而非图片
