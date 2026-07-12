@@ -90,7 +90,7 @@ class JsAdvancedService {
             JsEngine.instance.loadJsLib(source.bookSourceUrl, jsLib);
           }
           final diag = await JsEngine.instance.executeAsync(
-            'JSON.stringify({decodeSrc: decode.toString().substring(0, 500), callResult: (function(){try{var r=decode(result);return{ok:true,type:typeof r,isNull:r===null,isUint8Array:r instanceof Uint8Array,len:r?r.length:null}}catch(e){return{ok:false,err:e.toString()}}})()})',
+            'JSON.stringify({decodeSrc: typeof decode !== "undefined" ? decode.toString().substring(0, 500) : "undefined", callResult: (function(){try{var r=decode(result);return{ok:true,type:typeof r,isNull:r===null,isUint8Array:r instanceof Uint8Array,len:r?r.length:null}}catch(e){return{ok:false,err:e.toString()}}})()})',
             imageBytes,
             baseUrl: source.bookSourceUrl,
             sourceEngine: source.engineType,
