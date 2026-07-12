@@ -1826,6 +1826,12 @@ return __returnValue;
       _jsRuntime?.evaluate(jsLib);
       _currentJsLibSourceUrl = sourceUrl;
     } catch (e) {
+      // jsLib 加载失败时记录诊断日志，避免调用方看到 'function not defined' 却不知根因
+      final preview = jsLib.length > 200 ? '${jsLib.substring(0, 200)}...' : jsLib;
+      debugPrint('❌ [loadJsLib] jsLib 加载失败 ($sourceUrl): $e');
+      AppLogger.instance.error(LogCategory.js,
+          '[loadJsLib] jsLib 加载失败: $sourceUrl',
+          detail: '错误: $e\n  jsLib预览: $preview');
     }
   }
 
@@ -1837,6 +1843,7 @@ return __returnValue;
       final deleteCode = _currentJsLibFunctions.map((fn) => 'try{delete globalThis.$fn}catch(e){}').join(';');
       _jsRuntime!.evaluate(deleteCode);
     } catch (e) {
+      debugPrint('⚠️ [_clearCurrentJsLib] 清除旧 jsLib 函数失败: $e');
     }
     _currentJsLibFunctions.clear();
     _currentJsLibSourceUrl = null;
