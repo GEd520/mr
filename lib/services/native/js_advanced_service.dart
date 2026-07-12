@@ -79,6 +79,10 @@ class JsAdvancedService {
       if (result == null) {
         final lastError = JsEngine.instance.lastEvalError;
         final rulePreview = ruleJs.length > 200 ? '${ruleJs.substring(0, 200)}...' : ruleJs;
+        final origHex = imageBytes
+            .take(16)
+            .map((b) => b.toRadixString(16).padLeft(2, '0'))
+            .join(' ');
 
         // [magic bytes 回退] 检查原始字节是否已是有效图片格式
         // 场景：书源对未加密图片也调用 decode；jsvmp VM 在 QuickJS 跑不通返回 null；
@@ -123,6 +127,7 @@ class JsAdvancedService {
             'resultType: typeof result,'
             'resultIsUint8Array: result instanceof Uint8Array,'
             'resultLen: result ? result.length : null,'
+            'resultFirst16: result ? Array.from(result.slice(0,16)).map(function(b){return b.toString(16).padStart(2,"0")}).join(" ") : null,'
             'callUint8Array: (function(){try{var r=decode(result);return{ok:true,type:typeof r,isNull:r===null,isUint8Array:r instanceof Uint8Array,len:r?r.length:null,stack:r===null?new Error().stack.substring(0,200):null}}catch(e){return{ok:false,err:e.toString(),stack:e.stack?e.stack.substring(0,200):null}}})(),'
             'callArray: (function(){try{var r=decode(Array.from(result));return{ok:true,isNull:r===null,len:r?r.length:null}}catch(e){return{ok:false,err:e.toString()}}})(),'
             'callBuffer: (function(){try{var r=decode(result.buffer);return{ok:true,isNull:r===null,len:r?r.length:null}}catch(e){return{ok:false,err:e.toString()}}})()'
@@ -143,6 +148,7 @@ class JsAdvancedService {
         }
 
         debugPrint('⚠️ [decodeImage] JS执行返回null: $imageUrl\n'
+            '  原始前16字节: $origHex\n'
             '  lastEvalError: $lastError\n'
             '  诊断: $diagInfo\n'
             '  ruleJs前200字符: $rulePreview');
@@ -154,6 +160,7 @@ class JsAdvancedService {
         AppLogger.instance.error(LogCategory.js,
             '[decodeImage] 解密失败: $errBrief',
             detail: 'URL: $imageUrl\n'
+                '  原始前16字节: $origHex (大小: ${imageBytes.length})\n'
                 '  lastEvalError: $lastError\n'
                 '  诊断: $diagInfo\n'
                 '  ruleJs: $rulePreview');
