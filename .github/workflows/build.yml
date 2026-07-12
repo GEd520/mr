@@ -278,15 +278,13 @@ jobs:
   # ===== 鸿蒙 HarmonyOS 打包（允许失败）=====
   # 鸿蒙 Flutter SDK 为华为 fork（https://gitcode.com/openharmony-sig/flutter_flutter）
   # 当前基于 Flutter 3.27.4（Dart 3.6.2），项目要求 Dart >=3.12.0 可能暂不兼容
-  # 等华为 fork 更新后再正式启用，暂用 continue-on-error 允许失败
+  # 免账号方案：用社区 npm 包 @hmtools/hmos-cli-lite-linux 提供 hvigorw + ohpm
+  # 若包不含完整 OHOS SDK，后续按日志缺啥补啥（从 gitee 公开下载 OpenHarmony SDK）
   build-ohos:
     name: Build HarmonyOS
     needs: prepare
     runs-on: ubuntu-latest
     continue-on-error: true
-    outputs:
-      # 是否因未配 secret 而跳过（供 release job 判断是否下载产物）
-      skipped: ${{ steps.download_cli.outputs.skip }}
     steps:
       - uses: actions/checkout@v4
 
@@ -296,63 +294,63 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Cache HarmonyOS CLI
-        id: cache-cli
-        uses: actions/cache@v4
-        with:
-          path: ~/commandline-tools
-          key: ohos-cli-5.0.3
-
-      - name: Download HarmonyOS CLI
-        # 鸿蒙命令行工具（commandline-tools-linux-x64-5.0.3.XXX.zip）需自行下载并配置到 secret
-        # 下载地址需在仓库 Settings → Secrets 中配置 HARMONYOS_CLI_URL
-        # 未配置 secret 时优雅跳过（绿色 skipped），而非红色失败
-        id: download_cli
-        if: steps.cache-cli.outputs.cache-hit != 'true'
+      - name: Install HarmonyOS CLI
+        # 免账号方案：社区 npm 包 @hmtools/hmos-cli-lite-linux（MIT，gitcode: atomicservice/hmos-cli-lite）
+        # 包含 hvigorw(hmos-lite) + ohpm + hstack，npm install -g 即用，无需华为账号
+        id: install_cli
         run: |
-          if [ -z "${{ secrets.HARMONYOS_CLI_URL }}" ]; then
-            echo "⚠️ 未配置 HARMONYOS_CLI_URL secret，跳过鸿蒙构建"
-            echo "如需启用鸿蒙打包："
-            echo "1. 到 https://developer.huawei.com/consumer/cn/download/ 下载 commandline-tools-linux-x64"
-            echo "2. 上传到任意可公开访问的位置"
-            echo "3. 在仓库 Settings → Secrets 配置 HARMONYOS_CLI_URL"
-            echo "skip=true" >> $GITHUB_OUTPUT
-            exit 0
+          set -e
+          npm install -g @hmtools/hmos-cli-lite-linux
+          NPM_GLOBAL=$(npm root -g)
+          PKG_DIR="$NPM_GLOBAL/@hmtools/hmos-cli-lite-linux"
+          echo "=== 包顶层目录 ==="
+          ls -la "$PKG_DIR" || { echo "❌ 包目录不存在: $PKG_DIR"; exit 1; }
+          echo "=== 包内目录树（maxdepth 3）==="
+          find "$PKG_DIR" -maxdepth 3 -type d 2>/dev/null | head -50
+          # 探测 commandline-tools 实际位置（可能有多层嵌套）
+          CLI_HOME=""
+          for candidate in "$PKG_DIR" "$PKG_DIR/commandline-tools" "$PKG_DIR/command-line-tools"; do
+            if [ -d "$candidate/ohpm" ] || [ -d "$candidate/bin" ]; then
+              CLI_HOME="$candidate"
+              break
+            fi
+          done
+          # 兜底：搜索 ohpm 目录
+          if [ -z "$CLI_HOME" ]; then
+            CLI_HOME=$(find "$PKG_DIR" -name "ohpm" -type d 2>/dev/null -exec dirname {} \; | head -1)
           fi
-          mkdir -p ~/commandline-tools
-          wget -q -O /tmp/cli.zip "${{ secrets.HARMONYOS_CLI_URL }}"
-          unzip -q /tmp/cli.zip -d ~/commandline-tools
-          # 解压后通常有一层 commandline-tools 子目录，需要展平
-          if [ -d ~/commandline-tools/commandline-tools ]; then
-            mv ~/commandline-tools/commandline-tools/* ~/commandline-tools/
-            rmdir ~/commandline-tools/commandline-tools
+          if [ -z "$CLI_HOME" ]; then
+            echo "❌ 未在包内找到 commandline-tools 结构（缺 ohpm/bin）"
+            exit 1
           fi
-          echo "=== 鸿蒙 CLI 目录结构 ==="
-          ls ~/commandline-tools/
-
-      - name: Configure HarmonyOS Environment
-        if: steps.download_cli.outputs.skip != 'true'
-        run: |
-          CLI_HOME="$HOME/commandline-tools"
+          echo "=== CLI_HOME=$CLI_HOME ==="
+          ls -la "$CLI_HOME"
+          # 设置环境变量（兼容官方结构）
           echo "OHPM_HOME=$CLI_HOME/ohpm" >> $GITHUB_ENV
           echo "HOS_SDK_HOME=$CLI_HOME/sdk" >> $GITHUB_ENV
           echo "OHOS_SDK_HOME=$CLI_HOME/sdk" >> $GITHUB_ENV
           echo "$CLI_HOME/bin" >> $GITHUB_PATH
           echo "$CLI_HOME/ohpm/bin" >> $GITHUB_PATH
           echo "$CLI_HOME/hvigor/bin" >> $GITHUB_PATH
-          # 验证工具链
-          ohpm -v || { echo "❌ ohpm 未找到"; exit 1; }
-          hvigorw --version || { echo "❌ hvigorw 未找到"; exit 1; }
+          # npm global bin 已在 PATH，ohpm/hmos-lite 应可直接调用
+          echo "=== 验证工具链 ==="
+          which ohpm && ohpm -v || echo "⚠️ ohpm 未在 PATH（项目级 hvigorw 会用到）"
+          which hmos-lite && hmos-lite --version || echo "⚠️ hmos-lite 未在 PATH"
+          echo "=== SDK 目录检查 ==="
+          if [ -d "$CLI_HOME/sdk" ]; then
+            echo "✅ 包含 SDK 目录"
+            ls "$CLI_HOME/sdk" | head -10
+          else
+            echo "⚠️ 包不含 SDK 目录，可能需单独下载 OpenHarmony SDK"
+          fi
 
       - name: Clone HarmonyOS Flutter SDK
         # 华为 fork 的 Flutter SDK，分支基于 Flutter 3.27.4
-        if: steps.download_cli.outputs.skip != 'true'
         run: |
           git clone --depth 1 https://gitcode.com/openharmony-sig/flutter_flutter.git ~/ohos-flutter
           echo "$HOME/ohos-flutter/bin" >> $GITHUB_PATH
 
       - name: Enable HarmonyOS Platform
-        if: steps.download_cli.outputs.skip != 'true'
         run: |
           export PATH="$HOME/ohos-flutter/bin:$PATH"
           flutter --version
@@ -360,7 +358,6 @@ jobs:
 
       - name: Generate ohos Project
         # 项目仓库未提交 ohos/ 目录，CI 中用华为 fork Flutter 生成
-        if: steps.download_cli.outputs.skip != 'true'
         run: |
           export PATH="$HOME/ohos-flutter/bin:$PATH"
           flutter create --platforms ohos .
@@ -371,7 +368,6 @@ jobs:
         # 将鸿蒙版 CMakeLists.txt 和 version-script 注入 ohos 工程
         # CMakeLists.txt 引用项目根 quickjs/ 源码，编译 libquickjs_c_bridge.so
         # dart:ffi 通过 DynamicLibrary.open('libquickjs_c_bridge.so') 加载
-        if: steps.download_cli.outputs.skip != 'true'
         run: |
           mkdir -p ohos/entry/src/main/cpp
           cp quickjs/ohos/CMakeLists.txt ohos/entry/src/main/cpp/CMakeLists.txt
@@ -383,7 +379,6 @@ jobs:
         # 在 ohos/entry/build-profile.json5 的 entry 模块注入 externalNativeOptions
         # 让 hvigorw 调用 CMake 编译 libquickjs_c_bridge.so
         # 用 python 正则注入，兼容不同版本鸿蒙 Flutter 生成的文件结构
-        if: steps.download_cli.outputs.skip != 'true'
         run: |
           python3 << 'PYEOF'
           import re, sys
@@ -413,7 +408,6 @@ jobs:
 
       - name: Configure ohos Permissions
         # 在 module.json5 加网络权限（书源 HTTP 请求需要）
-        if: steps.download_cli.outputs.skip != 'true'
         run: |
           python3 << 'PYEOF'
           import re, sys
@@ -447,7 +441,6 @@ jobs:
           cat ohos/entry/src/main/module.json5
 
       - name: Update Version
-        if: steps.download_cli.outputs.skip != 'true'
         run: |
           export PATH="$HOME/ohos-flutter/bin:$PATH"
           VERSION="${{ needs.prepare.outputs.version }}"
@@ -457,27 +450,23 @@ jobs:
       - name: Relax Dart SDK Constraint
         # 鸿蒙 Flutter SDK 基于 3.27.4（Dart 3.6.2），项目要求 Dart >=3.12.0
         # CI 中临时放宽到 >=3.6.0，仅影响鸿蒙构建，不改动仓库 pubspec.yaml
-        if: steps.download_cli.outputs.skip != 'true'
         run: |
           sed -i "s/sdk: '>=3.12.0 <4.0.0'/sdk: '>=3.6.0 <4.0.0'/" pubspec.yaml
           echo "=== 放宽后的 SDK 约束 ==="
           grep "sdk:" pubspec.yaml
 
       - name: Install Dependencies
-        if: steps.download_cli.outputs.skip != 'true'
         run: |
           export PATH="$HOME/ohos-flutter/bin:$PATH"
           flutter pub get
 
       - name: Build HAP
-        if: steps.download_cli.outputs.skip != 'true'
         run: |
           export PATH="$HOME/ohos-flutter/bin:$PATH"
           flutter build hap --release
 
       - name: Rename HAP
         id: hap
-        if: steps.download_cli.outputs.skip != 'true'
         run: |
           VERSION="${{ needs.prepare.outputs.version }}"
           TYPE="${{ needs.prepare.outputs.release_type }}"
@@ -495,7 +484,7 @@ jobs:
           ls -lh "${HAP_NAME}"
 
       - name: Upload Artifacts
-        if: steps.download_cli.outputs.skip != 'true' && steps.hap.outputs.hap_name != ''
+        if: steps.hap.outputs.hap_name != ''
         uses: actions/upload-artifact@v4
         with:
           name: mr-ohos-${{ needs.prepare.outputs.version }}
@@ -517,11 +506,10 @@ jobs:
           echo "android_result=${{ needs.build-android.result }}" >> $GITHUB_OUTPUT
           echo "ios_result=${{ needs.build-ios.result }}" >> $GITHUB_OUTPUT
           echo "ohos_result=${{ needs.build-ohos.result }}" >> $GITHUB_OUTPUT
-          echo "ohos_skipped=${{ needs.build-ohos.outputs.skipped }}" >> $GITHUB_OUTPUT
           echo "=== 构建结果 ==="
           echo "Android: ${{ needs.build-android.result }}"
           echo "iOS: ${{ needs.build-ios.result }}"
-          echo "HarmonyOS: ${{ needs.build-ohos.result }} (skipped=${{ needs.build-ohos.outputs.skipped }})"
+          echo "HarmonyOS: ${{ needs.build-ohos.result }}"
 
       - name: Download Android Artifact
         if: needs.build-android.result == 'success'
@@ -538,7 +526,7 @@ jobs:
           path: artifacts/ios
 
       - name: Download HarmonyOS Artifact
-        if: needs.build-ohos.result == 'success' && needs.build-ohos.outputs.skipped != 'true'
+        if: needs.build-ohos.result == 'success'
         uses: actions/download-artifact@v4
         with:
           name: mr-ohos-${{ needs.prepare.outputs.version }}
@@ -595,18 +583,14 @@ jobs:
           fi
 
           # 鸿蒙 HarmonyOS 下载说明
-          OHOS_SKIPPED="${{ needs.build-ohos.outputs.skipped }}"
-          if [ "${{ needs.build-ohos.result }}" = "success" ] && [ "$OHOS_SKIPPED" != "true" ]; then
+          if [ "${{ needs.build-ohos.result }}" = "success" ]; then
             BODY="${BODY}### HarmonyOS（鸿蒙）\n"
             BODY="${BODY}- \`.hap\` 文件为鸿蒙安装包\n"
             BODY="${BODY}- 安装方法：通过 hdc 工具安装 \`hdc install xxx.hap\`，或推送到设备后用文件管理器安装\n"
             BODY="${BODY}- 需在鸿蒙系统设置中允许未知来源应用安装\n\n"
-          elif [ "$OHOS_SKIPPED" = "true" ]; then
-            BODY="${BODY}### HarmonyOS（鸿蒙）\n⏭️ 未配置 \`HARMONYOS_CLI_URL\` secret，已跳过鸿蒙打包\n"
-            BODY="${BODY}如需启用：下载 \`commandline-tools-linux-x64\` → 上传到可公开访问位置 → 配置仓库 Secret\n\n"
           else
             BODY="${BODY}### HarmonyOS（鸿蒙）\n⚠️ 打包失败或暂不支持，请查看 Actions 日志\n"
-            BODY="${BODY}（鸿蒙 Flutter SDK 当前基于 3.27.4，与项目 Dart 要求可能不兼容）\n\n"
+            BODY="${BODY}（鸿蒙 Flutter SDK 当前基于 3.27.4，与项目 Dart 要求可能不兼容；免账号 CLI 包可能缺 SDK）\n\n"
           fi
 
           # 写入文件避免转义问题
