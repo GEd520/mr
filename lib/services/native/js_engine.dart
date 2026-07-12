@@ -1818,34 +1818,78 @@ return __returnValue;
     // 切换书源：先清除旧的 jsLib 全局函数
     _clearCurrentJsLib();
 
-    // 提取 jsLib 中定义的函数名（用于后续清除）
-    _extractFunctionNames(jsLib);
+    // 「全局属性 diff」方案：记录 jsLib 加载前后的全局属性差异
+    // 原因：jsvmp 混淆代码不用 function/var 声明，正则提取函数名完全失效，
+    //       导致切换书源时旧 jsvmp 全局函数（如 decode）不会被清理，
+    //       新书源调用 decode 时实际执行的是旧书源的残留函数 → 返回 null
+    String? beforeProps;
+    if (_jsRuntime != null) {
+      try {
+        final r = _jsRuntime!.evaluate(
+          'JSON.stringify(Object.getOwnPropertyNames(globalThis))'
+        );
+        beforeProps = r.stringResult;
+        // 关键诊断：检查加载前 decode 是否已存在（脏全局检测）
+        final staleCheck = _jsRuntime!.evaluate(
+          'JSON.stringify({decodeExists: typeof decode !== "undefined", '
+          'decodeName: typeof decode !== "undefined" ? decode.name : null, '
+          'currentSource: typeof globalThis.__currentJsLib !== "undefined" ? globalThis.__currentJsLib : null})'
+        );
+        debugPrint('🔍 [loadJsLib] 加载前 ($sourceUrl) decode 状态: ${staleCheck.stringResult}');
+      } catch (_) {}
+    }
 
     // 把 jsLib eval 到全局作用域（等价于 legado 的 RhinoScriptEngine.eval(jsLib, scope)）
-    // 注意：不再预先 delete globalThis.decode 等函数
-    // 原因：经排查，QuickJS/flutter_js/C 桥接均未注册全局 decode 函数，
-    //       [native code] 外观是 jsvmp 混淆的伪装（Function.prototype.toString 被覆写），
-    //       预先 delete 反而会删除 jsLib 自己定义的函数
     try {
       _jsRuntime?.evaluate(jsLib);
       _currentJsLibSourceUrl = sourceUrl;
-      // 诊断：加载后检查 decode 是否存在（帮助排查 jsvmp 函数暴露问题）
-      if (kDebugMode && _jsRuntime != null) {
-        try {
-          final check = _jsRuntime!.evaluate(
-            'JSON.stringify({decodeType:typeof decode, decodeName:typeof decode!=="undefined"?decode.name:null, '
-            'funcCount: Object.getOwnPropertyNames(globalThis).filter(function(k){return typeof globalThis[k]==="function";}).length})'
-          );
-          debugPrint('🔍 [loadJsLib] 加载后诊断 ($sourceUrl): ${check.stringResult}');
-        } catch (_) {}
-      }
     } catch (e) {
-      // jsLib 加载失败时记录诊断日志，避免调用方看到 'function not defined' 却不知根因
       final preview = jsLib.length > 200 ? '${jsLib.substring(0, 200)}...' : jsLib;
       debugPrint('❌ [loadJsLib] jsLib 加载失败 ($sourceUrl): $e');
       AppLogger.instance.error(LogCategory.js,
           '[loadJsLib] jsLib 加载失败: $sourceUrl',
           detail: '错误: $e\n  jsLib预览: $preview');
+      return;
+    }
+
+    // 计算新创建的全局属性（jsLib 的产物），存入 _currentJsLibFunctions 供下次切换时清理
+    if (_jsRuntime != null && beforeProps != null) {
+      try {
+        final afterR = _jsRuntime!.evaluate(
+          'JSON.stringify(Object.getOwnPropertyNames(globalThis))'
+        );
+        final afterProps = afterR.stringResult;
+        _computeNewGlobals(beforeProps, afterProps);
+      } catch (_) {}
+    }
+
+    // 诊断：加载后检查 decode 状态
+    if (kDebugMode && _jsRuntime != null) {
+      try {
+        final check = _jsRuntime!.evaluate(
+          'JSON.stringify({decodeType:typeof decode, decodeName:typeof decode!=="undefined"?decode.name:null, '
+          'newGlobalCount: ${_currentJsLibFunctions.length}, '
+          'newGlobals: ${jsonEncode(_currentJsLibFunctions.take(50).toList)}}'
+        );
+        debugPrint('🔍 [loadJsLib] 加载后诊断 ($sourceUrl): ${check.stringResult}');
+      } catch (_) {}
+    }
+  }
+
+  /// 从 before/after 全局属性 JSON 列表计算 jsLib 新创建的全局属性
+  void _computeNewGlobals(String beforeJson, String afterJson) {
+    _currentJsLibFunctions.clear();
+    try {
+      final before = (jsonDecode(beforeJson) as List).cast<String>();
+      final after = (jsonDecode(afterJson) as List).cast<String>();
+      final beforeSet = before.toSet();
+      for (final prop in after) {
+        if (!beforeSet.contains(prop)) {
+          _currentJsLibFunctions.add(prop);
+        }
+      }
+    } catch (e) {
+      debugPrint('⚠️ [_computeNewGlobals] 解析全局属性失败: $e');
     }
   }
 
@@ -1856,30 +1900,12 @@ return __returnValue;
     try {
       final deleteCode = _currentJsLibFunctions.map((fn) => 'try{delete globalThis.$fn}catch(e){}').join(';');
       _jsRuntime!.evaluate(deleteCode);
+      debugPrint('🧹 [_clearCurrentJsLib] 清理 ${_currentJsLibFunctions.length} 个旧 jsLib 全局: ${_currentJsLibFunctions.take(20).join(",")}');
     } catch (e) {
       debugPrint('⚠️ [_clearCurrentJsLib] 清除旧 jsLib 函数失败: $e');
     }
     _currentJsLibFunctions.clear();
     _currentJsLibSourceUrl = null;
-  }
-
-  /// 提取 JS 代码中定义的函数名
-  /// 匹配 function xxx() 和 var/const/let/this.xxx = function/()=> 模式
-  static final _funcNamePattern = RegExp(r'function\s+(\w+)\s*\(');
-  static final _varFuncPattern = RegExp(r'(?:var|const|let)\s+(\w+)\s*=\s*(?:function|\(|[^(]*=>)');
-  static final _thisFuncPattern = RegExp(r'this\.(\w+)\s*=\s*(?:function|\(|[^(]*=>)');
-
-  void _extractFunctionNames(String jsLib) {
-    _currentJsLibFunctions.clear();
-    for (final m in _funcNamePattern.allMatches(jsLib)) {
-      _currentJsLibFunctions.add(m.group(1)!);
-    }
-    for (final m in _varFuncPattern.allMatches(jsLib)) {
-      _currentJsLibFunctions.add(m.group(1)!);
-    }
-    for (final m in _thisFuncPattern.allMatches(jsLib)) {
-      _currentJsLibFunctions.add(m.group(1)!);
-    }
   }
 
   /// 获取书源的 jsLib 代码
