@@ -142,6 +142,13 @@ class BookSourceImportService {
       bookSourceUrl: url,
       bookSourceName: name,
       bookSourceGroup: group,
+      bookSourceType: BookSourceType.values.firstWhere(
+        (e) => e.index == sourceType,
+        orElse: () => BookSourceType.text,
+      ),
+      enabled: true,
+      enabledExplore: hasExplore,
+      enabledCookieJar: true,
       jsLib: jsCodeTrimmed,
       engine: 'quickjs',
       sourceFormat: 'js',
