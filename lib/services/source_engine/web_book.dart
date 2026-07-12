@@ -300,6 +300,10 @@ class HttpClient {
   /// - badResponse: 服务器返回了错误状态码（4xx/5xx），重试无意义
   /// - cancel: 请求被主动取消
   /// - unknown: 未知错误，可能是 DNS 解析失败等永久性错误
+  ///
+  /// 例外：unknown 类型中的 HandshakeException（TLS 握手失败）可能是瞬时的
+  /// （服务器不稳定/网络干扰/TLS 会话缓存问题），值得重试。
+  /// 不直接引用 dart:io 的 HandshakeException（Web 平台不可用），用类型名检查。
   bool _isTransientNetworkError(DioException e) {
     switch (e.type) {
       case DioExceptionType.connectionError:
@@ -307,6 +311,11 @@ class HttpClient {
       case DioExceptionType.sendTimeout:
       case DioExceptionType.receiveTimeout:
         return true;
+      case DioExceptionType.unknown:
+        if (e.error != null && e.error.toString().contains('HandshakeException')) {
+          return true;
+        }
+        return false;
       default:
         return false;
     }
