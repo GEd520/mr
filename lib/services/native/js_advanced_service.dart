@@ -50,6 +50,14 @@ class JsAdvancedService {
         '  imageDecode规则: ${ruleJs.length > 100 ? '${ruleJs.substring(0, 100)}...' : ruleJs}');
 
     try {
+      // 加载书源 jsLib（借鉴 WebBook._loadJsLib）
+      // jsLib 中可能定义了 decode 等解密函数，必须在执行 ruleJs 前加载到 globalThis
+      // loadJsLib 内部有同一书源去重检查，重复调用无副作用
+      final jsLib = source.jsLib;
+      if (jsLib != null && jsLib.isNotEmpty) {
+        JsEngine.instance.loadJsLib(source.bookSourceUrl, jsLib);
+      }
+
       // 借鉴 legado：result 传入原始字节数组（QuickJS 中为 Uint8Array）
       // 使用 executeAsync 而非 executeSync，避免 _evalBusy 并发冲突导致返回 null
       final result = await JsEngine.instance.executeAsync(
