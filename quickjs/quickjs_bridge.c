@@ -258,7 +258,11 @@ static int _aes_key_cache_lookup(QuickJSBridge *bridge, const uint8_t *key, size
                 continue;  // hash 碰撞，跳过
             }
             e->hits++;
-            memcpy(out_round_key, e->round_key, e->rounds * 16);
+            // [Bug 修复] round_key 需要 (rounds + 1) * 16 字节（初始轮 + rounds 轮）
+            // 原代码只复制 rounds * 16 字节，少了最后一组 16 字节，
+            // 导致 aes_decrypt_block 在 L229 add_round_key(round_key + rounds*16) 读到栈上垃圾值，
+            // 表现为"第一张解密成功（缓存未命中走 aes_init），后续全失败（缓存命中但 round_key 不完整）"
+            memcpy(out_round_key, e->round_key, (e->rounds + 1) * 16);
             *out_rounds = e->rounds;
             return 1; // 命中
         }
@@ -296,9 +300,11 @@ static void _aes_key_cache_store(QuickJSBridge *bridge, const uint8_t *key, size
     memcpy(e->key, key, key_len);  // 存储原始 key 内容用于碰撞检测
     // 清零 key 尾部残留字节（key_len < AES_MAX_KEY_LEN 时，防止 LRU 复用槽位时旧 key 残留）
     memset(e->key + key_len, 0, sizeof(e->key) - key_len);
-    memcpy(e->round_key, round_key, rounds * 16);
-    // 同理清零 round_key 尾部（AES-128 用 160 字节，AES-256 用 224 字节，剩余部分防残留）
-    memset(e->round_key + rounds * 16, 0, sizeof(e->round_key) - rounds * 16);
+    // [Bug 修复] 同 lookup：需要复制 (rounds + 1) * 16 字节
+    // aes_key_expansion 写入 (Nr + 1) * 16 字节，aes_decrypt_block 读到 round_key[rounds*16]
+    memcpy(e->round_key, round_key, (rounds + 1) * 16);
+    // 同理清零 round_key 尾部（AES-128 用 176 字节，AES-256 用 240 字节，剩余部分防残留）
+    memset(e->round_key + (rounds + 1) * 16, 0, sizeof(e->round_key) - (rounds + 1) * 16);
     e->rounds = rounds;
     e->key_len = key_len;
     e->hits = 0;
