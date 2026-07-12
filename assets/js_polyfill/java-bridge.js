@@ -1041,6 +1041,22 @@ var java = {
       globalThis[k] = java[k];
     }
   }
+  // 将 java.jsoup 的方法暴露为全局函数（对齐 JS 书源模板文档中的可用API）
+  // 模板中声明 select/selectFirst/getAttr/clean 为全局函数，但实际只存在于 java.jsoup 对象下
+  if (java.jsoup) {
+    if (globalThis.select === undefined) {
+      globalThis.select = java.jsoup.select;
+    }
+    if (globalThis.selectFirst === undefined) {
+      globalThis.selectFirst = java.jsoup.selectFirst;
+    }
+    if (globalThis.getAttr === undefined) {
+      globalThis.getAttr = java.jsoup.getAttr;
+    }
+    if (globalThis.clean === undefined) {
+      globalThis.clean = java.jsoup.clean;
+    }
+  }
 })();
 
 // ===== _jsLog 辅助 =====

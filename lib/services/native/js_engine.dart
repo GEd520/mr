@@ -1844,8 +1844,17 @@ return __returnValue;
     }
 
     // 把 jsLib eval 到全局作用域（等价于 legado 的 RhinoScriptEngine.eval(jsLib, scope)）
+    // [Bug 修复] evaluate() 返回 JsEvalResult 不抛异常，必须检查 isError 字段
+    // 否则 jsLib 有语法错误时会被静默吞掉，search 等函数不会被定义到全局
     try {
-      _jsRuntime?.evaluate(jsLib);
+      final evalResult = _jsRuntime?.evaluate(jsLib);
+      if (evalResult != null && evalResult.isError) {
+        final preview = jsLib.length > 200 ? '${jsLib.substring(0, 200)}...' : jsLib;
+        AppLogger.instance.error(LogCategory.js,
+            '[loadJsLib] jsLib 加载失败: $sourceUrl',
+            detail: '错误: ${evalResult.stringResult}\n  jsLib预览: $preview');
+        return;
+      }
       _currentJsLibSourceUrl = sourceUrl;
       AppLogger.instance.info(LogCategory.js,
           '[loadJsLib] eval 成功: $sourceUrl');
@@ -1870,12 +1879,19 @@ return __returnValue;
       } catch (_) {}
     }
 
-    // 验证 search 函数是否在全局
+    // 验证 search 函数是否在全局（undefined 时输出 warn 级别，调试页面可见）
     if (_jsRuntime != null) {
       try {
         final r = _jsRuntime!.evaluate('typeof search');
-        AppLogger.instance.info(LogCategory.js,
-            '[loadJsLib] 验证: typeof search = ${r.stringResult}');
+        final searchType = r.stringResult;
+        if (searchType == 'undefined') {
+          // search 未定义：可能是 jsLib 有语法错误，或 search 函数被包裹在 IIFE 中
+          AppLogger.instance.warn(LogCategory.js,
+              '[loadJsLib] ⚠️ search 函数未定义！jsLib 可能加载失败或语法错误: $sourceUrl');
+        } else {
+          AppLogger.instance.info(LogCategory.js,
+              '[loadJsLib] 验证: typeof search = $searchType');
+        }
       } catch (_) {}
     }
   }
