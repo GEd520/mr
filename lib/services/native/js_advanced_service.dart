@@ -79,10 +79,22 @@ class JsAdvancedService {
       if (result == null) {
         final lastError = JsEngine.instance.lastEvalError;
         final rulePreview = ruleJs.length > 200 ? '${ruleJs.substring(0, 200)}...' : ruleJs;
-        final lastErrorOrMsg = lastError ?? '(无错误信息)';
-        final errBrief = lastErrorOrMsg.length > 80
-            ? '${lastErrorOrMsg.substring(0, 80)}...'
-            : lastErrorOrMsg;
+
+        // [magic bytes 回退] 检查原始字节是否已是有效图片格式
+        // 场景：书源对未加密图片也调用 decode；jsvmp VM 在 QuickJS 跑不通返回 null；
+        //       但原始字节本身就是 WebP/JPEG/PNG/GIF/BMP，可直接使用
+        final plainFmt = _detectPlainImageFormat(imageBytes);
+        if (plainFmt != null) {
+          debugPrint('↩️ [decodeImage] JS返回null，回退原图($plainFmt): $imageUrl\n'
+              '  原始大小: ${imageBytes.length} bytes');
+          AppLogger.instance.info(LogCategory.js,
+              '[decodeImage] 回退原图($plainFmt): ${imageUrl.length > 60 ? imageUrl.substring(0, 60) : imageUrl}',
+              detail: 'URL: $imageUrl\n'
+                  '  原因: JS执行返回null，但原始字节是 $plainFmt 格式\n'
+                  '  lastEvalError: $lastError\n'
+                  '  原始大小: ${imageBytes.length} bytes');
+          return imageBytes;
+        }
 
         // 诊断：全面检查 decode 函数身份和不同输入格式下的行为
         // jsvmp 混淆会把函数伪装成 [native code]，需要多角度验证
@@ -103,10 +115,15 @@ class JsAdvancedService {
             'decodeName: typeof decode !== "undefined" ? decode.name : null,'
             'decodeLength: typeof decode !== "undefined" ? decode.length : null,'
             'decodeSrc: typeof decode !== "undefined" ? decode.toString().substring(0, 300) : "undefined",'
+            // jsvmp 伪装检测：Function.prototype.toString 是否被覆写
+            // 正常情况 toString 是 native function，jsvmp 会覆写它使所有函数显示为 [native code]
+            'toStringNative: Function.prototype.toString.toString().indexOf("[native code]") >= 0,'
+            // 尝试通过 Object.prototype.toString 拿到真实类型标签
+            'decodeObjectTag: typeof decode !== "undefined" ? Object.prototype.toString.call(decode) : null,'
             'resultType: typeof result,'
             'resultIsUint8Array: result instanceof Uint8Array,'
             'resultLen: result ? result.length : null,'
-            'callUint8Array: (function(){try{var r=decode(result);return{ok:true,type:typeof r,isNull:r===null,isUint8Array:r instanceof Uint8Array,len:r?r.length:null}}catch(e){return{ok:false,err:e.toString()}}})(),'
+            'callUint8Array: (function(){try{var r=decode(result);return{ok:true,type:typeof r,isNull:r===null,isUint8Array:r instanceof Uint8Array,len:r?r.length:null,stack:r===null?new Error().stack.substring(0,200):null}}catch(e){return{ok:false,err:e.toString(),stack:e.stack?e.stack.substring(0,200):null}}})(),'
             'callArray: (function(){try{var r=decode(Array.from(result));return{ok:true,isNull:r===null,len:r?r.length:null}}catch(e){return{ok:false,err:e.toString()}}})(),'
             'callBuffer: (function(){try{var r=decode(result.buffer);return{ok:true,isNull:r===null,len:r?r.length:null}}catch(e){return{ok:false,err:e.toString()}}})()'
             '})',
@@ -119,7 +136,8 @@ class JsAdvancedService {
               'book': book ?? {},
             },
           );
-          diagInfo = diag?.toString() ?? '(诊断返回null)';
+          // 把 globalDiag 拼入 diagInfo，确保在 error 日志中可见
+          diagInfo = 'globalDiag=$globalDiag\ndecodeDiag=${diag?.toString() ?? "(诊断返回null)"}';
         } catch (diagErr) {
           diagInfo = '诊断异常: $diagErr';
         }
@@ -129,6 +147,10 @@ class JsAdvancedService {
             '  诊断: $diagInfo\n'
             '  ruleJs前200字符: $rulePreview');
         // 标题包含错误概要，避免日志去重时丢失关键信息
+        final lastErrorOrMsg = lastError ?? '(无错误信息)';
+        final errBrief = lastErrorOrMsg.length > 80
+            ? '${lastErrorOrMsg.substring(0, 80)}...'
+            : lastErrorOrMsg;
         AppLogger.instance.error(LogCategory.js,
             '[decodeImage] 解密失败: $errBrief',
             detail: 'URL: $imageUrl\n'
@@ -159,6 +181,21 @@ class JsAdvancedService {
       if (resultStr.isEmpty || resultStr == 'null' || resultStr == 'undefined') {
         final lastError = JsEngine.instance.lastEvalError;
         final rulePreview = ruleJs.length > 200 ? '${ruleJs.substring(0, 200)}...' : ruleJs;
+
+        // [magic bytes 回退] 同 result==null 路径，检查原始字节是否已是有效图片
+        final plainFmt = _detectPlainImageFormat(imageBytes);
+        if (plainFmt != null) {
+          debugPrint('↩️ [decodeImage] JS返回空值($resultStr)，回退原图($plainFmt): $imageUrl\n'
+              '  原始大小: ${imageBytes.length} bytes');
+          AppLogger.instance.info(LogCategory.js,
+              '[decodeImage] 回退原图($plainFmt): ${imageUrl.length > 60 ? imageUrl.substring(0, 60) : imageUrl}',
+              detail: 'URL: $imageUrl\n'
+                  '  原因: JS返回空值($resultStr)，但原始字节是 $plainFmt 格式\n'
+                  '  lastEvalError: $lastError\n'
+                  '  原始大小: ${imageBytes.length} bytes');
+          return imageBytes;
+        }
+
         debugPrint('⚠️ [decodeImage] JS返回空值: $imageUrl\n'
             '  result=$resultStr, type=${result.runtimeType}\n'
             '  lastEvalError: $lastError');
@@ -581,6 +618,50 @@ class JsAdvancedService {
   }
 
   // ===== 工具方法 =====
+
+  /// 检测字节数据是否为已知图片格式（magic bytes）
+  ///
+  /// 用于 decode 返回 null 时的回退：若原始字节本身就是有效图片，
+  /// 说明图片未加密，可直接使用原图，避免因 jsvmp VM 不兼容导致图片加载失败。
+  ///
+  /// 返回格式名称（WebP/JPEG/PNG/GIF/BMP），不是图片返回 null。
+  static String? _detectPlainImageFormat(Uint8List bytes) {
+    if (bytes.length < 12) return null;
+
+    // WebP: RIFF....WEBP
+    if (bytes[0] == 0x52 && bytes[1] == 0x49 &&
+        bytes[2] == 0x46 && bytes[3] == 0x46 &&
+        bytes[8] == 0x57 && bytes[9] == 0x45 &&
+        bytes[10] == 0x42 && bytes[11] == 0x50) {
+      return 'WebP';
+    }
+
+    // JPEG: FF D8 FF
+    if (bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF) {
+      return 'JPEG';
+    }
+
+    // PNG: 89 50 4E 47 0D 0A 1A 0A
+    if (bytes[0] == 0x89 && bytes[1] == 0x50 &&
+        bytes[2] == 0x4E && bytes[3] == 0x47 &&
+        bytes[4] == 0x0D && bytes[5] == 0x0A &&
+        bytes[6] == 0x1A && bytes[7] == 0x0A) {
+      return 'PNG';
+    }
+
+    // GIF: GIF8
+    if (bytes[0] == 0x47 && bytes[1] == 0x49 &&
+        bytes[2] == 0x46 && bytes[3] == 0x38) {
+      return 'GIF';
+    }
+
+    // BMP: BM
+    if (bytes[0] == 0x42 && bytes[1] == 0x4D) {
+      return 'BMP';
+    }
+
+    return null;
+  }
 
   Map<String, dynamic> _sourceToMap(BookSource source) {
     return {
