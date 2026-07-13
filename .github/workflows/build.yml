@@ -518,7 +518,20 @@ jobs:
       - name: Build HAP
         run: |
           export PATH="$HOME/ohos-flutter/bin:$PATH"
-          flutter build hap --release
+          # 诊断环境
+          echo "=== Node.js 版本 ==="
+          node --version
+          echo "=== hvigorw ==="
+          ls -la ohos/hvigorw 2>/dev/null || echo "❌ ohos/hvigorw 不存在"
+          echo "=== hvigor 目录 ==="
+          ls -la ohos/hvigor/ 2>/dev/null || echo "❌ ohos/hvigor/ 不存在"
+          echo "=== SDK 环境变量 ==="
+          echo "OHPM_HOME=$OHPM_HOME"
+          echo "OHOS_SDK_HOME=$OHOS_SDK_HOME"
+          echo "=== build-profile.json5 ==="
+          cat ohos/build-profile.json5 2>/dev/null || echo "(无)"
+          echo "=== 尝试构建（verbose）==="
+          flutter build hap --release --verbose 2>&1 | tail -80
 
       - name: Rename HAP
         id: hap
