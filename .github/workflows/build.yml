@@ -268,8 +268,10 @@ jobs:
 
   # ===== 鸿蒙 HarmonyOS 打包（允许失败）=====
   # 鸿蒙 Flutter SDK 为华为 fork（https://gitcode.com/openharmony-sig/flutter_flutter）
-  # CI 使用华为官方 npm registry 安装 hvigor 工具链（非第三方 Docker 镜像）
-  # registry: @ohos:registry=https://repo.harmonyos.com/npm/
+  # CI 使用华为官方 Command Line Tools（含 Node.js 18 + hvigorw + ohpm + SDK + hdc）
+  # 官方文档：https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/ide-command-line-building-app
+  # 下载地址：https://developer.huawei.com/consumer/cn/download/command-line-tools-for-hmos
+  # 需在仓库 Settings → Secrets → Actions 配置 HARMONYOS_CLI_URL（zip 下载链接）
   build-ohos:
     name: Build HarmonyOS
     needs: prepare
@@ -278,44 +280,57 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node.js 18
-        # hvigor 要求 Node.js 18（与官方 commandline-tools 一致）
-        uses: actions/setup-node@v4
+      - name: Setup JDK 17
+        # 官方文档要求 JDK 17（签名工具 hap-sign-tool.jar 需要 Java）
+        uses: actions/setup-java@v4
         with:
-          node-version: '18'
+          java-version: '17'
+          distribution: 'temurin'
 
-      - name: Install HarmonyOS Tools (Official npm + SDK)
-        # hvigor + hvigor-ohos-plugin 从华为官方 npm registry 安装
-        # SDK 不在 npm 上，从 @hmtools 包提取 SDK 目录后不加入 PATH
-        # 删除 @hmtools 的损坏 res/material/，避免干扰官方插件
-        # 鸿蒙 5+ 不支持 Java，hvigor 为 Node.js 工具，无需 JDK
+      - name: Download & Setup Command Line Tools
+        # Command Line Tools 包含 Node.js 18 + hvigorw + ohpm + SDK + hdc
+        # 需在仓库 Settings → Secrets → Actions 配置 HARMONYOS_CLI_URL
+        # 下载地址：https://developer.huawei.com/consumer/cn/download/command-line-tools-for-hmos
+        env:
+          CLI_URL: ${{ secrets.HARMONYOS_CLI_URL }}
         run: |
           set -e
-          # 配置华为官方 npm registry（@ohos scope）
-          npm config set @ohos:registry=https://repo.harmonyos.com/npm/
+          if [ -z "$CLI_URL" ]; then
+            echo "❌ 未配置 HARMONYOS_CLI_URL secret"
+            echo "请从 https://developer.huawei.com/consumer/cn/download/command-line-tools-for-hmos 下载"
+            echo "上传到 GitHub Release 后将下载链接配置为 HARMONYOS_CLI_URL secret"
+            exit 1
+          fi
+          echo "=== 下载 Command Line Tools ==="
+          wget -q --no-check-certificate "$CLI_URL" -O /tmp/commandline-tools.zip
+          echo "=== 解压到 /opt ==="
+          unzip -q /tmp/commandline-tools.zip -d /opt/
+          rm /tmp/commandline-tools.zip
+          CMD_DIR="/opt"
+          # 设置环境变量（按官方文档）
+          export NODE_HOME=${CMD_DIR}/command-line-tools/tool/node
+          export HDC_HOME=${CMD_DIR}/command-line-tools/sdk/default/openharmony/toolchains
+          echo "NODE_HOME=${NODE_HOME}" >> $GITHUB_ENV
+          echo "HDC_HOME=${HDC_HOME}" >> $GITHUB_ENV
+          echo "${CMD_DIR}/command-line-tools/bin" >> $GITHUB_PATH
+          echo "${NODE_HOME}/bin" >> $GITHUB_PATH
+          echo "${HDC_HOME}" >> $GITHUB_PATH
+          # 验证工具链
+          echo "=== 验证工具链 ==="
+          node -v
+          hvigorw -v
+          ohpm -v
+          java -version
+
+      - name: Configure npm & ohpm Registry
+        # 按官方文档配置 npm 和 ohpm 镜像仓库
+        run: |
+          npm config set registry https://repo.huaweicloud.com/repository/npm/
+          npm config set @ohos:registry https://repo.harmonyos.com/npm/
+          ohpm config set registry https://ohpm.openharmony.cn/ohpm/
+          ohpm config set strict_ssl false
           echo "=== .npmrc ==="
           cat ~/.npmrc
-
-          # SDK 不在 npm registry 上，从 @hmtools 提取 SDK 目录
-          # 仅用 SDK 文件，不用其 hvigor/ohpm，不加入 PATH
-          npm install -g @hmtools/hmos-cli-lite-linux
-          NPM_GLOBAL=$(npm root -g)
-          PKG_DIR="$NPM_GLOBAL/@hmtools/hmos-cli-lite-linux"
-          # 探测 SDK 位置
-          SDK_HOME=$(find "$PKG_DIR" -name "sdk" -type d 2>/dev/null | head -1)
-          if [ -n "$SDK_HOME" ]; then
-            echo "HOS_SDK_HOME=$SDK_HOME" >> $GITHUB_ENV
-            echo "OHOS_SDK_HOME=$SDK_HOME" >> $GITHUB_ENV
-            echo "=== SDK 目录: $SDK_HOME ==="
-            ls "$SDK_HOME" | head -10
-          else
-            echo "⚠️ 未找到 SDK 目录"
-          fi
-          # 删除 @hmtools 的损坏 res/material/，避免 hvigor 加载到它
-          find "$PKG_DIR" -path "*/res/material" -type d -exec rm -rf {} + 2>/dev/null || true
-          echo "=== 已清除 @hmtools 的 res/material ==="
-          echo "=== Node.js 版本 ==="
-          node -v
 
       - name: Clone HarmonyOS Flutter SDK
         # 华为 fork 的 Flutter SDK，动态获取最高 release 版本分支
@@ -394,7 +409,8 @@ jobs:
 
       - name: Generate ohos Project
         # CI 中用华为 fork Flutter 生成 ohos 工程骨架
-        # 签名材料和 build-profile.json5 已预提交到仓库
+        # 签名材料预提交在 ohos/sign/，build-profile.json5 由 flutter create 生成
+        # 生成后注入 signingConfigs（compatibleSdkVersion 由 SDK 版本决定）
         run: |
           export PATH="$HOME/ohos-flutter/bin:$PATH"
           flutter create --platforms ohos .
@@ -402,7 +418,47 @@ jobs:
           ls -la ohos/
           echo "=== 签名材料 ==="
           ls -la ohos/sign/
-          echo "=== build-profile.json5 ==="
+          echo "=== 生成的 build-profile.json5 ==="
+          cat ohos/build-profile.json5
+          # 注入 signingConfigs
+          python3 << 'PYEOF'
+          import json, re, sys
+          path = 'ohos/build-profile.json5'
+          with open(path, 'r', encoding='utf-8') as f:
+              content = f.read()
+          signing_block = '''"signingConfigs": [
+      {
+        "name": "default",
+        "type": "HarmonyOS",
+        "material": {
+          "storeFile": "./sign/debug.p12",
+          "storePassword": "0000001B2A3C4D5E6F7A8B9C0D1E2F3",
+          "keyAlias": "debugKey",
+          "keyPassword": "0000001B2A3C4D5E6F7A8B9C0D1E2F3",
+          "signAlg": "SHA256withECDSA",
+          "profile": "./sign/debug.p7b",
+          "certpath": "./sign/debug.cer"
+        }
+      }
+    ]'''
+          # 替换 signingConfigs（空数组或已有内容）
+          if '"signingConfigs"' in content:
+              content = re.sub(r'"signingConfigs"\s*:\s*\[.*?\]', signing_block, content, count=1, flags=re.DOTALL)
+          else:
+              content = re.sub(r'("app"\s*:\s*\{)', r'\1\n    ' + signing_block + ',', content, count=1)
+          # 给 product 加 signingConfig
+          if '"signingConfig"' not in content:
+              content = re.sub(
+                  r'("products"\s*:\s*\[\s*\{)',
+                  r'\1\n        "signingConfig": "default",',
+                  content,
+                  count=1
+              )
+          with open(path, 'w', encoding='utf-8') as f:
+              f.write(content)
+          print('✅ 已注入 signingConfigs')
+          PYEOF
+          echo "=== 注入后的 build-profile.json5 ==="
           cat ohos/build-profile.json5
 
       - name: Inject QuickJS C Build
@@ -494,8 +550,8 @@ jobs:
           flutter pub get
 
       - name: Build HAP
-        # 使用官方 npm 安装的 hvigor 工具链构建
-        # 签名材料预提交在 ohos/sign/，build-profile.json5 已配置 signingConfigs
+        # 使用官方 Command Line Tools 的 hvigorw 构建
+        # 签名材料预提交在 ohos/sign/，build-profile.json5 已注入 signingConfigs
         run: |
           export PATH="$HOME/ohos-flutter/bin:$PATH"
           echo "=== 签名材料 ==="
