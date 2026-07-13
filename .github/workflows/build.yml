@@ -145,20 +145,11 @@ jobs:
           echo "apk_name=$APK_NAME" >> $GITHUB_OUTPUT
           ls -lh "${APK_NAME}"
 
-      - name: Compress APK
-        run: |
-          APK_NAME="${{ steps.apk.outputs.apk_name }}"
-          ZIP_NAME="${APK_NAME%.apk}.zip"
-          zip -j "${ZIP_NAME}" "${APK_NAME}"
-          echo "zip_name=${ZIP_NAME}" >> $GITHUB_ENV
-
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: mr-android-${{ needs.prepare.outputs.version }}
-          path: |
-            ${{ steps.apk.outputs.apk_name }}
-            ${{ env.zip_name }}
+          path: ${{ steps.apk.outputs.apk_name }}
           retention-days: 30
 
   # ===== iOS 打包（允许失败）=====
