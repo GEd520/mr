@@ -465,43 +465,31 @@ jobs:
           ls -la ohos/entry/src/main/cpp/
 
       - name: Configure CMake in build-profile
-        # 在 ohos/entry/build-profile.json5 的 entry 模块注入 externalNativeOptions
+        # 直接覆盖 ohos/entry/build-profile.json5，注入 externalNativeOptions 到 buildOption 内
         # 让 hvigorw 调用 CMake 编译 libquickjs_c_bridge.so
-        # 用 python 正则注入，兼容不同版本鸿蒙 Flutter 生成的文件结构
         run: |
-          python3 << 'PYEOF'
-          import re, sys
-          path = 'ohos/entry/build-profile.json5'
-          with open(path, 'r', encoding='utf-8') as f:
-              content = f.read()
-          if 'externalNativeOptions' in content:
-              print('⚠️ externalNativeOptions 已存在，跳过')
-              sys.exit(0)
-          # externalNativeOptions 必须在 buildOption 对象内
-          ext = '''"externalNativeOptions": {
-        "path": "./src/main/cpp/CMakeLists.txt",
-        "arguments": "",
-        "cppFlags": "",
-        "abiFilters": ["arm64-v8a"]
-      }'''
-          # 匹配 "buildOption": { } 空对象，替换为带 externalNativeOptions 的
-          new_content = re.sub(
-              r'"buildOption"\s*:\s*\{\s*\}',
-              '"buildOption": {\n    ' + ext + '\n  }',
-              content, count=1)
-          if new_content == content:
-              # 匹配 "buildOption": { 后面有内容的情况
-              new_content = re.sub(
-                  r'("buildOption"\s*:\s*\{)',
-                  r'\1\n    ' + ext + ',',
-                  content, count=1)
-          if new_content == content:
-            print('⚠️ 未找到 buildOption，跳过注入')
-            sys.exit(0)
-          with open(path, 'w', encoding='utf-8') as f:
-              f.write(new_content)
-          print('✅ 已在 buildOption 内注入 externalNativeOptions')
-          PYEOF
+          cat > ohos/entry/build-profile.json5 << 'EOF'
+          {
+            "apiType": "stageMode",
+            "buildOption": {
+              "externalNativeOptions": {
+                "path": "./src/main/cpp/CMakeLists.txt",
+                "arguments": "",
+                "cppFlags": "",
+                "abiFilters": ["arm64-v8a"]
+              }
+            },
+            "targets": [
+              {
+                "name": "default",
+                "runtimeOS": "HarmonyOS"
+              },
+              {
+                "name": "ohosTest"
+              }
+            ]
+          }
+          EOF
           echo "=== build-profile.json5 ==="
           cat ohos/entry/build-profile.json5
 
