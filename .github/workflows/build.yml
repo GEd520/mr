@@ -530,14 +530,22 @@ jobs:
           flutter pub get
 
       - name: Build HAP
-        # 签名材料来自 Flutter SDK 模板（官方调试签名，确保 p7b 格式合法）
-        # build-profile.json5 使用 flutter create 生成的官方 signingConfigs
+        # 签名材料预提交在 ohos/sign/，build-profile.json5 已配置 signingConfigs
+        # hvigor 插件自带的 res/material/ 目录有损坏的签名材料，必须删除
+        # 错误提示原文：clear the .../res folder and perform signing again
         run: |
           export PATH="$HOME/ohos-flutter/bin:$PATH"
           echo "=== 签名材料 ==="
           ls -la ohos/sign/
           echo "=== build-profile.json5 ==="
           cat ohos/build-profile.json5
+          # 删除 hvigor 插件自带的损坏签名材料
+          CLI_PLUGIN=$(npm root -g)/@hmtools/hmos-cli-lite-linux/command-line-tools/hvigor/hvigor-ohos-plugin
+          echo "=== 删除前 res/material 目录 ==="
+          ls -la "$CLI_PLUGIN/res/material/" 2>/dev/null || echo "res/material 不存在"
+          rm -rf "$CLI_PLUGIN/res/material"
+          echo "=== 删除后 ==="
+          ls -la "$CLI_PLUGIN/res/" 2>/dev/null || echo "res 目录不存在"
           echo "=== 尝试构建 debug HAP ==="
           set +e
           flutter build hap --debug --verbose > /tmp/hap-build.log 2>&1
