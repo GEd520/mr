@@ -486,8 +486,14 @@ jobs:
               },'''
           new_content = re.sub(r'("type"\s*:\s*"entry")', ext + r'\n            \1', content, count=1)
           if new_content == content:
-              print('⚠️ 未找到 "type": "entry"，尝试在 module 配置末尾追加')
-              new_content = content.rstrip().rstrip('}') + '  ' + ext.rstrip(',') + '\n}\n'
+              print('⚠️ 未找到 "type": "entry"，在最后一个 } 前插入')
+              # 去掉末尾的 } 和空白，加逗号后插入 ext（不带尾逗号），再加 }
+              stripped = content.rstrip()
+              if stripped.endswith('}'):
+                  stripped = stripped[:-1].rstrip()
+              if stripped.endswith(','):
+                  stripped = stripped[:-1].rstrip()
+              new_content = stripped + ',\n  ' + ext.rstrip(',') + '\n}\n'
           with open(path, 'w', encoding='utf-8') as f:
               f.write(new_content)
           print('✅ 已注入 externalNativeOptions')
