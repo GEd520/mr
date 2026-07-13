@@ -543,10 +543,12 @@ jobs:
           BUILD_EXIT=$?
           set -e
           echo "=== 构建退出码: $BUILD_EXIT ==="
-          echo "=== 错误行 ==="
-          grep -iE "error|fail|exception|illegal|sign|hvigor" /tmp/hap-build.log | head -30
-          echo "=== 最后 60 行 ==="
-          tail -60 /tmp/hap-build.log
+          echo "=== hvigor 错误上下文 ==="
+          grep -B 2 -A 25 "hvigor ERROR\|Error Message\|Try the following\|illegal\|Signing" /tmp/hap-build.log
+          echo "=== build-profile.json5（清除后）==="
+          cat ohos/build-profile.json5
+          echo "=== 最后 80 行 ==="
+          tail -80 /tmp/hap-build.log
           exit $BUILD_EXIT
 
       - name: Rename HAP
