@@ -516,17 +516,36 @@ jobs:
           flutter pub get
 
       - name: Build HAP
-        # 鸿蒙 release 构建需要签名材料（证书 + profile），CI 无华为开发者签名
-        # 先用 debug 模式（默认调试签名），验证构建流程跑通
-        # 后续如有签名材料，改回 --release
+        # 鸿蒙 release/debug 构建可能因签名材料损坏失败
+        # npm 包 @hmtools/hmos-cli-lite-linux 的默认签名材料可能 "is illegal"
+        # 清除 signingConfigs + 输出完整错误日志定位问题
         run: |
           export PATH="$HOME/ohos-flutter/bin:$PATH"
-          echo "=== Node.js 版本 ==="
-          node --version
-          echo "=== Dart 版本 ==="
-          dart --version
+          # 清除 build-profile.json5 中的 signingConfigs，避免签名材料校验
+          python3 -c "
+          import re
+          for p in ['ohos/build-profile.json5', 'ohos/entry/build-profile.json5']:
+              try:
+                  with open(p, 'r', encoding='utf-8') as f: c = f.read()
+                  # 删除 signingConfigs 字段（含多行数组内容）
+                  n = re.sub(r'\"signingConfigs\"\s*:\s*\[[^\]]*\],?', '', c, flags=re.DOTALL)
+                  if n != c:
+                      with open(p, 'w', encoding='utf-8') as f: f.write(n)
+                      print(f'✅ {p}: 已清除 signingConfigs')
+                  else:
+                      print(f'⚠️ {p}: 无 signingConfigs')
+              except FileNotFoundError:
+                  print(f'⚠️ {p}: 文件不存在')
+          "
           echo "=== 尝试构建 debug HAP ==="
-          flutter build hap --debug --verbose 2>&1 | tail -100
+          flutter build hap --debug --verbose > /tmp/hap-build.log 2>&1
+          BUILD_EXIT=$?
+          echo "=== 构建退出码: $BUILD_EXIT ==="
+          echo "=== 错误行 ==="
+          grep -iE "error|fail|exception|illegal|sign|hvigor" /tmp/hap-build.log | head -30
+          echo "=== 最后 60 行 ==="
+          tail -60 /tmp/hap-build.log
+          exit $BUILD_EXIT
 
       - name: Rename HAP
         id: hap
