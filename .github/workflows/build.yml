@@ -287,7 +287,7 @@ jobs:
       - name: Install HarmonyOS Tools (Official npm)
         # 配置华为官方 npm registry，让 hvigorw 的 pnpm install 从官方源拉包
         # 官方包的 res/material 目录完整无损，不再需要 rm -rf hack
-        # @hmtools/hmos-cli-lite-linux 仅提供 ohpm，不用其 hvigor
+        # 彻底移除第三方社区包 @hmtools/hmos-cli-lite-linux
         # 鸿蒙 5+ 不支持 Java，hvigor 为 Node.js 工具，无需 JDK
         run: |
           set -e
@@ -295,26 +295,7 @@ jobs:
           npm config set @ohos:registry=https://repo.harmonyos.com/npm/
           echo "=== .npmrc ==="
           cat ~/.npmrc
-          # 安装 ohpm（来自社区包，仅用 ohpm，不用其 hvigor）
-          npm install -g @hmtools/hmos-cli-lite-linux
-          NPM_GLOBAL=$(npm root -g)
-          PKG_DIR="$NPM_GLOBAL/@hmtools/hmos-cli-lite-linux"
-          # 探测 ohpm 位置（可能有多层嵌套）
-          OHPM_HOME=$(find "$PKG_DIR" -name "ohpm" -type d 2>/dev/null -exec dirname {} \; | head -1)
-          if [ -n "$OHPM_HOME" ]; then
-            echo "OHPM_HOME=$OHPM_HOME/ohpm" >> $GITHUB_ENV
-            echo "$OHPM_HOME/ohpm/bin" >> $GITHUB_PATH
-            echo "$OHPM_HOME/bin" >> $GITHUB_PATH
-            # SDK 环境变量
-            if [ -d "$OHPM_HOME/sdk" ]; then
-              echo "HOS_SDK_HOME=$OHPM_HOME/sdk" >> $GITHUB_ENV
-              echo "OHOS_SDK_HOME=$OHPM_HOME/sdk" >> $GITHUB_ENV
-            fi
-          fi
-          # 配置 ohpm registry
-          ohpm config set registry https://ohpm.openharmony.cn/ohpm/ 2>/dev/null || true
-          echo "=== 工具链验证 ==="
-          which ohpm && ohpm -v
+          echo "=== Node.js 版本 ==="
           node -v
 
       - name: Clone HarmonyOS Flutter SDK
