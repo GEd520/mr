@@ -315,11 +315,11 @@ jobs:
           echo "${CMD_DIR}/bin" >> $GITHUB_PATH
           echo "${NODE_HOME}/bin" >> $GITHUB_PATH
           echo "${HDC_HOME}" >> $GITHUB_PATH
-          # 验证工具链
+          # 验证工具链（$GITHUB_PATH 在同一步骤不生效，用完整路径）
           echo "=== 验证工具链 ==="
-          node -v
-          hvigorw -v
-          ohpm -v
+          ${CMD_DIR}/tool/node/bin/node -v
+          ${CMD_DIR}/bin/hvigorw -v
+          ${CMD_DIR}/bin/ohpm -v
           java -version
 
       - name: Configure npm & ohpm Registry
