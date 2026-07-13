@@ -285,22 +285,16 @@ jobs:
           node-version: '18'
 
       - name: Install HarmonyOS Tools (Official npm)
-        # 使用华为官方 npm registry 安装 hvigor + hvigor-ohos-plugin
+        # 配置华为官方 npm registry，让 hvigorw 的 pnpm install 从官方源拉包
         # 官方包的 res/material 目录完整无损，不再需要 rm -rf hack
-        # 同时安装 @hmtools/hmos-cli-lite-linux 仅提供 ohpm
+        # @hmtools/hmos-cli-lite-linux 仅提供 ohpm，不用其 hvigor
         # 鸿蒙 5+ 不支持 Java，hvigor 为 Node.js 工具，无需 JDK
         run: |
           set -e
-          # 配置华为官方 npm registry
+          # 配置华为官方 npm registry（@ohos scope）
           npm config set @ohos:registry=https://repo.harmonyos.com/npm/
-          # 安装官方 hvigor 和 hvigor-ohos-plugin
-          npm install -g @ohos/hvigor @ohos/hvigor-ohos-plugin
-          # 验证安装
-          echo "=== hvigor 版本 ==="
-          hvigor -v
-          echo "=== hvigor-ohos-plugin res/material ==="
-          PLUGIN_DIR=$(npm root -g)/@ohos/hvigor-ohos-plugin
-          find "$PLUGIN_DIR/res" -type f 2>/dev/null | head -20 || echo "无 res/material"
+          echo "=== .npmrc ==="
+          cat ~/.npmrc
           # 安装 ohpm（来自社区包，仅用 ohpm，不用其 hvigor）
           npm install -g @hmtools/hmos-cli-lite-linux
           NPM_GLOBAL=$(npm root -g)
@@ -320,8 +314,8 @@ jobs:
           # 配置 ohpm registry
           ohpm config set registry https://ohpm.openharmony.cn/ohpm/ 2>/dev/null || true
           echo "=== 工具链验证 ==="
-          which hvigor && hvigor -v
           which ohpm && ohpm -v
+          node -v
 
       - name: Clone HarmonyOS Flutter SDK
         # 华为 fork 的 Flutter SDK，动态获取最高 release 版本分支
