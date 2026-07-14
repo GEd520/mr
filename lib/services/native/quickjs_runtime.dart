@@ -78,6 +78,9 @@ const int _CRYPTO_OP_SHA1 = 5;
 ///   导致顶层 final _qjsLib 初始化失败 → 所有 FFI 调用全废 → App 闪退
 ///   process() 在整个进程地址空间查找符号，包括已加载的动态框架，稳定可靠
 /// - Android: NDK 编译为 libquickjs_c_bridge.so → DynamicLibrary.open()
+/// - 鸿蒙 HarmonyOS: OHOS NDK 编译为 libquickjs_c_bridge.so → DynamicLibrary.open()
+///   鸿蒙上 Platform.isAndroid 为 false，用 Platform.operatingSystem == 'ohos' 判断
+///   .so 由 ohos/entry/src/main/cpp/CMakeLists.txt 编译，随 .hap 打包
 /// - Windows: CMake 编译为 quickjs_c_bridge.dll → DynamicLibrary.open()
 /// - Linux: CMake 编译为 libquickjs_c_bridge.so → DynamicLibrary.open()
 DynamicLibrary _loadQuickJsLib() {
@@ -86,6 +89,9 @@ DynamicLibrary _loadQuickJsLib() {
     // 用 process() 查找整个进程，避免 dlopen 路径问题
     return DynamicLibrary.process();
   } else if (Platform.isAndroid) {
+    return DynamicLibrary.open('libquickjs_c_bridge.so');
+  } else if (Platform.operatingSystem == 'ohos') {
+    // 鸿蒙 HarmonyOS：.so 由 OHOS NDK 编译，加载方式同 Android
     return DynamicLibrary.open('libquickjs_c_bridge.so');
   } else if (Platform.isWindows) {
     return DynamicLibrary.open('quickjs_c_bridge.dll');
